@@ -10,6 +10,9 @@ GBrain is those patterns, generalized. 26 skills. Install in 30 minutes. Your ag
 
 > **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). You just answer questions about API keys.
 
+Embeddings are provider-based in this fork. Local Ollama with `qwen3-embedding:8b`
+is the preferred path; OpenAI remains available as a fallback.
+
 ## Install
 
 ### On an agent platform (recommended)
@@ -32,6 +35,10 @@ That's it. The agent clones the repo, installs GBrain, sets up the brain, loads 
 
 ```bash
 git clone https://github.com/garrytan/gbrain.git && cd gbrain && bun install && bun link
+export GBRAIN_EMBEDDING_PROVIDER=ollama
+export GBRAIN_EMBEDDING_MODEL=qwen3-embedding:8b
+export GBRAIN_EMBEDDING_BASE_URL=http://127.0.0.1:11434
+export GBRAIN_EMBEDDING_DIMENSIONS=1536
 gbrain init                     # local brain, ready in 2 seconds
 gbrain import ~/notes/          # index your markdown
 gbrain query "what themes show up across my notes?"

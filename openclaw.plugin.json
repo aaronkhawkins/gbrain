@@ -10,10 +10,30 @@
       "description": "PostgreSQL connection URL (Supabase recommended)",
       "uiHints": { "sensitive": true }
     },
+    "embedding_provider": {
+      "type": "string",
+      "required": false,
+      "description": "Embedding provider: ollama or openai (uses GBRAIN_EMBEDDING_PROVIDER env var if not set)"
+    },
+    "embedding_model": {
+      "type": "string",
+      "required": false,
+      "description": "Embedding model name (for example qwen3-embedding:8b or text-embedding-3-large)"
+    },
+    "embedding_base_url": {
+      "type": "string",
+      "required": false,
+      "description": "Base URL for Ollama embeddings (uses GBRAIN_EMBEDDING_BASE_URL or OLLAMA_HOST env var if not set)"
+    },
+    "embedding_dimensions": {
+      "type": "string",
+      "required": false,
+      "description": "Embedding dimensions override (defaults to 1536)"
+    },
     "openai_api_key": {
       "type": "string",
       "required": false,
-      "description": "OpenAI API key for embeddings (uses OPENAI_API_KEY env var if not set)",
+      "description": "OpenAI API key for the OpenAI embedding fallback (uses OPENAI_API_KEY env var if not set)",
       "uiHints": { "sensitive": true }
     }
   },

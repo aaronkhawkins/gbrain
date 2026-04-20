@@ -1,28 +1,11 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { BrainEngine } from '../src/core/engine.ts';
 
-// Mock the embedding module BEFORE importing runEmbed, so runEmbed picks up
-// the mocked embedBatch. We track max concurrent invocations via a counter
-// that increments on entry and decrements when the mock resolves.
+// Track concurrent Ollama fetches. Each page embed triggers one /api/embed call.
 let activeEmbedCalls = 0;
 let maxConcurrentEmbedCalls = 0;
 let totalEmbedCalls = 0;
-
-mock.module('../src/core/embedding.ts', () => ({
-  embedBatch: async (texts: string[]) => {
-    activeEmbedCalls++;
-    totalEmbedCalls++;
-    if (activeEmbedCalls > maxConcurrentEmbedCalls) {
-      maxConcurrentEmbedCalls = activeEmbedCalls;
-    }
-    // Simulate API latency so concurrent workers actually overlap.
-    await new Promise(r => setTimeout(r, 30));
-    activeEmbedCalls--;
-    return texts.map(() => new Float32Array(1536));
-  },
-}));
-
-// Import AFTER mocking.
+const ORIGINAL_FETCH = globalThis.fetch;
 const { runEmbed } = await import('../src/commands/embed.ts');
 
 // Proxy-based mock engine that matches test/import-file.test.ts pattern.
@@ -47,10 +30,37 @@ beforeEach(() => {
   activeEmbedCalls = 0;
   maxConcurrentEmbedCalls = 0;
   totalEmbedCalls = 0;
+  process.env.GBRAIN_EMBEDDING_PROVIDER = 'ollama';
+  process.env.GBRAIN_EMBEDDING_DIMENSIONS = '4';
+  Object.defineProperty(globalThis, 'fetch', {
+    value: mock(async (_url: string, init?: RequestInit) => {
+      activeEmbedCalls++;
+      totalEmbedCalls++;
+      if (activeEmbedCalls > maxConcurrentEmbedCalls) {
+        maxConcurrentEmbedCalls = activeEmbedCalls;
+      }
+      await new Promise(r => setTimeout(r, 30));
+      activeEmbedCalls--;
+
+      const body = JSON.parse(String(init?.body));
+      const inputs = Array.isArray(body.input) ? body.input : [body.input];
+      return new Response(JSON.stringify({
+        embeddings: inputs.map(() => [0.1, 0.2, 0.3, 0.4]),
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }),
+    writable: true,
+  });
 });
 
 afterEach(() => {
   delete process.env.GBRAIN_EMBED_CONCURRENCY;
+  delete process.env.GBRAIN_EMBEDDING_PROVIDER;
+  delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
+  Object.defineProperty(globalThis, 'fetch', { value: ORIGINAL_FETCH, writable: true });
+  mock.restore();
 });
 
 describe('runEmbed --all (parallel)', () => {

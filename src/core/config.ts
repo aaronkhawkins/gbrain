@@ -29,6 +29,10 @@ export interface GBrainConfig {
   database_path?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
+  embedding_provider?: 'ollama' | 'openai';
+  embedding_model?: string;
+  embedding_dimensions?: string;
+  embedding_base_url?: string;
 }
 
 /**
@@ -57,6 +61,12 @@ export function loadConfig(): GBrainConfig | null {
     engine: inferredEngine,
     ...(dbUrl ? { database_url: dbUrl } : {}),
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_PROVIDER ? { embedding_provider: process.env.GBRAIN_EMBEDDING_PROVIDER } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: process.env.GBRAIN_EMBEDDING_DIMENSIONS } : {}),
+    ...((process.env.GBRAIN_EMBEDDING_BASE_URL || process.env.OLLAMA_HOST)
+      ? { embedding_base_url: process.env.GBRAIN_EMBEDDING_BASE_URL || process.env.OLLAMA_HOST }
+      : {}),
   };
   return merged as GBrainConfig;
 }

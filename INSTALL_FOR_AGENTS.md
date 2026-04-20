@@ -17,15 +17,29 @@ restart the shell or add the PATH export to the shell profile.
 
 ## Step 2: API Keys
 
-Ask the user for these:
+Ask the user how they want to generate embeddings.
+
+**Preferred local path (Ollama):**
 
 ```bash
-export OPENAI_API_KEY=sk-...          # required for vector search
+export GBRAIN_EMBEDDING_PROVIDER=ollama
+export GBRAIN_EMBEDDING_MODEL=qwen3-embedding:8b
+export GBRAIN_EMBEDDING_BASE_URL=http://skippy.local:11434   # or http://127.0.0.1:11434 if local
+export GBRAIN_EMBEDDING_DIMENSIONS=1536
+```
+
+**Fallback hosted path (OpenAI):**
+
+```bash
+export GBRAIN_EMBEDDING_PROVIDER=openai
+export OPENAI_API_KEY=sk-...          # fallback embedding provider
 export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality
 ```
 
-Save to shell profile or `.env`. Without OpenAI, keyword search still works.
-Without Anthropic, search works but skips query expansion.
+Save to shell profile or `.env`.
+
+- Without any embedding provider, keyword search still works.
+- Without Anthropic, search works but skips query expansion.
 
 ## Step 3: Create the Brain
 

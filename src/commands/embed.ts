@@ -1,5 +1,6 @@
 import type { BrainEngine } from '../core/engine.ts';
-import { embedBatch } from '../core/embedding.ts';
+import { embedBatch, getEmbeddingRuntimeConfig } from '../core/embedding.ts';
+import { getDefaultEmbedConcurrency } from '../core/embedding/provider.ts';
 import type { ChunkInput } from '../core/types.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 
@@ -101,6 +102,7 @@ async function embedPage(engine: BrainEngine, slug: string) {
   }
 
   const embeddings = await embedBatch(toEmbed.map(c => c.chunk_text));
+  const embeddingConfig = getEmbeddingRuntimeConfig();
   const embeddingMap = new Map<number, Float32Array>();
   for (let j = 0; j < toEmbed.length; j++) {
     embeddingMap.set(toEmbed[j].chunk_index, embeddings[j]);
@@ -110,6 +112,7 @@ async function embedPage(engine: BrainEngine, slug: string) {
     chunk_text: c.chunk_text,
     chunk_source: c.chunk_source,
     embedding: embeddingMap.get(c.chunk_index),
+    model: embeddingMap.has(c.chunk_index) ? embeddingConfig?.model : c.model,
     token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
   }));
 
@@ -131,7 +134,7 @@ async function embedAll(engine: BrainEngine, staleOnly: boolean) {
   // (3000+/min for tier 1 = 50+/sec, 20 parallel is safely below) and
   // avoids overwhelming postgres connection pools. Users can tune via
   // GBRAIN_EMBED_CONCURRENCY env var based on their tier/infra.
-  const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
+  const CONCURRENCY = getDefaultEmbedConcurrency();
 
   async function embedOnePage(page: typeof pages[number]) {
     const chunks = await engine.getChunks(page.slug);
@@ -147,6 +150,7 @@ async function embedAll(engine: BrainEngine, staleOnly: boolean) {
 
     try {
       const embeddings = await embedBatch(toEmbed.map(c => c.chunk_text));
+      const embeddingConfig = getEmbeddingRuntimeConfig();
       // Build a map of new embeddings by chunk_index
       const embeddingMap = new Map<number, Float32Array>();
       for (let j = 0; j < toEmbed.length; j++) {
@@ -158,6 +162,7 @@ async function embedAll(engine: BrainEngine, staleOnly: boolean) {
         chunk_text: c.chunk_text,
         chunk_source: c.chunk_source,
         embedding: embeddingMap.get(c.chunk_index) ?? undefined,
+        model: embeddingMap.has(c.chunk_index) ? embeddingConfig?.model : c.model,
         token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
       }));
       await engine.upsertChunks(page.slug, updated);

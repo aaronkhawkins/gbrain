@@ -1,30 +1,26 @@
 /**
- * Embedding Service
- * Ported from production Ruby implementation (embedding_service.rb, 190 LOC)
+ * Embedding facade.
  *
- * OpenAI text-embedding-3-large at 1536 dimensions.
- * Retry with exponential backoff (4s base, 120s cap, 5 retries).
- * 8000 character input truncation.
+ * Keeps the public API stable while routing to the configured provider.
+ * Providers:
+ * - OpenAI
+ * - Ollama
  */
 
 import OpenAI from 'openai';
+import { embedOllama } from './embedding/ollama.ts';
+import { embedOpenAI } from './embedding/openai.ts';
+import {
+  getDefaultEmbeddingDimensions,
+  getDefaultEmbeddingModel,
+  getEmbeddingRuntimeConfig,
+  type EmbeddingRuntimeConfig,
+} from './embedding/provider.ts';
 
-const MODEL = 'text-embedding-3-large';
-const DIMENSIONS = 1536;
 const MAX_CHARS = 8000;
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 4000;
 const MAX_DELAY_MS = 120000;
-const BATCH_SIZE = 100;
-
-let client: OpenAI | null = null;
-
-function getClient(): OpenAI {
-  if (!client) {
-    client = new OpenAI();
-  }
-  return client;
-}
 
 export async function embed(text: string): Promise<Float32Array> {
   const truncated = text.slice(0, MAX_CHARS);
@@ -33,42 +29,44 @@ export async function embed(text: string): Promise<Float32Array> {
 }
 
 export async function embedBatch(texts: string[]): Promise<Float32Array[]> {
+  const config = getEmbeddingRuntimeConfig();
+  if (!config) {
+    throw new Error('No embedding provider configured');
+  }
+
   const truncated = texts.map(t => t.slice(0, MAX_CHARS));
   const results: Float32Array[] = [];
 
-  // Process in batches of BATCH_SIZE
-  for (let i = 0; i < truncated.length; i += BATCH_SIZE) {
-    const batch = truncated.slice(i, i + BATCH_SIZE);
-    const batchResults = await embedBatchWithRetry(batch);
+  for (let i = 0; i < truncated.length; i += config.batchSize) {
+    const batch = truncated.slice(i, i + config.batchSize);
+    const batchResults = await embedBatchWithRetry(batch, config);
     results.push(...batchResults);
   }
 
   return results;
 }
 
-async function embedBatchWithRetry(texts: string[]): Promise<Float32Array[]> {
+async function embedBatchWithRetry(
+  texts: string[],
+  config: EmbeddingRuntimeConfig,
+): Promise<Float32Array[]> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response = await getClient().embeddings.create({
-        model: MODEL,
-        input: texts,
-        dimensions: DIMENSIONS,
-      });
-
-      // Sort by index to maintain order
-      const sorted = response.data.sort((a, b) => a.index - b.index);
-      return sorted.map(d => new Float32Array(d.embedding));
+      if (config.provider === 'ollama') {
+        return await embedOllama(texts, config);
+      }
+      return await embedOpenAI(texts, config);
     } catch (e: unknown) {
+      if (!shouldRetryEmbeddingError(config, e)) throw e;
       if (attempt === MAX_RETRIES - 1) throw e;
 
-      // Check for rate limit with Retry-After header
       let delay = exponentialDelay(attempt);
 
-      if (e instanceof OpenAI.APIError && e.status === 429) {
+      if (config.provider === 'openai' && e instanceof OpenAI.APIError && e.status === 429) {
         const retryAfter = e.headers?.['retry-after'];
         if (retryAfter) {
           const parsed = parseInt(retryAfter, 10);
-          if (!isNaN(parsed)) {
+          if (!Number.isNaN(parsed)) {
             delay = parsed * 1000;
           }
         }
@@ -78,8 +76,21 @@ async function embedBatchWithRetry(texts: string[]): Promise<Float32Array[]> {
     }
   }
 
-  // Should not reach here
   throw new Error('Embedding failed after all retries');
+}
+
+function shouldRetryEmbeddingError(config: EmbeddingRuntimeConfig, error: unknown): boolean {
+  if (config.provider !== 'ollama') return true;
+  if (!(error instanceof Error)) return true;
+
+  // Provider validation and shape errors are deterministic. Retrying only burns
+  // time and makes local misconfiguration feel hung.
+  return !(
+    error.message.includes('did not include an embeddings array')
+    || error.message.includes('returned ')
+    || error.message.includes('was not an array')
+    || error.message.includes('dimensions, expected')
+  );
 }
 
 function exponentialDelay(attempt: number): number {
@@ -91,4 +102,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export { MODEL as EMBEDDING_MODEL, DIMENSIONS as EMBEDDING_DIMENSIONS };
+export const EMBEDDING_MODEL = getDefaultEmbeddingModel();
+export const EMBEDDING_DIMENSIONS = getDefaultEmbeddingDimensions();
+export { getEmbeddingRuntimeConfig } from './embedding/provider.ts';
