@@ -152,4 +152,52 @@ describe('copilot-backed claude helpers', () => {
     expect(createdSessions[0]?.model).toBe('claude-haiku-4.5');
     expect(createdSessions[0]?.availableTools).toEqual(['expand_query']);
   });
+
+  test('throws when a required tool call is missing and the model returns plain text', async () => {
+    class FakeCopilotClient {
+      async start() {}
+      async stop() {}
+      async createSession() {
+        return {
+          on() {
+            return () => {};
+          },
+          async sendAndWait() {
+            return {
+              data: {
+                content: 'Here are two alternatives: founders of YC; YC founders',
+              },
+            };
+          },
+          async disconnect() {},
+          async [Symbol.asyncDispose]() {
+            await this.disconnect();
+          },
+        };
+      }
+    }
+
+    setCopilotSdkLoaderForTests(async () => ({
+      CopilotClient: FakeCopilotClient as any,
+      approveAll: (() => ({}) as any),
+    }));
+
+    await expect(
+      completeClaudeTool<{ alternative_queries: string[] }>({
+        anthropicModel: 'claude-haiku-4-5-20251001',
+        prompt: '<user_query>\nwho founded YC\n</user_query>',
+        toolName: 'expand_query',
+        toolDescription: 'Generate alternative queries',
+        parameters: {
+          type: 'object',
+          properties: {
+            alternative_queries: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow('did not invoke required tool expand_query');
+  });
 });

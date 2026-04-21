@@ -1,11 +1,13 @@
 ---
 title: refactor: Add GitHub Copilot OAuth-backed query expansion
 type: refactor
-status: active
+status: superseded
 date: 2026-04-20
 ---
 
 # refactor: Add GitHub Copilot OAuth-backed query expansion
+
+Superseded by [2026-04-20-refactor-route-all-anthropic-usage-through-github-copilot-plan.md](./2026-04-20-refactor-route-all-anthropic-usage-through-github-copilot-plan.md), which expanded the approved scope from query expansion only to all Anthropic-backed Claude usage in the repo.
 
 ## Overview
 

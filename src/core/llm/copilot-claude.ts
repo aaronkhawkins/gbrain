@@ -31,6 +31,7 @@ export interface ClaudeToolRequest<TArgs extends object> {
   toolDescription: string;
   parameters: Record<string, unknown>;
   timeoutMs?: number;
+  requireToolCall?: boolean;
 }
 
 interface ClaudeSessionRequest {
@@ -112,6 +113,16 @@ export async function completeClaudeTool<TArgs extends object>(
       },
     ],
   });
+
+  const requireToolCall = request.requireToolCall !== false;
+  if (requireToolCall && captured === null) {
+    const detail = response.content
+      ? ` Received plain-text response instead: ${JSON.stringify(response.content.slice(0, 200))}`
+      : '';
+    throw new Error(
+      `Copilot Claude model ${response.model} did not invoke required tool ${request.toolName}.${detail}`,
+    );
+  }
 
   return {
     result: captured,
