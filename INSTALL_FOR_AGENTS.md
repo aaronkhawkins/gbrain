@@ -17,7 +17,8 @@ restart the shell or add the PATH export to the shell profile.
 
 ## Step 2: API Keys
 
-Ask the user how they want to generate embeddings.
+Ask the user how they want to generate embeddings and whether they want
+GitHub Copilot-backed Claude expansion.
 
 **Preferred local path (Ollama):**
 
@@ -33,14 +34,20 @@ export GBRAIN_EMBEDDING_DIMENSIONS=1536
 ```bash
 export GBRAIN_EMBEDDING_PROVIDER=openai
 export OPENAI_API_KEY=sk-...          # fallback embedding provider
-export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality
+```
+
+**Optional Claude/query-expansion path via GitHub Copilot:**
+
+```bash
+export GBRAIN_GITHUB_TOKEN=gho_...    # preferred explicit Copilot OAuth user token
+# or: export GBRAIN_COPILOT_USE_LOGGED_IN_USER=1
 ```
 
 Save to shell profile or `.env`.
 
 - This fork defaults to local Ollama on `http://127.0.0.1:11434`.
 - To switch back to hosted embeddings, set `GBRAIN_EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY`.
-- Without Anthropic, search works but skips query expansion.
+- Without GitHub Copilot auth, search still works but skips Claude-backed query expansion.
 
 ## Step 3: Create the Brain
 

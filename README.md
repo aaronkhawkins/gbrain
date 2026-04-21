@@ -8,10 +8,13 @@ The brain wires itself. Every page write extracts entity references and creates 
 
 GBrain is those patterns, generalized. 26 skills. Install in 30 minutes. Your agent does the work. As Garry's personal agent gets smarter, so does yours.
 
-> **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). You just answer questions about API keys.
+> **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). You just answer questions about embedding and model auth.
 
 Embeddings are provider-based in this fork. Local Ollama with `qwen3-embedding:8b`
 is the preferred path; OpenAI remains available as a fallback.
+
+Claude-backed query expansion now runs through GitHub Copilot when
+`GBRAIN_GITHUB_TOKEN` is set or local Copilot auth is explicitly enabled.
 
 ## Install
 
@@ -373,7 +376,7 @@ Hybrid search: vector + keyword + RRF fusion + multi-query expansion + 4-layer d
 ```
 Query
   -> Intent classifier (entity? temporal? event? general?)
-  -> Multi-query expansion (Claude Haiku)
+  -> Multi-query expansion (GitHub Copilot Claude Haiku 4.5)
   -> Vector search (HNSW cosine) + Keyword search (tsvector)
   -> RRF fusion: score = sum(1/(60 + rank))
   -> Cosine re-scoring + compiled truth boost

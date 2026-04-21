@@ -228,13 +228,13 @@ ALWAYS source the user's shell profile before running tests:
 source ~/.zshrc 2>/dev/null || true
 ```
 
-This loads `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`. Without these, Tier 2 tests
-skip silently. Do NOT skip Tier 2 tests just because they require API keys — load
-the keys and run them.
+This loads `OPENAI_API_KEY` and any GitHub Copilot auth env such as
+`GBRAIN_GITHUB_TOKEN`. Without those, some higher-tier tests or helpers may skip.
+Do NOT skip them just because they require credentials — load the credentials and run them.
 
 When asked to "run all E2E tests" or "run tests", that means ALL tiers:
 - Tier 1: `bun run test:e2e` (mechanical, sync, upgrade — no API keys needed)
-- Tier 2: `test/e2e/skills.test.ts` (requires OpenAI + Anthropic + openclaw CLI)
+- Tier 2: `test/e2e/skills.test.ts` (requires OpenAI + openclaw CLI)
 - Always spin up the test DB, source zshrc, run everything, tear down.
 
 ### E2E test DB lifecycle (ALWAYS follow this)

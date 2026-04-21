@@ -1,24 +1,25 @@
 /**
- * Opus prose generator. Calls Claude Opus to turn entity skeletons (from
+ * Opus prose generator. Calls Claude Opus through GitHub Copilot to turn entity skeletons (from
  * world.ts) into rich, multi-paragraph prose pages with realistic noise:
  * varied phrasing, occasional typos, multiple mentions per page, evolving
  * compiled truth.
  *
  * Cost discipline:
- *   - Tracks token usage per call.
- *   - Hard-stops at $80 (well under the $500 daily cap).
+ *   - Tracks Copilot usage per call when the SDK reports it.
+ *   - Hard-stops at 80 Copilot cost units as a rough safety cap.
  *   - Caches every successful output to eval/data/world-v1/<slug>.json so
  *     re-running is free.
  *
- * Reads ANTHROPIC_API_KEY from .env.testing (gitignored — committed key
- * would be a security issue).
+ * Reads GBRAIN_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN from .env.testing
+ * (gitignored — committed tokens would be a security issue).
  *
  * Usage: bun eval/generators/gen.ts [--max N] [--dry-run]
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { completeClaudeText } from '../../src/core/llm/copilot-claude.ts';
+import { hasCopilotClaudeConfig } from '../../src/core/llm/copilot-config.ts';
 import { buildWorld, type EntityFacts, type World } from './world.ts';
 
 // ─── Setup: load env, init client ──────────────────────────────
@@ -34,18 +35,13 @@ function loadEnv() {
 }
 
 loadEnv();
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('ANTHROPIC_API_KEY not set after loading .env.testing');
+if (!hasCopilotClaudeConfig()) {
+  console.error('GitHub Copilot auth not set after loading .env.testing');
   process.exit(1);
 }
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// Opus 4.7 pricing as of 2026-04-18.
-const PRICE_INPUT_PER_M = 15;
-const PRICE_OUTPUT_PER_M = 75;
-const HARD_STOP_USD = 80;
-const MODEL = 'claude-opus-4-5'; // 4.7 model id; SDK accepts the alias
+const HARD_STOP_COST_UNITS = 80;
+const MODEL = 'claude-opus-4-5';
 
 // ─── Prompt construction ──────────────────────────────────────
 
@@ -113,16 +109,16 @@ Output ONLY the JSON object. No preamble, no code fences.`;
 interface CostLedger {
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;
+  costUnits: number;
   calls: number;
 }
 
-const ledger: CostLedger = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 };
+const ledger: CostLedger = { inputTokens: 0, outputTokens: 0, costUnits: 0, calls: 0 };
 
-function recordUsage(inT: number, outT: number) {
+function recordUsage(inT = 0, outT = 0, cost = 0) {
   ledger.inputTokens += inT;
   ledger.outputTokens += outT;
-  ledger.costUsd = (ledger.inputTokens / 1_000_000) * PRICE_INPUT_PER_M + (ledger.outputTokens / 1_000_000) * PRICE_OUTPUT_PER_M;
+  ledger.costUnits += cost;
   ledger.calls++;
 }
 
@@ -134,20 +130,19 @@ async function generateOne(entity: EntityFacts, world: World): Promise<{ ok: tru
   const cachePath = join(OUTPUT_DIR, `${entity.slug.replace('/', '__')}.json`);
   if (existsSync(cachePath)) return { ok: true, cached: true };
 
-  if (ledger.costUsd > HARD_STOP_USD) {
-    return { ok: false, error: `HARD_STOP: cost ${ledger.costUsd.toFixed(2)} > ${HARD_STOP_USD}` };
+  if (ledger.costUnits > HARD_STOP_COST_UNITS) {
+    return { ok: false, error: `HARD_STOP: cost ${ledger.costUnits.toFixed(2)} > ${HARD_STOP_COST_UNITS}` };
   }
 
   const prompt = entityPrompt(entity, world);
   try {
-    const resp = await client.messages.create({
-      model: MODEL,
-      max_tokens: 2500,
-      messages: [{ role: 'user', content: prompt }],
+    const resp = await completeClaudeText({
+      anthropicModel: MODEL,
+      prompt,
     });
-    recordUsage(resp.usage.input_tokens, resp.usage.output_tokens);
+    recordUsage(resp.usage?.inputTokens, resp.usage?.outputTokens, resp.usage?.cost);
 
-    const text = resp.content[0].type === 'text' ? resp.content[0].text : '';
+    const text = resp.content;
     // Be lenient with trailing junk — find first { and last }.
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
@@ -245,9 +240,9 @@ async function main() {
     const remaining = toGenerate - generated;
     const etaSec = rate > 0 ? remaining / rate : 0;
     const etaMin = etaSec / 60;
-    const avgCostPer = generated > 0 ? ledger.costUsd / generated : 0;
+    const avgCostPer = generated > 0 ? ledger.costUnits / generated : 0;
     const projectedTotal = avgCostPer * toGenerate;
-    console.log(`  [${elapsedSec.toFixed(0)}s] ${generated}/${toGenerate} (${cached} cached) — $${ledger.costUsd.toFixed(2)} spent — rate ${rate.toFixed(2)}/s — ETA ${etaMin.toFixed(1)}min — projected total $${projectedTotal.toFixed(2)} — last: ${slug}`);
+    console.log(`  [${elapsedSec.toFixed(0)}s] ${generated}/${toGenerate} (${cached} cached) — cost ${ledger.costUnits.toFixed(2)} — rate ${rate.toFixed(2)}/s — ETA ${etaMin.toFixed(1)}min — projected total ${projectedTotal.toFixed(2)} — last: ${slug}`);
   }
 
   async function worker() {
@@ -276,14 +271,13 @@ async function main() {
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
   console.log(`\nDone. ${generated} generated, ${cached} cached, ${failed} failed.`);
-  console.log(`Total cost: $${ledger.costUsd.toFixed(2)} (${ledger.calls} calls, ${ledger.inputTokens.toLocaleString()} in / ${ledger.outputTokens.toLocaleString()} out)`);
+  console.log(`Total cost units: ${ledger.costUnits.toFixed(2)} (${ledger.calls} calls, ${ledger.inputTokens.toLocaleString()} in / ${ledger.outputTokens.toLocaleString()} out)`);
   console.log(`Output dir: ${OUTPUT_DIR}/`);
 
   // Persist ledger for reproducibility.
   writeFileSync(join(OUTPUT_DIR, '_ledger.json'), JSON.stringify({
     generated_at: new Date().toISOString(),
     model: MODEL,
-    pricing: { input_per_m: PRICE_INPUT_PER_M, output_per_m: PRICE_OUTPUT_PER_M },
     ...ledger,
     files_total: readdirSync(OUTPUT_DIR).filter(f => f.endsWith('.json') && f !== '_ledger.json').length,
   }, null, 2));

@@ -1,7 +1,7 @@
 /**
  * Bench harness: Minions vs OpenClaw subagent dispatch.
  *
- * Both sides run the SAME LLM call (anthropic/claude-haiku-4-5) with
+ * Both sides run the SAME Claude Haiku 4.5 call with
  * the SAME trivial prompt. What we measure is the queue+dispatch
  * overhead each system adds ON TOP of that identical LLM work.
  *
@@ -11,7 +11,7 @@
  * then calls the LLM.
  *
  * Minions entry point: `queue.add` -> worker picks it up -> handler
- * calls Anthropic SDK directly. Worker stays warm across jobs.
+ * calls the shared Copilot-backed Claude helper directly. Worker stays warm across jobs.
  *
  * Caveat: we do NOT test OpenClaw's gateway multi-agent fan-out —
  * that requires a custom WS client and LLM-backed parent agent,
@@ -19,9 +19,9 @@
  * actually script against today.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { completeClaudeText } from '../../../src/core/llm/copilot-claude.ts';
 
 export const BENCH_MODEL = 'claude-haiku-4-5';
 export const BENCH_PROMPT = 'Reply with just: OK. No other text.';
@@ -85,7 +85,7 @@ export async function openclawDispatch(
 }
 
 /**
- * Direct Anthropic SDK call — what a Minions handler does.
+ * Direct Copilot-backed Claude call — what a Minions handler does.
  * Same model, same prompt as openclawDispatch. No queue overhead.
  */
 export async function minionsHandler(
@@ -93,17 +93,11 @@ export async function minionsHandler(
 ): Promise<CallResult> {
   const t0 = performance.now();
   try {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const resp = await client.messages.create({
-      model: BENCH_MODEL,
-      max_tokens: 64,
-      messages: [{ role: 'user', content: prompt }],
+    const resp = await completeClaudeText({
+      anthropicModel: BENCH_MODEL,
+      prompt,
     });
-    const reply =
-      resp.content
-        .map((c) => (c.type === 'text' ? c.text : ''))
-        .join('')
-        .trim() || '';
+    const reply = resp.content || '';
     return {
       ok: true,
       wallMs: Math.round(performance.now() - t0),

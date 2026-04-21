@@ -7,6 +7,11 @@
 **OpenClaw:** 2026.4.10 (44e5b62)
 **Model:** anthropic/claude-haiku-4-5
 
+> Historical note: these numbers were collected before this fork migrated
+> Claude calls to GitHub Copilot. The current benchmark harness keeps the same
+> Claude Haiku 4.5 intent, but the Minions side now uses the shared Copilot-backed
+> Claude helper instead of the Anthropic SDK.
+
 ## Why this benchmark exists
 
 Minions is GBrain's new background job queue, pitched as a durable, cheap
@@ -79,9 +84,9 @@ Source: `test/e2e/bench-vs-openclaw/durability.bench.ts`
 | OpenClaw `--local` | 8086ms | 10094ms | 10094ms | 8335ms | 7405ms | 10094ms | 20/20 |
 | **Ratio** | **10.4×** | **5.2×** | **5.2×** | **9.2×** | 11.6× | 5.2× | — |
 
-Setup: both sides call claude-haiku-4-5 with the same prompt. Minions
-goes through `queue.add` → worker claims → handler calls Anthropic SDK
-directly. OpenClaw spawns a fresh `openclaw agent --local` process per
+Setup: both sides call Claude Haiku 4.5 with the same prompt. Minions
+goes through `queue.add` → worker claims → handler calls the shared
+Copilot-backed Claude helper directly. OpenClaw spawns a fresh `openclaw agent --local` process per
 dispatch.
 
 The ~7 seconds of overhead per OC dispatch isn't the LLM. It's the
@@ -182,7 +187,7 @@ docker run -d --name gbrain-test-pg \
 
 # 2. Set env
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5436/gbrain_test
-export ANTHROPIC_API_KEY=sk-ant-...
+export GBRAIN_GITHUB_TOKEN=gho_...
 
 # 3. Run each bench (durability + memory are free; throughput + fan-out
 #    cost ~$0.25 in claude-haiku-4-5 tokens total)

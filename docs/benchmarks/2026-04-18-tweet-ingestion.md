@@ -7,6 +7,10 @@
 **OpenClaw:** 2026.4.10
 **Model:** none (Minions) vs anthropic/claude-sonnet-4 (OpenClaw)
 
+> Historical note: the current repo no longer uses direct Anthropic credentials.
+> Re-running this benchmark today should use GitHub Copilot-backed Claude access
+> for any Claude call sites owned by GBrain.
+
 ## Why this benchmark exists
 
 The existing throughput/fanout/durability benchmarks use a trivial LLM
@@ -156,7 +160,6 @@ Examples:
 export X_BEARER_TOKEN=...           # external API bearer token
 export DATABASE_URL=postgresql://... # Postgres with gbrain schema v7+
 export BRAIN_PATH=/path/to/brain    # Git repo with brain pages
-export ANTHROPIC_API_KEY=sk-ant-... # For OpenClaw side only
 
 # 2. Run the benchmark
 bun test test/e2e/bench-vs-openclaw/tweet-ingest.bench.ts

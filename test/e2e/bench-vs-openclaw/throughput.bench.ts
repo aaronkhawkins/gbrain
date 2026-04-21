@@ -1,7 +1,7 @@
 /**
  * Throughput bench: per-dispatch wall-clock, Minions vs OpenClaw --local.
  *
- * Both sides run the SAME LLM call (claude-haiku-4-5, tiny prompt).
+ * Both sides run the SAME Claude Haiku 4.5 call (tiny prompt).
  * The delta tells you how much overhead each system adds on top of the
  * identical LLM work.
  *
@@ -18,14 +18,15 @@
  *
  * Budget: N=20 × 2 systems × ~$0.002/call ≈ $0.08 actual LLM spend.
  *
- * Run: DATABASE_URL=... bun test test/e2e/bench-vs-openclaw/throughput.bench.ts
+ * Run: DATABASE_URL=... GBRAIN_GITHUB_TOKEN=... bun test test/e2e/bench-vs-openclaw/throughput.bench.ts
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { performance } from 'node:perf_hooks';
-import Anthropic from '@anthropic-ai/sdk';
 import { hasDatabase, setupDB, teardownDB, getConn, getEngine } from '../helpers.ts';
 import { PostgresEngine } from '../../../src/core/postgres-engine.ts';
+import { completeClaudeText } from '../../../src/core/llm/copilot-claude.ts';
+import { hasCopilotClaudeConfig } from '../../../src/core/llm/copilot-config.ts';
 import { MinionQueue } from '../../../src/core/minions/queue.ts';
 import { MinionWorker } from '../../../src/core/minions/worker.ts';
 import { runMigrations } from '../../../src/core/migrate.ts';
@@ -38,11 +39,11 @@ import {
   type CallResult,
 } from './harness.ts';
 
-const skip = !hasDatabase() || !process.env.ANTHROPIC_API_KEY;
+const skip = !hasDatabase() || !hasCopilotClaudeConfig();
 const describeBench = skip ? describe.skip : describe;
 
 if (skip) {
-  console.log('Skipping throughput bench (need DATABASE_URL + ANTHROPIC_API_KEY)');
+  console.log('Skipping throughput bench (need DATABASE_URL + GitHub Copilot auth)');
 }
 
 const N = 20;
@@ -77,18 +78,12 @@ describeBench('Bench: Throughput (per-dispatch wall clock)', () => {
         stalledInterval: 60_000,
       });
 
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
       worker.register('bench-throughput', async () => {
-        const resp = await client.messages.create({
-          model: BENCH_MODEL,
-          max_tokens: 64,
-          messages: [{ role: 'user', content: BENCH_PROMPT }],
+        const resp = await completeClaudeText({
+          anthropicModel: BENCH_MODEL,
+          prompt: BENCH_PROMPT,
         });
-        const reply = resp.content
-          .map((c) => (c.type === 'text' ? c.text : ''))
-          .join('')
-          .trim();
+        const reply = resp.content.trim();
         if (!reply) throw new Error('empty reply');
         return { reply };
       });

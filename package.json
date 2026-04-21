@@ -33,9 +33,9 @@
     }
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
     "@aws-sdk/client-s3": "^3.1028.0",
     "@electric-sql/pglite": "^0.4.4",
+    "@github/copilot-sdk": "^0.2.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "gray-matter": "^4.0.3",
     "marked": "^18.0.0",

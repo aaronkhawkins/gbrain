@@ -16,24 +16,25 @@
  *
  * Budget: 3 × 10 × 2 systems × ~$0.002 ≈ $0.12 LLM spend.
  *
- * Run: DATABASE_URL=... bun test test/e2e/bench-vs-openclaw/fanout.bench.ts
+ * Run: DATABASE_URL=... GBRAIN_GITHUB_TOKEN=... bun test test/e2e/bench-vs-openclaw/fanout.bench.ts
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { performance } from 'node:perf_hooks';
-import Anthropic from '@anthropic-ai/sdk';
 import { hasDatabase, setupDB, teardownDB, getConn, getEngine } from '../helpers.ts';
 import { PostgresEngine } from '../../../src/core/postgres-engine.ts';
+import { completeClaudeText } from '../../../src/core/llm/copilot-claude.ts';
+import { hasCopilotClaudeConfig } from '../../../src/core/llm/copilot-config.ts';
 import { MinionQueue } from '../../../src/core/minions/queue.ts';
 import { MinionWorker } from '../../../src/core/minions/worker.ts';
 import { runMigrations } from '../../../src/core/migrate.ts';
 import { BENCH_MODEL, BENCH_PROMPT, openclawDispatch } from './harness.ts';
 
-const skip = !hasDatabase() || !process.env.ANTHROPIC_API_KEY;
+const skip = !hasDatabase() || !hasCopilotClaudeConfig();
 const describeBench = skip ? describe.skip : describe;
 
 if (skip) {
-  console.log('Skipping fan-out bench (need DATABASE_URL + ANTHROPIC_API_KEY)');
+  console.log('Skipping fan-out bench (need DATABASE_URL + GitHub Copilot auth)');
 }
 
 const RUNS = 3;
@@ -78,19 +79,13 @@ describeBench('Bench: Fan-out (parent → 10 children in parallel)', () => {
         stalledInterval: 60_000,
       });
 
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
       worker.register('bench-child', async () => {
-        const resp = await client.messages.create({
-          model: BENCH_MODEL,
-          max_tokens: 64,
-          messages: [{ role: 'user', content: BENCH_PROMPT }],
+        const resp = await completeClaudeText({
+          anthropicModel: BENCH_MODEL,
+          prompt: BENCH_PROMPT,
         });
         return {
-          reply: resp.content
-            .map((c) => (c.type === 'text' ? c.text : ''))
-            .join('')
-            .trim(),
+          reply: resp.content.trim(),
         };
       });
 

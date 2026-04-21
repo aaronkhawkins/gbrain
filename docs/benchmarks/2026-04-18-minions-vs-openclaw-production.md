@@ -7,6 +7,10 @@
 **Brain:** 45,798 pages, 98K chunks, 25K links, 79K timeline entries
 **Task:** Pull and ingest one month of social posts from an external API into the brain
 
+> Historical note: this writeup predates the GitHub Copilot Claude migration in
+> this fork. Current GBrain Claude call sites route through Copilot instead of
+> direct Anthropic SDK usage.
+
 ## Context
 
 This is a **production benchmark**, not a lab test. The existing lab benchmark
@@ -54,7 +58,7 @@ Cost: $0.00 (no LLM tokens)
 ```javascript
 sessions_spawn({
   task: "Pull my social posts for June 2020 and save as a brain page...",
-  model: "anthropic/claude-sonnet-4-20250514",
+  model: "claude-sonnet-4",
   mode: "run",
   runTimeoutSeconds: 120
 })

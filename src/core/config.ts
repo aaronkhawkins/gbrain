@@ -28,7 +28,8 @@ export interface GBrainConfig {
   database_url?: string;
   database_path?: string;
   openai_api_key?: string;
-  anthropic_api_key?: string;
+  github_token?: string;
+  copilot_use_logged_in_user?: boolean;
   embedding_provider?: 'ollama' | 'openai';
   embedding_model?: string;
   embedding_dimensions?: string;
@@ -61,6 +62,16 @@ export function loadConfig(): GBrainConfig | null {
     engine: inferredEngine,
     ...(dbUrl ? { database_url: dbUrl } : {}),
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
+    ...((process.env.GBRAIN_GITHUB_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN)
+      ? { github_token: process.env.GBRAIN_GITHUB_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN }
+      : {}),
+    ...(process.env.GBRAIN_COPILOT_USE_LOGGED_IN_USER
+      ? {
+          copilot_use_logged_in_user: ['1', 'true', 'yes', 'on'].includes(
+            process.env.GBRAIN_COPILOT_USE_LOGGED_IN_USER.toLowerCase(),
+          ),
+        }
+      : {}),
     ...(process.env.GBRAIN_EMBEDDING_PROVIDER ? { embedding_provider: process.env.GBRAIN_EMBEDDING_PROVIDER } : {}),
     ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
     ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: process.env.GBRAIN_EMBEDDING_DIMENSIONS } : {}),

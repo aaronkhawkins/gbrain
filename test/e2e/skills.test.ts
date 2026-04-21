@@ -1,5 +1,5 @@
 /**
- * E2E Skill Tests — Tier 2 (requires API keys + openclaw)
+ * E2E Skill Tests — Tier 2 (requires runtime credentials + openclaw)
  *
  * Tests gbrain skills via OpenClaw agent CLI invocations.
  * Asserts on DB state changes, not LLM output text.
@@ -7,7 +7,6 @@
  * Requires:
  *   - DATABASE_URL
  *   - OPENAI_API_KEY
- *   - ANTHROPIC_API_KEY
  *   - openclaw CLI installed with at least one agent configured
  *
  * Skips gracefully if any dependency is missing.
@@ -41,7 +40,6 @@ function detectAgent(): string | null {
 function hasTier2Deps(): { ok: boolean; reason?: string; agent?: string } {
   if (!hasDatabase()) return { ok: false, reason: 'DATABASE_URL not set' };
   if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'OPENAI_API_KEY not set' };
-  if (!process.env.ANTHROPIC_API_KEY) return { ok: false, reason: 'ANTHROPIC_API_KEY not set' };
 
   // Check if openclaw is installed
   try {

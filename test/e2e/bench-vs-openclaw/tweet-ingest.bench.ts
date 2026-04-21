@@ -18,15 +18,14 @@
  * exec(git) → model reports back. Same work, but the model decides
  * each step.
  *
- * Budget: Minions = $0 (no LLM). OpenClaw = ~$0.03 per run (Sonnet).
+ * Budget: Minions = $0 (no LLM). OpenClaw = premium-request usage on its configured Claude Sonnet model.
  * N=5 runs each = ~$0.15 total OpenClaw spend.
  *
  * Prerequisites:
  *   - X_BEARER_TOKEN (Enterprise tier for full-archive search)
  *   - DATABASE_URL (Postgres with gbrain schema)
- *   - ANTHROPIC_API_KEY (for OpenClaw side only)
  *   - A brain repo at BRAIN_PATH (default: /data/brain)
- *   - OpenClaw installed (for OC side; skip OC tests if not available)
+ *   - OpenClaw installed and already configured with a Claude-capable agent
  *
  * Run:
  *   X_BEARER_TOKEN=... DATABASE_URL=... bun test test/e2e/bench-vs-openclaw/tweet-ingest.bench.ts
@@ -286,7 +285,7 @@ describe('Tweet Ingestion: Minions vs OpenClaw', () => {
       console.log('\n=== TWEET INGESTION BENCHMARK ===');
       console.log('Task: pull ~100 tweets from X API, write brain page, git commit, submit sync');
       console.log(`Runs: ${N} per method, serial`);
-      console.log('Model: none (Minions) vs claude-sonnet-4 (OpenClaw)');
+      console.log('Model: none (Minions) vs Claude Sonnet 4 (OpenClaw)');
       console.log('Environment: ' + (process.env.RENDER ? 'Render' : process.env.FLY_APP_NAME ? 'Fly' : 'local'));
       console.log('Brain size: ' + (existsSync(BRAIN_PATH) ? execSync(`find ${BRAIN_PATH} -name "*.md" | wc -l`, { encoding: 'utf-8' }).trim() + ' pages' : 'unknown'));
     },
