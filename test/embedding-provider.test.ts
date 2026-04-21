@@ -38,9 +38,16 @@ afterEach(() => {
 });
 
 describe('embedding provider resolution', () => {
-  test('returns null when no embedding provider is configured', () => {
-    expect(getEmbeddingRuntimeConfig()).toBeNull();
-    expect(hasEmbeddingProviderConfig()).toBe(false);
+  test('defaults to local ollama when no provider is configured', () => {
+    expect(getEmbeddingRuntimeConfig()).toEqual({
+      provider: 'ollama',
+      model: 'qwen3-embedding:8b',
+      dimensions: 1536,
+      baseUrl: 'http://127.0.0.1:11434',
+      timeoutMs: 120000,
+      batchSize: 32,
+    });
+    expect(hasEmbeddingProviderConfig()).toBe(true);
   });
 
   test('resolves explicit ollama configuration', () => {
@@ -60,8 +67,7 @@ describe('embedding provider resolution', () => {
     expect(hasEmbeddingProviderConfig()).toBe(true);
   });
 
-  test('prefers explicit ollama provider over OPENAI_API_KEY', () => {
-    process.env.GBRAIN_EMBEDDING_PROVIDER = 'ollama';
+  test('defaults to ollama even when OPENAI_API_KEY is present', () => {
     process.env.OPENAI_API_KEY = 'sk-test';
 
     const resolved = getEmbeddingRuntimeConfig();
@@ -69,8 +75,21 @@ describe('embedding provider resolution', () => {
     expect(resolved?.model).toBe('qwen3-embedding:8b');
   });
 
+  test('supports explicit openai override', () => {
+    process.env.GBRAIN_EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_API_KEY = 'sk-test';
+
+    expect(getEmbeddingRuntimeConfig()).toEqual({
+      provider: 'openai',
+      model: 'text-embedding-3-large',
+      dimensions: 1536,
+      apiKey: 'sk-test',
+      timeoutMs: 120000,
+      batchSize: 100,
+    });
+  });
+
   test('uses lower default concurrency for ollama', () => {
-    process.env.GBRAIN_EMBEDDING_PROVIDER = 'ollama';
     expect(getDefaultEmbedConcurrency()).toBe(4);
   });
 });

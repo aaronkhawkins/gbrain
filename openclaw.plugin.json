@@ -13,7 +13,7 @@
     "embedding_provider": {
       "type": "string",
       "required": false,
-      "description": "Embedding provider: ollama or openai (uses GBRAIN_EMBEDDING_PROVIDER env var if not set)"
+      "description": "Embedding provider: ollama or openai. This fork defaults to ollama unless you explicitly set openai."
     },
     "embedding_model": {
       "type": "string",
@@ -23,7 +23,7 @@
     "embedding_base_url": {
       "type": "string",
       "required": false,
-      "description": "Base URL for Ollama embeddings (uses GBRAIN_EMBEDDING_BASE_URL or OLLAMA_HOST env var if not set)"
+      "description": "Base URL for Ollama embeddings (defaults to http://127.0.0.1:11434, or uses GBRAIN_EMBEDDING_BASE_URL / OLLAMA_HOST if set)"
     },
     "embedding_dimensions": {
       "type": "string",

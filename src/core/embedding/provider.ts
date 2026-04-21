@@ -47,12 +47,7 @@ export function getEmbeddingRuntimeConfig(config?: Partial<GBrainConfig>): Embed
     DEFAULT_DIMENSIONS,
   );
 
-  let provider = explicitProvider;
-  if (!provider) {
-    if (baseUrl) provider = 'ollama';
-    else if (openaiApiKey) provider = 'openai';
-  }
-  if (!provider) return null;
+  const provider = explicitProvider || 'ollama';
 
   if (provider === 'ollama') {
     return {

@@ -157,7 +157,7 @@ RRF fusion, multi-query expansion, and 4-layer dedup are engine-agnostic. They o
 **PGLite-specific details:**
 - Uses `pglite-schema.ts` for DDL (pgvector extension, pg_trgm, triggers, indexes)
 - Parameterized queries throughout (shared utilities in `src/core/utils.ts`)
-- `hybridSearch` keyword-only fallback when no embedding provider is configured
+- `hybridSearch` falls back to keyword-only when the active embedding provider call fails
 - Data stored at `~/.gbrain/brain.db` (configurable)
 - pgvector HNSW index for cosine similarity vector search (same as Postgres)
 - tsvector + ts_rank for full-text search (same as Postgres)

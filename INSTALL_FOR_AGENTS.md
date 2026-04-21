@@ -6,7 +6,7 @@ Target: ~30 minutes to a fully working brain.
 ## Step 1: Install GBrain
 
 ```bash
-git clone https://github.com/garrytan/gbrain.git ~/gbrain && cd ~/gbrain
+git clone --branch codex/ollama-embedding-provider https://github.com/aaronkhawkins/gbrain.git ~/gbrain && cd ~/gbrain
 curl -fsSL https://bun.sh/install | bash
 export PATH="$HOME/.bun/bin:$PATH"
 bun install && bun link
@@ -38,7 +38,8 @@ export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality
 
 Save to shell profile or `.env`.
 
-- Without any embedding provider, keyword search still works.
+- This fork defaults to local Ollama on `http://127.0.0.1:11434`.
+- To switch back to hosted embeddings, set `GBRAIN_EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY`.
 - Without Anthropic, search works but skips query expansion.
 
 ## Step 3: Create the Brain

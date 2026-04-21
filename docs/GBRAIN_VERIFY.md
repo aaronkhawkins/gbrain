@@ -156,7 +156,7 @@ gbrain stats
 
 **Expected:** Embedded chunk count matches (or is close to) total chunk count.
 
-**If zero or very low:** the embedding provider may be missing or invalid. Check:
+**If zero or very low:** the embedding provider may be invalid, or local Ollama may not be reachable. Check:
 
 ```bash
 echo $GBRAIN_EMBEDDING_PROVIDER
@@ -164,7 +164,7 @@ echo $GBRAIN_EMBEDDING_BASE_URL
 echo $OPENAI_API_KEY | head -c 10
 ```
 
-If Ollama is your provider, verify the endpoint:
+This fork defaults to Ollama at `http://127.0.0.1:11434`. If you are using Ollama, verify the endpoint:
 
 ```bash
 curl -s $GBRAIN_EMBEDDING_BASE_URL/api/version

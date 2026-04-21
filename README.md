@@ -26,7 +26,7 @@ Paste this into your agent:
 
 ```
 Retrieve and follow the instructions at:
-https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
+https://raw.githubusercontent.com/aaronkhawkins/gbrain/codex/ollama-embedding-provider/INSTALL_FOR_AGENTS.md
 ```
 
 That's it. The agent clones the repo, installs GBrain, sets up the brain, loads 26 skills, and configures recurring jobs. You answer a few questions about API keys. ~30 minutes.
@@ -34,7 +34,7 @@ That's it. The agent clones the repo, installs GBrain, sets up the brain, loads 
 ### Standalone CLI (no agent)
 
 ```bash
-git clone https://github.com/garrytan/gbrain.git && cd gbrain && bun install && bun link
+git clone --branch codex/ollama-embedding-provider https://github.com/aaronkhawkins/gbrain.git && cd gbrain && bun install && bun link
 export GBRAIN_EMBEDDING_PROVIDER=ollama
 export GBRAIN_EMBEDDING_MODEL=qwen3-embedding:8b
 export GBRAIN_EMBEDDING_BASE_URL=http://127.0.0.1:11434
@@ -71,6 +71,13 @@ GBrain exposes 30+ MCP tools via stdio:
 ```
 
 Add to `~/.claude/server.json` (Claude Code), Settings > MCP Servers (Cursor), or your client's MCP config.
+
+To switch this fork back to OpenAI embeddings, set:
+
+```bash
+export GBRAIN_EMBEDDING_PROVIDER=openai
+export OPENAI_API_KEY=sk-...
+```
 
 ### Remote MCP (Claude Desktop, Cowork, Perplexity)
 
