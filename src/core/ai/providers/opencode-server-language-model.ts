@@ -51,6 +51,33 @@ interface OpenCodeMessageResponse {
   parts?: Array<{ type?: string; text?: string }>;
 }
 
+function responseText(payload: OpenCodeMessageResponse): string {
+  return payload.parts
+    ?.filter(part => part.type === 'text')
+    .map(part => part.text ?? '')
+    .join('\n')
+    .trim() ?? '';
+}
+
+function parseJsonText(rawText: string): unknown {
+  let text = rawText.trim();
+  if (!text) return undefined;
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  try { return JSON.parse(text); } catch { /* try extracting an embedded object below */ }
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) text = text.slice(firstBrace, lastBrace + 1);
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+function parseJsonResponse(payload: OpenCodeMessageResponse): unknown {
+  const value = payload.info?.structured ?? parseJsonText(responseText(payload));
+  if (value === undefined || value === null) {
+    throw new AITransientError('OpenCode server returned no JSON response.');
+  }
+  return value;
+}
+
 function normalizeModel(model: string): string {
   const prefix = 'opencode-server:';
   return model.startsWith(prefix) ? model.slice(prefix.length) : model;
@@ -165,16 +192,9 @@ function parseStructuredResult(
 ): OpenCodeStructuredResult {
   let value = payload.info?.structured;
   let rawText = '';
-  if (!value) {
-    rawText = payload.parts?.filter(part => part.type === 'text').map(part => part.text ?? '').join('\n').trim() ?? '';
-    let text = rawText;
-    if (text) {
-      text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-      const firstBrace = text.indexOf('{');
-      const lastBrace = text.lastIndexOf('}');
-      if (firstBrace >= 0 && lastBrace > firstBrace) text = text.slice(firstBrace, lastBrace + 1);
-      try { value = JSON.parse(text); } catch { /* handled below */ }
-    }
+  if (value === undefined || value === null) {
+    rawText = responseText(payload);
+    value = parseJsonText(rawText);
   }
 
   if (!value || typeof value !== 'object') {
@@ -282,6 +302,10 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
     warnings: never[];
   }> {
     const tools = functionTools(options.tools);
+    const jsonFormat = options.responseFormat?.type === 'json' ? options.responseFormat : undefined;
+    if (jsonFormat && tools.length > 0) {
+      throw new AIConfigError('OpenCode JSON response format cannot be combined with GBrain tools.');
+    }
     const knownToolNames = new Set(tools.map(tool => tool.name));
     const { systemText, conversationText } = renderOpenCodePrompt(options.prompt);
     const directory = encodeURIComponent(this.directory);
@@ -301,23 +325,35 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       sessionId = session.id;
 
       const messagePath = `/session/${encodeURIComponent(sessionId)}/message?directory=${directory}`;
+      const responseInstructions = jsonFormat
+        ? [
+            'Return only JSON that matches the requested schema.',
+            jsonFormat.description ?? '',
+          ].filter(Boolean).join('\n\n')
+        : toolInstructions(tools);
       const baseMessage = {
         model: { providerID: this.providerId, modelID: this.modelId },
         agent: this.agent,
-        system: [systemText, toolInstructions(tools)].filter(Boolean).join('\n\n'),
+        system: [systemText, responseInstructions].filter(Boolean).join('\n\n'),
         parts: [{ type: 'text', text: conversationText }],
       };
+      const requestedSchema = jsonFormat
+        ? (jsonFormat.schema ?? {})
+        : outputSchema(tools);
       let response = await this.request(messagePath, {
         method: 'POST',
         body: JSON.stringify({
           ...baseMessage,
-          format: { type: 'json_schema', schema: outputSchema(tools), retryCount: 2 },
+          format: { type: 'json_schema', schema: requestedSchema, retryCount: 2 },
         }),
       }, options.abortSignal);
       let payload = await response.json() as OpenCodeMessageResponse;
       let retryUsage: { input?: number; output?: number; total?: number } | undefined;
       if (this.isStructuredOutputError(payload)) {
         retryUsage = payload.info?.tokens;
+        const retryInstruction = jsonFormat
+          ? 'IMPORTANT: Return only the required JSON value. Do not return prose or markdown outside it.'
+          : 'IMPORTANT: Return only the required JSON object. Do not return prose or markdown outside it.';
         response = await this.request(messagePath, {
           method: 'POST',
           body: JSON.stringify({
@@ -325,7 +361,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
             format: { type: 'text' },
             parts: [{
               type: 'text',
-              text: `${conversationText}\n\nIMPORTANT: Return only the required JSON object. Do not return prose or markdown outside it.`,
+              text: `${conversationText}\n\n${retryInstruction}`,
             }],
           }),
         }, options.abortSignal);
@@ -333,6 +369,19 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       }
       if (payload.info?.error) {
         throw new AITransientError(`OpenCode assistant error: ${JSON.stringify(payload.info.error).slice(0, 500)}`);
+      }
+      const inputTokens = (payload.info?.tokens?.input ?? 0) + (retryUsage?.input ?? 0);
+      const outputTokens = (payload.info?.tokens?.output ?? 0) + (retryUsage?.output ?? 0);
+      const totalTokens = (payload.info?.tokens?.total ?? 0) + (retryUsage?.total ?? 0) ||
+        (inputTokens + outputTokens || undefined);
+
+      if (jsonFormat) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(parseJsonResponse(payload)) }],
+          finishReason: 'stop',
+          usage: { inputTokens, outputTokens, totalTokens },
+          warnings: [],
+        };
       }
       // Plain text is safe only when GBrain offered no tools. Tool-capable turns
       // must retain the validated JSON boundary so OpenCode cannot bypass the
@@ -356,10 +405,6 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       }
       if (content.length === 0) content.push({ type: 'text', text: '' });
 
-      const inputTokens = (payload.info?.tokens?.input ?? 0) + (retryUsage?.input ?? 0);
-      const outputTokens = (payload.info?.tokens?.output ?? 0) + (retryUsage?.output ?? 0);
-      const totalTokens = (payload.info?.tokens?.total ?? 0) + (retryUsage?.total ?? 0) ||
-        (inputTokens + outputTokens || undefined);
       return {
         content,
         finishReason: result.tool_calls.length > 0 ? 'tool-calls' : 'stop',

@@ -27,6 +27,8 @@ import { waitForCompletion, TimeoutError } from '../minions/wait-for-completion.
 import type { MinionJobInput, SubagentHandlerData } from '../minions/types.ts';
 import { serializeMarkdown } from '../markdown.ts';
 import type { Page, PageType } from '../types.ts';
+import { hasAnthropicKey } from '../ai/anthropic-key.ts';
+import { isAnthropicProvider, resolveModel } from '../model-config.ts';
 
 export interface PatternsPhaseOpts {
   brainDir: string;
@@ -64,7 +66,7 @@ export async function runPhasePatterns(
     }
 
     // Submit one subagent for pattern detection.
-    if (!process.env.ANTHROPIC_API_KEY) {
+    if (isAnthropicProvider(config.model) && !hasAnthropicKey()) {
       return skipped('no_api_key', 'ANTHROPIC_API_KEY unset; pattern detection skipped');
     }
 
@@ -143,7 +145,6 @@ async function loadPatternsConfig(engine: BrainEngine): Promise<PatternsConfig> 
   const lookbackStr = await engine.getConfig('dream.patterns.lookback_days');
   const minEvidenceStr = await engine.getConfig('dream.patterns.min_evidence');
   // v0.28: unified model resolution
-  const { resolveModel } = await import('../model-config.ts');
   const model = await resolveModel(engine, {
     configKey: 'models.dream.patterns',
     deprecatedConfigKey: 'dream.patterns.model',

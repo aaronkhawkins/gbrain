@@ -39,6 +39,7 @@ import { normalizeAliasList } from './search/alias-normalize.ts';
 import { isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { computeCorpusGeneration } from './contextual-retrieval-service.ts';
 import { runGuardrails } from './guardrails.ts';
+import { getChatModel } from './ai/gateway.ts';
 
 /**
  * v0.20.0 Cathedral II Layer 8 D2 — markdown fence extraction helper.
@@ -721,7 +722,7 @@ export async function importFromContent(
       ? null
       : computeCorpusGeneration({
           crMode: effectiveCRMode,
-          haikuModel: 'anthropic:claude-haiku-4-5-20251001',
+          haikuModel: getChatModel(),
         });
 
   // Transaction wraps all DB writes. Every per-page tx call carries the

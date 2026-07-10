@@ -63,6 +63,7 @@ describe('opencode-server recipe', () => {
     expect(recipe?.touchpoints.chat?.supports_tools).toBe(true);
     expect(recipe?.touchpoints.chat?.supports_subagent_loop).toBe(true);
     expect(recipe?.touchpoints.chat?.models).toContain('gpt-5.5');
+    expect(recipe?.touchpoints.expansion?.models).toContain('gpt-5.4-mini');
   });
 });
 
@@ -105,6 +106,63 @@ describe('OpenCodeServerLanguageModel', () => {
 
     expect(result.content).toEqual([{ type: 'text', text: 'Done.' }]);
     expect(result.finishReason).toBe('stop');
+  });
+
+  test('uses the caller JSON schema for AI SDK structured generation', async () => {
+    const fake = fakeServer({ queries: ['Swift development', 'iOS architecture'] });
+    const model = new OpenCodeServerLanguageModel('gpt-5.4-mini', { baseUrl: fake.baseUrl });
+    const schema = {
+      type: 'object',
+      properties: { queries: { type: 'array', items: { type: 'string' } } },
+      required: ['queries'],
+      additionalProperties: false,
+    } as const;
+
+    const result = await model.doGenerate({
+      ...options(),
+      responseFormat: { type: 'json', schema },
+    });
+
+    expect(result.content).toEqual([{
+      type: 'text',
+      text: '{"queries":["Swift development","iOS architecture"]}',
+    }]);
+    expect(result.finishReason).toBe('stop');
+    expect(fake.requests[1].body.format.schema).toEqual(schema);
+    expect(fake.requests[1].body.system).toContain('matches the requested schema');
+    expect(fake.requests[1].body.system).not.toContain('tool_calls');
+  });
+
+  test('preserves top-level arrays in plain-text JSON fallback', async () => {
+    let messageCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (request.method === 'POST' && path === '/session') return Response.json({ id: 'ses_test' });
+        if (request.method === 'POST' && path === '/session/ses_test/message') {
+          messageCalls++;
+          if (messageCalls === 1) {
+            return Response.json({ info: { error: { name: 'StructuredOutputError' } }, parts: [] });
+          }
+          return Response.json({ info: {}, parts: [{ type: 'text', text: '```json\n[{"name":"iOS"}]\n```' }] });
+        }
+        if (request.method === 'DELETE') return Response.json(true);
+        return new Response('not found', { status: 404 });
+      },
+    });
+    servers.push(server);
+    const model = new OpenCodeServerLanguageModel('gpt-5.4-mini', {
+      baseUrl: `http://127.0.0.1:${server.port}`,
+    });
+
+    const result = await model.doGenerate({
+      ...options(),
+      responseFormat: { type: 'json', schema: { type: 'array', items: { type: 'object' } } },
+    });
+
+    expect(result.content).toEqual([{ type: 'text', text: '[{"name":"iOS"}]' }]);
+    expect(messageCalls).toBe(2);
   });
 
   test('converts structured requests into native AI SDK tool calls', async () => {

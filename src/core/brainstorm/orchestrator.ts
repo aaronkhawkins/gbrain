@@ -32,7 +32,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import { chat as defaultChat, embedQuery, type ChatResult, type ChatOpts } from '../ai/gateway.ts';
+import { chat as defaultChat, embedQuery, getChatModel, type ChatResult, type ChatOpts } from '../ai/gateway.ts';
 import { hybridSearch, hybridSearchCached } from '../search/hybrid.ts';
 import { fetchFar, type CloseRef, type FarPage } from './domain-bank.ts';
 import { StructuredAgentError } from '../errors.ts';
@@ -538,7 +538,7 @@ async function _runBrainstormInner(
   const embedFn = opts.embedQueryFn ?? embedQuery;
 
   // ---- Phase 0: cost preview + TTY grace ----
-  const modelStr = opts.modelOverride ?? 'anthropic:claude-sonnet-4-6';
+  const modelStr = opts.modelOverride ?? getChatModel();
   const { aborted, estimate } = await previewCostAndWait({
     profile,
     model: modelStr,

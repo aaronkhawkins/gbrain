@@ -93,9 +93,10 @@ describe('classifyAgainstCandidates', () => {
     const result = await classifyAgainstCandidates(
       { fact: 'new', kind: 'fact', embedding: a },
       candidates,
+      { chatAvailable: false },
     );
-    // Without API key in test env, isAvailable('chat') is false → straight to
-    // cosine fallback. cos ≈ 0.93 ≥ 0.92 → duplicate.
+    // Force gateway-unavailable behavior so this unit test never depends on
+    // the developer machine's configured provider. cos ≈ 0.93 ≥ 0.92.
     expect(result.decision).toBe('duplicate');
     expect((result as { reason: string }).reason).toBe('cosine_fallback');
   });
@@ -105,9 +106,10 @@ describe('classifyAgainstCandidates', () => {
     const result = await classifyAgainstCandidates(
       { fact: 'new', kind: 'fact', embedding: null },
       candidates,
+      { chatAvailable: false },
     );
-    // Without API key in test env, isAvailable('chat') is false → cosine fallback path.
-    // newFact has no embedding so cosine fallback can't compute → independent.
+    // Force the cosine-fallback path. With no embedding it cannot compute a
+    // match, so the fact remains independent.
     expect(result.decision).toBe('independent');
     expect((result as { reason: string }).reason).toBe('cosine_fallback');
   });

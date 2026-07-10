@@ -41,9 +41,6 @@ import { sanitizeSynopsis } from './embedding-context.ts';
  */
 const HAIKU_MAX_TOKENS = 200;
 
-/** Default model when caller doesn't override. Resolves through the gateway. */
-const DEFAULT_SYNOPSIS_MODEL = 'anthropic:claude-haiku-4-5-20251001';
-
 /**
  * Synopsis prompt version. Folded into corpus_generation so prompt edits
  * invalidate prior embeddings via the v0.40.3.0 query_cache.page_generations
@@ -120,7 +117,7 @@ export async function generatePerChunkSynopsis(
   const userPrompt = buildUserPrompt(args.pageTitle, args.documentText, args.chunkText);
 
   const chatOpts: ChatOpts = {
-    model: args.model ?? DEFAULT_SYNOPSIS_MODEL,
+    model: args.model,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: HAIKU_MAX_TOKENS,

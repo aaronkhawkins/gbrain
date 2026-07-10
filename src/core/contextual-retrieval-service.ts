@@ -43,6 +43,7 @@ import { createHash } from 'crypto';
 import * as fs from 'node:fs';
 import { embedBatch } from './embedding.ts';
 import { resolveContextualRetrievalMode } from './contextual-retrieval-resolver.ts';
+import { getChatModel } from './ai/gateway.ts';
 import {
   buildContextualPrefix,
   extractFirstTwoSentences,
@@ -200,8 +201,6 @@ export interface ReembedPageArgs {
   releaseSynopsisLease?: () => Promise<void>;
 }
 
-const DEFAULT_HAIKU_MODEL = 'anthropic:claude-haiku-4-5-20251001';
-
 /**
  * Re-embed one page through the active CR mode. Implements the D26 P0-2
  * two-phase build pattern.
@@ -245,6 +244,7 @@ export async function reembedPageWithContextualRetrieval(
     return { kind: 'skipped', reason: 'mode_none' };
   }
 
+  const synopsisModel = args.haikuModel ?? getChatModel();
   const chunks = await args.engine.getChunks(args.pageSlug, { sourceId: args.sourceId });
   if (chunks.length === 0) {
     // No chunks but page exists (frontmatter-only or empty). Stamp the
@@ -253,7 +253,7 @@ export async function reembedPageWithContextualRetrieval(
       args.pageSlug,
       args.sourceId,
       resolution.mode,
-      computeCorpusGeneration({ crMode: resolution.mode, haikuModel: args.haikuModel ?? DEFAULT_HAIKU_MODEL }),
+      computeCorpusGeneration({ crMode: resolution.mode, haikuModel: synopsisModel }),
     );
     return { kind: 'skipped', reason: 'no_chunks' };
   }
@@ -264,7 +264,7 @@ export async function reembedPageWithContextualRetrieval(
   // fall-back path is the D14 page-level consistency guarantee: a
   // single bad chunk demotes the whole page to title-only so all
   // chunks on the page share the same wrapper shape.
-  const haikuModel = args.haikuModel ?? DEFAULT_HAIKU_MODEL;
+  const haikuModel = synopsisModel;
   let attemptMode: CRMode = resolution.mode;
   let fallbackReason: SynopsisFailureKind | null = null;
 

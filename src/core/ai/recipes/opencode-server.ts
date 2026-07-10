@@ -22,11 +22,15 @@ export const opencodeServer: Recipe = {
   },
   touchpoints: {
     chat: {
-      models: ['gpt-5.5', 'gpt-5.5-fast', 'gpt-5.4'],
+      models: ['gpt-5.5', 'gpt-5.5-fast', 'gpt-5.4', 'gpt-5.4-mini'],
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,
       max_context_tokens: 200000,
+      price_last_verified: '2026-07-10',
+    },
+    expansion: {
+      models: ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'],
       price_last_verified: '2026-07-10',
     },
   },
