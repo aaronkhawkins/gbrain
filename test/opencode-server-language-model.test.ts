@@ -165,6 +165,39 @@ describe('OpenCodeServerLanguageModel', () => {
     expect(messageCalls).toBe(2);
   });
 
+  test('recovers OpenAI OAuth output_text when OpenCode flags structured output', async () => {
+    let messageCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (request.method === 'POST' && path === '/session') return Response.json({ id: 'ses_test' });
+        if (request.method === 'POST' && path === '/session/ses_test/message') {
+          messageCalls++;
+          return Response.json({
+            info: {
+              error: { name: 'StructuredOutputError' },
+              tokens: { input: 176, output: 29, total: 205 },
+            },
+            parts: [{ type: 'text', text: '{"output_text":"READY"}' }],
+          });
+        }
+        if (request.method === 'DELETE') return Response.json(true);
+        return new Response('not found', { status: 404 });
+      },
+    });
+    servers.push(server);
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', {
+      baseUrl: `http://127.0.0.1:${server.port}`,
+    });
+
+    const result = await model.doGenerate(options());
+
+    expect(result.content).toEqual([{ type: 'text', text: 'READY' }]);
+    expect(result.usage).toEqual({ inputTokens: 176, outputTokens: 29, totalTokens: 205 });
+    expect(messageCalls).toBe(1);
+  });
+
   test('converts structured requests into native AI SDK tool calls', async () => {
     const fake = fakeServer({
       text: '',
@@ -217,7 +250,7 @@ describe('OpenCodeServerLanguageModel', () => {
     }]);
   });
 
-  test('falls back to strict text JSON when a model lacks structured output', async () => {
+  test('falls back to strict text JSON on tool-capable turns', async () => {
     let messageCalls = 0;
     const server = Bun.serve({
       port: 0,
@@ -252,7 +285,11 @@ describe('OpenCodeServerLanguageModel', () => {
       baseUrl: `http://127.0.0.1:${server.port}`,
     });
 
-    const result = await model.doGenerate(options());
+    const result = await model.doGenerate(options([{
+      type: 'function',
+      name: 'brain_search',
+      inputSchema: { type: 'object', properties: {} },
+    }]));
 
     expect(result.content).toEqual([{ type: 'text', text: 'READY' }]);
     expect(result.usage).toEqual({ inputTokens: 30, outputTokens: 6, totalTokens: 36 });

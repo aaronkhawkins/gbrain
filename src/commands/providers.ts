@@ -9,8 +9,9 @@ import { listRecipes, getRecipe } from '../core/ai/recipes/index.ts';
 import { configureGateway, embedOne, isAvailable as gwIsAvailable, chat as gwChat } from '../core/ai/gateway.ts';
 import { probeOllama, probeLMStudio } from '../core/ai/probes.ts';
 import { loadConfig } from '../core/config.ts';
+import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
-import type { Recipe } from '../core/ai/types.ts';
+import type { AIGatewayConfig, Recipe } from '../core/ai/types.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -31,17 +32,9 @@ interface ProviderOption {
   cons: string[];
 }
 
-function configureFromEnv(): void {
+function gatewayConfigFromEnv(): AIGatewayConfig {
   const config = loadConfig();
-  configureGateway({
-    embedding_model: config?.embedding_model,
-    embedding_dimensions: config?.embedding_dimensions,
-    expansion_model: config?.expansion_model,
-    chat_model: config?.chat_model,
-    chat_fallback_chain: config?.chat_fallback_chain,
-    base_urls: config?.provider_base_urls,
-    env: { ...process.env },
-  });
+  return config ? buildGatewayConfig(config) : { env: { ...process.env } };
 }
 
 export function envReady(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -89,7 +82,7 @@ export function formatRecipeTable(recipes: Recipe[], env: NodeJS.ProcessEnv = pr
 }
 
 export async function runProviders(subcommand: string | undefined, args: string[]): Promise<void> {
-  configureFromEnv();
+  configureGateway(gatewayConfigFromEnv());
 
   switch (subcommand) {
     case 'list':
@@ -183,14 +176,14 @@ async function runTest(args: string[]): Promise<void> {
     if (tpArg === 'embedding') {
       const dims = recipe?.touchpoints.embedding?.default_dims ?? 1536;
       configureGateway({
+        ...gatewayConfigFromEnv(),
         embedding_model: modelArg,
         embedding_dimensions: dims,
-        env: { ...process.env },
       });
     } else {
       configureGateway({
+        ...gatewayConfigFromEnv(),
         chat_model: modelArg,
-        env: { ...process.env },
       });
     }
     void modelId; // intentionally unused but preserved for readability
@@ -209,10 +202,21 @@ async function runTest(args: string[]): Promise<void> {
       const ms = Date.now() - start;
       console.log(`  ✓ ${ms}ms, ${v.length} dims`);
     } else {
-      const result = await gwChat({
-        messages: [{ role: 'user', content: 'Reply with just the word: pong' }],
-        maxTokens: 16,
+      let result = await gwChat({
+        messages: [{ role: 'user', content: 'This is a connectivity test. In your final answer, write READY. Do not call tools.' }],
+        // Structured transports need enough headroom for their JSON envelope
+        // even when the visible response is one word.
+        maxTokens: 128,
       });
+      if (!result.text.trim()) {
+        result = await gwChat({
+          messages: [{ role: 'user', content: 'Connectivity test: provide a non-empty final response containing READY.' }],
+          maxTokens: 128,
+        });
+      }
+      if (!result.text.trim()) {
+        throw new AITransientError('Chat provider returned empty smoke-test responses twice.');
+      }
       const ms = Date.now() - start;
       const preview = (result.text || '<empty>').replace(/\s+/g, ' ').slice(0, 80);
       console.log(`  ✓ ${ms}ms · model=${result.model} · stop=${result.stopReason} · in=${result.usage.input_tokens}/out=${result.usage.output_tokens} · "${preview}"`);

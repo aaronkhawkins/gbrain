@@ -202,7 +202,11 @@ function parseStructuredResult(
     throw new AITransientError('OpenCode server returned no structured response.');
   }
   const obj = value as Record<string, unknown>;
-  const text = typeof obj.text === 'string' ? obj.text : '';
+  const text = typeof obj.text === 'string'
+    ? obj.text
+    : typeof obj.output_text === 'string'
+      ? obj.output_text
+      : '';
   if (!Array.isArray(obj.tool_calls)) {
     if (allowPlainText) return { text, tool_calls: [] };
     throw new AITransientError('OpenCode structured response omitted tool_calls.');
@@ -349,7 +353,13 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       }, options.abortSignal);
       let payload = await response.json() as OpenCodeMessageResponse;
       let retryUsage: { input?: number; output?: number; total?: number } | undefined;
-      if (this.isStructuredOutputError(payload)) {
+      let recoveredToolFreeText = false;
+      if (this.isStructuredOutputError(payload) && !jsonFormat && tools.length === 0) {
+        try {
+          recoveredToolFreeText = Boolean(parseStructuredResult(payload, true).text);
+        } catch { /* retry below */ }
+      }
+      if (this.isStructuredOutputError(payload) && !recoveredToolFreeText) {
         retryUsage = payload.info?.tokens;
         const retryInstruction = jsonFormat
           ? 'IMPORTANT: Return only the required JSON value. Do not return prose or markdown outside it.'
@@ -367,7 +377,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
         }, options.abortSignal);
         payload = await response.json() as OpenCodeMessageResponse;
       }
-      if (payload.info?.error) {
+      if (payload.info?.error && !recoveredToolFreeText) {
         throw new AITransientError(`OpenCode assistant error: ${JSON.stringify(payload.info.error).slice(0, 500)}`);
       }
       const inputTokens = (payload.info?.tokens?.input ?? 0) + (retryUsage?.input ?? 0);
