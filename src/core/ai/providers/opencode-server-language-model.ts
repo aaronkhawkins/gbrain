@@ -126,6 +126,7 @@ function toolInstructions(tools: LanguageModelV2FunctionTool[]): string {
     'GBrain owns tool execution. Do not use any OpenCode tools.',
     'Return only one JSON object with exactly these fields: text (string) and tool_calls (array).',
     'If a GBrain tool is required, return it in tool_calls and leave text empty.',
+    'If the conversation already contains a matching [tool_result ...], use it to answer and do not request that tool again.',
     'If the task is complete, return prose in text and an empty tool_calls array.',
     'Available GBrain tools:',
     JSON.stringify(specs),
@@ -183,6 +184,7 @@ function parseStructuredResult(
   const obj = value as Record<string, unknown>;
   const text = typeof obj.text === 'string' ? obj.text : '';
   if (!Array.isArray(obj.tool_calls)) {
+    if (allowPlainText) return { text, tool_calls: [] };
     throw new AITransientError('OpenCode structured response omitted tool_calls.');
   }
   const toolCalls = obj.tool_calls.map((entry, index) => {
@@ -190,13 +192,17 @@ function parseStructuredResult(
       throw new AITransientError(`OpenCode returned malformed tool call at index ${index}.`);
     }
     const call = entry as Record<string, unknown>;
-    if (typeof call.name !== 'string' || !call.input || typeof call.input !== 'object' || Array.isArray(call.input)) {
+    let input = call.input ?? call.arguments;
+    if (typeof input === 'string') {
+      try { input = JSON.parse(input); } catch { /* rejected below */ }
+    }
+    if (typeof call.name !== 'string' || !input || typeof input !== 'object' || Array.isArray(input)) {
       throw new AITransientError(`OpenCode returned malformed tool call at index ${index}.`);
     }
     return {
       id: typeof call.id === 'string' && call.id ? call.id : `toolu_opencode_${index}`,
       name: call.name,
-      input: call.input as Record<string, unknown>,
+      input: input as Record<string, unknown>,
     };
   });
   return { text, tool_calls: toolCalls };

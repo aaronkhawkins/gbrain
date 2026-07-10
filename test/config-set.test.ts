@@ -27,6 +27,7 @@ describe('KNOWN_CONFIG_KEYS', () => {
   test('contains the models-tier keys (v0.31.12)', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('models.default');
     expect(KNOWN_CONFIG_KEYS).toContain('models.tier.subagent');
+    expect(KNOWN_CONFIG_KEYS).toContain('agent.use_gateway_loop');
   });
 
   test('contains the spend-control keys (v0.42.42.0, #2139) — no --force archaeology', () => {

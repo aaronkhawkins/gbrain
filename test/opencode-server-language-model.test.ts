@@ -97,6 +97,16 @@ describe('OpenCodeServerLanguageModel', () => {
     expect(fake.requests[1].body.format.type).toBe('json_schema');
   });
 
+  test('normalizes an omitted tool_calls field only when no tools were offered', async () => {
+    const fake = fakeServer({ text: 'Done.' });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+
+    const result = await model.doGenerate(options());
+
+    expect(result.content).toEqual([{ type: 'text', text: 'Done.' }]);
+    expect(result.finishReason).toBe('stop');
+  });
+
   test('converts structured requests into native AI SDK tool calls', async () => {
     const fake = fakeServer({
       text: '',
@@ -125,6 +135,28 @@ describe('OpenCodeServerLanguageModel', () => {
     }]);
     expect(fake.requests[1].body.format.schema.properties.tool_calls.items.properties.name.enum)
       .toEqual(['brain_search']);
+    expect(fake.requests[1].body.system).toContain('do not request that tool again');
+  });
+
+  test('accepts OpenAI OAuth tool arguments as an input alias', async () => {
+    const fake = fakeServer({
+      text: '',
+      tool_calls: [{ name: 'brain_search', arguments: { query: 'iOS' } }],
+    });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+
+    const result = await model.doGenerate(options([{
+      type: 'function',
+      name: 'brain_search',
+      inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+    }]));
+
+    expect(result.content).toEqual([{
+      type: 'tool-call',
+      toolCallId: 'toolu_opencode_0',
+      toolName: 'brain_search',
+      input: '{"query":"iOS"}',
+    }]);
   });
 
   test('falls back to strict text JSON when a model lacks structured output', async () => {
