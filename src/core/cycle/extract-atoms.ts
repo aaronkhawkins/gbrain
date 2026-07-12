@@ -141,11 +141,16 @@ quote, or short essay angle. Each atom must:
   - Have a clear point (not just descriptive)
   - Be specific (not a generic platitude)
 
-Output a JSON array of atoms (1-3 per transcript, never more than 3).
-Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
-source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
-(0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
-practical, controversial), concepts (1-5 specific durable topic names)}.
+Output 1-3 labeled records, never more than 3. Separate records with a line
+containing only --- and use exactly these labels, one value per line:
+TITLE: ≤80 chars
+TYPE: one allowed atom type
+BODY: 2-4 sentences
+SOURCE_QUOTE: optional verbatim quote ≤200 chars
+LESSON: optional one sentence
+VIRALITY_SCORE: optional integer 0-100
+EMOTIONAL_REGISTER: optional shocking, inspiring, funny, sobering, practical, or controversial
+CONCEPTS: 1-5 specific durable topic names separated by semicolons
 
 atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
 
@@ -661,7 +666,7 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
 
   // Find the first JSON array bracket.
   const arrayStart = cleaned.indexOf('[');
-  if (arrayStart === -1) return [];
+  if (arrayStart === -1) return parseLabeledAtomsResponse(raw);
   cleaned = cleaned.slice(arrayStart);
 
   let parsed: unknown;
@@ -670,15 +675,15 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
   } catch {
     // Try trimming back from the end to recover from trailing prose.
     const arrayEnd = cleaned.lastIndexOf(']');
-    if (arrayEnd === -1) return [];
+    if (arrayEnd === -1) return parseLabeledAtomsResponse(raw);
     try {
       parsed = JSON.parse(cleaned.slice(0, arrayEnd + 1));
     } catch {
-      return [];
+      return parseLabeledAtomsResponse(raw);
     }
   }
 
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return parseLabeledAtomsResponse(raw);
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {
@@ -704,6 +709,39 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
       emotional_register:
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
       concepts: normalizeConceptRefs(obj.concepts),
+    });
+  }
+  return atoms;
+}
+
+function parseLabeledAtomsResponse(raw: string): ExtractedAtom[] {
+  const records = raw
+    .trim()
+    .split(/^---\s*$/m)
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const atoms: ExtractedAtom[] = [];
+  for (const record of records) {
+    const fields = new Map<string, string>();
+    for (const line of record.split('\n')) {
+      const match = line.match(/^([A-Z_]+):\s*(.*)$/);
+      if (match) fields.set(match[1]!, match[2]!.trim());
+    }
+    const title = fields.get('TITLE');
+    const atomType = fields.get('TYPE');
+    const body = fields.get('BODY');
+    if (!title || !body || !atomType || !ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) continue;
+    const score = Number(fields.get('VIRALITY_SCORE'));
+    atoms.push({
+      title: title.slice(0, 80),
+      atom_type: atomType as typeof ATOM_TYPES[number],
+      body,
+      ...(fields.get('SOURCE_QUOTE') && { source_quote: fields.get('SOURCE_QUOTE')!.slice(0, 200) }),
+      ...(fields.get('LESSON') && { lesson: fields.get('LESSON')! }),
+      ...(Number.isFinite(score) && score >= 0 && score <= 100 && { virality_score: score }),
+      ...(fields.get('EMOTIONAL_REGISTER') && { emotional_register: fields.get('EMOTIONAL_REGISTER')! }),
+      concepts: normalizeConceptRefs(fields.get('CONCEPTS')?.split(';')),
     });
   }
   return atoms;

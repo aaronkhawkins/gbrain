@@ -90,6 +90,7 @@ describe('OpenCodeServerLanguageModel', () => {
       'POST /session/ses_test/message',
       'DELETE /session/ses_test',
     ]);
+    expect(fake.requests[1].body.format).toEqual({ type: 'text' });
     expect(fake.requests[0].body.permission).toEqual([
       { permission: '*', pattern: '*', action: 'deny' },
     ]);
@@ -196,6 +197,34 @@ describe('OpenCodeServerLanguageModel', () => {
     expect(result.content).toEqual([{ type: 'text', text: 'READY' }]);
     expect(result.usage).toEqual({ inputTokens: 176, outputTokens: 29, totalTokens: 205 });
     expect(messageCalls).toBe(1);
+  });
+
+  test('retries top-level OpenCode structured errors as plain text', async () => {
+    let messageCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        if (request.method === 'POST' && url.pathname === '/session') return Response.json({ id: 'ses_top_error' });
+        if (request.method === 'POST' && url.pathname.includes('/message')) {
+          messageCalls++;
+          if (messageCalls === 1) {
+            return Response.json({ name: 'UnknownError', data: { message: 'structured format failed', ref: 'err_1' } });
+          }
+          return Response.json({ info: { tokens: { input: 2, output: 3 } }, parts: [{ type: 'text', text: '[{"title":"Recovered"}]' }] });
+        }
+        if (request.method === 'DELETE') return Response.json(true);
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: `http://127.0.0.1:${server.port}` });
+      const result = await model.doGenerate(options());
+      expect(result.content).toEqual([{ type: 'text', text: '[{"title":"Recovered"}]' }]);
+      expect(messageCalls).toBe(2);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test('converts structured requests into native AI SDK tool calls', async () => {

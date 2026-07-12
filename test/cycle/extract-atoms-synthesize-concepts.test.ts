@@ -124,6 +124,29 @@ describe('v0.41 T5: parseAtomsResponse', () => {
     expect(atom).toBeDefined();
     expect(atom.concepts).toBeUndefined();
   });
+
+  test('parses OpenCode-compatible labeled atom records', () => {
+    const atoms = parseAtomsResponse(`TITLE: Declarative state simplifies UI updates
+TYPE: insight
+BODY: SwiftUI derives views from state and refreshes them automatically.
+SOURCE_QUOTE: State drives the view.
+LESSON: Prefer state-driven rendering.
+VIRALITY_SCORE: 72
+EMOTIONAL_REGISTER: practical
+CONCEPTS: SwiftUI; Declarative UI; State-driven rendering
+---
+TITLE: A second durable idea
+TYPE: framework
+BODY: Separate domain state from view composition.`);
+    expect(atoms).toHaveLength(2);
+    expect(atoms[0]).toMatchObject({
+      title: 'Declarative state simplifies UI updates',
+      atom_type: 'insight',
+      virality_score: 72,
+      concepts: ['swiftui', 'declarative-ui', 'state-driven-rendering'],
+    });
+    expect(atoms[1].atom_type).toBe('framework');
+  });
 });
 
 describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {

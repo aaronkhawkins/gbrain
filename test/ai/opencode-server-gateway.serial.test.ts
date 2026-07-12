@@ -90,3 +90,41 @@ describe('OpenCode server through the real GBrain gateway loop', () => {
     expect(deletedSessions).toBe(2);
   });
 });
+
+test('uses assistant text parts when a tool-free structured wrapper is empty', async () => {
+  let deleted = false;
+  const fallbackServer = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === 'POST' && url.pathname === '/session') return Response.json({ id: 'ses_fallback' });
+      if (request.method === 'POST' && url.pathname.includes('/message')) {
+        return Response.json({
+          info: { structured: { text: '', tool_calls: [] }, tokens: { input: 5, output: 4 } },
+          parts: [{ type: 'text', text: '[{"title":"Native atom"}]' }],
+        });
+      }
+      if (request.method === 'DELETE') {
+        deleted = true;
+        return Response.json(true);
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  configureGateway({
+    chat_model: 'opencode-server:gpt-5.5',
+    env: { GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${fallbackServer.port}` },
+  });
+  try {
+    const { chat } = await import('../../src/core/ai/gateway.ts');
+    const result = await chat({ messages: [{ role: 'user', content: 'Return JSON' }] });
+    expect(result.text).toBe('[{"title":"Native atom"}]');
+    expect(deleted).toBe(true);
+  } finally {
+    fallbackServer.stop(true);
+    configureGateway({
+      chat_model: 'opencode-server:gpt-5.5',
+      env: { GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${server.port}` },
+    });
+  }
+});

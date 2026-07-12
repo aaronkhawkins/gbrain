@@ -43,6 +43,8 @@ interface OpenCodeStructuredResult {
 }
 
 interface OpenCodeMessageResponse {
+  name?: string;
+  data?: { message?: string; ref?: string };
   info?: {
     structured?: unknown;
     error?: unknown;
@@ -229,7 +231,12 @@ function parseStructuredResult(
       input: input as Record<string, unknown>,
     };
   });
-  return { text, tool_calls: toolCalls };
+  // Some OpenCode/OpenAI model combinations satisfy the wrapper schema with
+  // an empty `text` field while placing the actual assistant answer in the
+  // normal text parts. Prefer that answer only for tool-free completions;
+  // tool-capable turns must retain the validated structured boundary.
+  const partText = toolCalls.length === 0 ? responseText(payload) : '';
+  return { text: text || partText, tool_calls: toolCalls };
 }
 
 export class OpenCodeServerLanguageModel implements LanguageModelV2 {
@@ -276,6 +283,13 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       typeof error === 'object' &&
       (error as Record<string, unknown>).name === 'StructuredOutputError',
     );
+  }
+
+  private topLevelError(payload: OpenCodeMessageResponse): string | null {
+    if (!payload.name && !payload.data?.message) return null;
+    return [payload.name, payload.data?.message, payload.data?.ref]
+      .filter(Boolean)
+      .join(': ');
   }
 
   private async request(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -348,7 +362,9 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
         method: 'POST',
         body: JSON.stringify({
           ...baseMessage,
-          format: { type: 'json_schema', schema: requestedSchema, retryCount: 2 },
+          format: !jsonFormat && tools.length === 0
+            ? { type: 'text' }
+            : { type: 'json_schema', schema: requestedSchema, retryCount: 2 },
         }),
       }, options.abortSignal);
       let payload = await response.json() as OpenCodeMessageResponse;
@@ -359,7 +375,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
           recoveredToolFreeText = Boolean(parseStructuredResult(payload, true).text);
         } catch { /* retry below */ }
       }
-      if (this.isStructuredOutputError(payload) && !recoveredToolFreeText) {
+      if ((this.isStructuredOutputError(payload) || this.topLevelError(payload)) && !recoveredToolFreeText) {
         retryUsage = payload.info?.tokens;
         const retryInstruction = jsonFormat
           ? 'IMPORTANT: Return only the required JSON value. Do not return prose or markdown outside it.'
@@ -377,8 +393,9 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
         }, options.abortSignal);
         payload = await response.json() as OpenCodeMessageResponse;
       }
-      if (payload.info?.error && !recoveredToolFreeText) {
-        throw new AITransientError(`OpenCode assistant error: ${JSON.stringify(payload.info.error).slice(0, 500)}`);
+      if ((payload.info?.error || this.topLevelError(payload)) && !recoveredToolFreeText) {
+        const error = payload.info?.error ?? this.topLevelError(payload);
+        throw new AITransientError(`OpenCode assistant error: ${JSON.stringify(error).slice(0, 500)}`);
       }
       const inputTokens = (payload.info?.tokens?.input ?? 0) + (retryUsage?.input ?? 0);
       const outputTokens = (payload.info?.tokens?.output ?? 0) + (retryUsage?.output ?? 0);
