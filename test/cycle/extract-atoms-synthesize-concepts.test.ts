@@ -101,6 +101,29 @@ describe('v0.41 T5: parseAtomsResponse', () => {
     expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":-5}]`)[0].virality_score).toBeUndefined();
     expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":75}]`)[0].virality_score).toBe(75);
   });
+
+  test('normalizes, deduplicates, and caps concept references', () => {
+    const raw = JSON.stringify([{
+      title: 'Conceptful atom', atom_type: 'insight', body: 'body',
+      concepts: [' Agent Workflows ', 'agent workflows', 'iOS Development!', '', 'AI',
+        'Enterprise Architecture', 'Knowledge Graphs', 'Local Models', 'ignored sixth'],
+    }]);
+    expect(parseAtomsResponse(raw)[0].concepts).toEqual([
+      'agent-workflows',
+      'ios-development',
+      'enterprise-architecture',
+      'knowledge-graphs',
+      'local-models',
+    ]);
+  });
+
+  test('ignores malformed concepts without rejecting a valid atom', () => {
+    const atom = parseAtomsResponse(
+      `[{"title":"T","atom_type":"insight","body":"b","concepts":"not-an-array"}]`,
+    )[0];
+    expect(atom).toBeDefined();
+    expect(atom.concepts).toBeUndefined();
+  });
 });
 
 describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
@@ -132,6 +155,19 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       `SELECT slug, type FROM pages WHERE type = 'atom'`,
     );
     expect(rows.length).toBe(2);
+  });
+
+  test('persists normalized concepts in atom frontmatter', async () => {
+    const chat = stubChat(`[{"title":"Native bookmark concepts","atom_type":"insight","body":"body","concepts":["Agent Workflows","iOS Development"]}]`);
+    await runPhaseExtractAtoms(engine, {
+      _transcripts: [],
+      _pages: [{ slug: 'media/x/bookmark', content: 'source', contentHash: 'bookmark-hash' }],
+      _chat: chat,
+    });
+    const rows = await engine.executeRaw<{ frontmatter: { concepts?: string[] } }>(
+      `SELECT frontmatter FROM pages WHERE type = 'atom'`,
+    );
+    expect(rows[0].frontmatter.concepts).toEqual(['agent-workflows', 'ios-development']);
   });
 
   test('dry-run counts but does NOT write', async () => {

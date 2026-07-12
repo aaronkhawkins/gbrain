@@ -76,6 +76,26 @@ describe('countExtractAtomsBacklog (issue #1678)', () => {
     });
     expect(await countExtractAtomsBacklog(engine)).toBe(0);
   });
+
+  it('counts marked media with the same eligibility rule as discovery', async () => {
+    await engine.putPage('media/x/bookmark', {
+      type: 'media', title: 'bookmark', compiled_truth: BODY,
+      frontmatter: {
+        intake_adapter: 'birdclaw-bookmarks-to-brain',
+        content_kind: 'x-bookmark',
+        concept_synthesis_candidate: true,
+      },
+    });
+    await engine.putPage('media/x/unmarked', {
+      type: 'media', title: 'unmarked', compiled_truth: BODY,
+    });
+    await engine.putPage('media/x/untrusted-opt-in', {
+      type: 'media', title: 'untrusted', compiled_truth: BODY,
+      frontmatter: { concept_synthesis_candidate: true },
+    });
+    expect(await countExtractAtomsBacklog(engine)).toBe(1);
+    expect(await countExtractAtomsBacklog(engine, 'default')).toBe(1);
+  });
 });
 
 describe('computeExtractAtomsBacklogCheck (issue #1678)', () => {

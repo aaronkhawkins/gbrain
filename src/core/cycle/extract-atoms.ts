@@ -66,10 +66,19 @@ const ATOM_TYPES = [
 // active pack manifest (symmetric with the existing
 // src/core/facts/eligibility.ts:49 TODO).
 const EXTRACTABLE_PAGE_TYPES = [
-  'meeting', 'source', 'article', 'video', 'book', 'original',
+  'meeting', 'source', 'article', 'video', 'book', 'original', 'media',
 ] as const;
+const MEDIA_EXTRACTION_PREDICATE = `(p.type <> 'media' OR (
+  p.frontmatter->>'intake_adapter' = 'birdclaw-bookmarks-to-brain'
+  AND p.frontmatter->>'content_kind' = 'x-bookmark'
+  AND lower(COALESCE(p.frontmatter->>'concept_synthesis_candidate', '')) = 'true'
+))`;
 const PAGE_DISCOVERY_BUDGET = 50;
 const MIN_PAGE_CHARS_FOR_EXTRACTION = 500;
+const MAX_CONCEPT_REFS = 5;
+const GENERIC_CONCEPT_REFS = new Set([
+  'ai', 'artificial-intelligence', 'technology', 'software', 'innovation',
+]);
 
 export interface ExtractAtomsOpts {
   brainDir?: string;
@@ -120,9 +129,10 @@ interface ExtractedAtom {
   lesson?: string;
   virality_score?: number;
   emotional_register?: string;
+  concepts?: string[];
 }
 
-const EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
+const EXTRACT_PROMPT = `You extract atomic content nuggets from a research source.
 
 An atom is a single-source, self-contained idea that could become a tweet,
 quote, or short essay angle. Each atom must:
@@ -134,7 +144,7 @@ Output a JSON array of atoms (1-3 per transcript, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
 source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
 (0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
-practical, controversial)}.
+practical, controversial), concepts (1-5 specific durable topic names)}.
 
 atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
 
@@ -176,6 +186,7 @@ export async function discoverExtractablePages(
     FROM pages p
     WHERE p.source_id = $1
       AND p.type = ANY($2::text[])
+      AND ${MEDIA_EXTRACTION_PREDICATE}
       AND p.deleted_at IS NULL
       AND p.content_hash IS NOT NULL
       AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -248,6 +259,7 @@ export async function countExtractAtomsBacklog(
       ? `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.source_id = $1
            AND p.type = ANY($2::text[])
+           AND ${MEDIA_EXTRACTION_PREDICATE}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -261,6 +273,7 @@ export async function countExtractAtomsBacklog(
            )`
       : `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.type = ANY($1::text[])
+           AND ${MEDIA_EXTRACTION_PREDICATE}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -540,6 +553,7 @@ export async function runPhaseExtractAtoms(
                 ...(atom.lesson && { lesson: atom.lesson }),
                 ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
                 ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
+                ...(atom.concepts && { concepts: atom.concepts }),
                 extracted_at: new Date().toISOString(),
                 extracted_by: 'extract_atoms-v0.41.2.1',
               },
@@ -682,9 +696,25 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
           : undefined,
       emotional_register:
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
+      concepts: normalizeConceptRefs(obj.concepts),
     });
   }
   return atoms;
+}
+
+function normalizeConceptRefs(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const concepts: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const slug = slugify(item);
+    if (!slug || GENERIC_CONCEPT_REFS.has(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    concepts.push(slug);
+    if (concepts.length === MAX_CONCEPT_REFS) break;
+  }
+  return concepts.length > 0 ? concepts : undefined;
 }
 
 function todayDate(): string {

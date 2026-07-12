@@ -127,6 +127,39 @@ describe('v0.41.2.1: discoverExtractablePages SQL contract', () => {
     ]);
   });
 
+  test('admits only explicitly marked media pages', async () => {
+    await seedPage({
+      slug: 'media/x/bookmark',
+      type: 'media',
+      frontmatter: {
+        intake_adapter: 'birdclaw-bookmarks-to-brain',
+        content_kind: 'x-bookmark',
+        concept_synthesis_candidate: true,
+      },
+    });
+    await seedPage({ slug: 'media/x/unmarked', type: 'media' });
+    await seedPage({
+      slug: 'media/x/string-marked',
+      type: 'media',
+      frontmatter: {
+        intake_adapter: 'birdclaw-bookmarks-to-brain',
+        content_kind: 'x-bookmark',
+        concept_synthesis_candidate: 'true',
+      },
+    });
+    await seedPage({
+      slug: 'media/x/untrusted-opt-in',
+      type: 'media',
+      frontmatter: { concept_synthesis_candidate: true },
+    });
+
+    const discovered = await discoverExtractablePages(engine, 'default');
+    expect(discovered.map((d) => d.slug).sort()).toEqual([
+      'media/x/bookmark',
+      'media/x/string-marked',
+    ]);
+  });
+
   test('NOT EXISTS subquery skips pages whose source_hash has existing atoms', async () => {
     // Page content_hash is 20 chars; substring(from 1 for 16) yields the
     // first 16 chars. The seeded atom must carry exactly those 16 chars
