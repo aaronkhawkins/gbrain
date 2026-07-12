@@ -181,6 +181,7 @@ describeE2E('E2E: gbrain dream CLI against real Postgres', () => {
       const concept = await engine.getPage('concepts/native-bookmark-research');
       expect(concept).not.toBeNull();
       expect(concept?.compiled_truth).toContain('## Supporting research');
+      expect(concept?.compiled_truth).toContain('[[default:media/x/bookmark-one]]');
       const supporting = concept?.frontmatter.supporting_sources as Array<{ slug: string }>;
       expect(supporting.map((source) => source.slug)).toEqual([
         'media/x/bookmark-one',

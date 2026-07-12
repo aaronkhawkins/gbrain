@@ -170,6 +170,27 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(rows[0].frontmatter.concepts).toEqual(['agent-workflows', 'ios-development']);
   });
 
+  test('same model title from different sources creates distinct atoms', async () => {
+    const chat = stubChat(`[{"title":"Shared title","atom_type":"insight","body":"body","concepts":["Shared Topic"]}]`);
+    await runPhaseExtractAtoms(engine, {
+      _transcripts: [],
+      _pages: [
+        { slug: 'media/x/one', content: 'one', contentHash: 'hash-source-one' },
+        { slug: 'media/x/two', content: 'two', contentHash: 'hash-source-two' },
+      ],
+      _chat: chat,
+    });
+    const rows = await engine.executeRaw<{ slug: string; frontmatter: { source_slug: string } }>(
+      `SELECT slug, frontmatter FROM pages WHERE type = 'atom' ORDER BY slug`,
+    );
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.slug)).size).toBe(2);
+    expect(rows.map((row) => row.frontmatter.source_slug).sort()).toEqual([
+      'media/x/one',
+      'media/x/two',
+    ]);
+  });
+
   test('dry-run counts but does NOT write', async () => {
     const chat = stubChat(`[{"title":"x","atom_type":"insight","body":"b"}]`);
     const result = await runPhaseExtractAtoms(engine, {
@@ -381,7 +402,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       compiled_truth: string;
       frontmatter: {
         support_count: number;
-        supporting_atoms: Array<{ source_id: string; slug: string }>;
+        supporting_atoms: Array<{ source_id: string; slug: string; source_hash?: string }>;
         supporting_sources: Array<{ source_id: string; slug: string; source_hash?: string }>;
         synthesized_at?: string;
       };
@@ -395,7 +416,12 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       source_hash: 'hash-1',
     });
     expect(rows[0].compiled_truth).toContain('## Supporting research');
-    expect(rows[0].compiled_truth).toContain('[[bookmarks/post-1]] (source: birdclaw)');
+    expect(rows[0].compiled_truth).toContain('[[birdclaw:bookmarks/post-1]]');
+    expect(rows[0].frontmatter.supporting_atoms[0]).toEqual({
+      source_id: 'birdclaw',
+      slug: 'atoms/a1',
+      source_hash: 'hash-1',
+    });
     expect(rows[0].frontmatter.synthesized_at).toBeUndefined();
   });
 
@@ -410,5 +436,47 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     }));
     const result = await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
     expect(result.details?.concepts_written).toBe(1);
+  });
+
+  test('legacy atoms retain count-based promotion in a mixed evidence group', async () => {
+    const atoms = Array.from({ length: 9 }, (_, i) => ({
+      slug: `atoms/legacy-${i}`,
+      title: `Legacy ${i}`,
+      body: `legacy ${i}`,
+      concept_refs: ['established-topic'],
+    }));
+    atoms.push({
+      slug: 'atoms/bookmark',
+      title: 'Bookmark',
+      body: 'bookmark',
+      concept_refs: ['established-topic'],
+      source_id: 'birdclaw',
+      source_slug: 'media/x/bookmark',
+    } as (typeof atoms)[number]);
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: stubChat('Established summary.'),
+    });
+    expect(result.details?.concepts_written).toBe(1);
+    expect((result.details?.tier_counts as Record<string, number>).T1).toBe(1);
+  });
+
+  test('unchanged deterministic synthesis does not rewrite the concept page', async () => {
+    const atoms = [
+      { slug: 'atoms/one', title: 'One', body: 'one', concept_refs: ['stable-topic'] },
+      { slug: 'atoms/two', title: 'Two', body: 'two', concept_refs: ['stable-topic'] },
+    ];
+    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
+    const before = await engine.executeRaw<{ updated_at: string; content_hash: string }>(
+      `SELECT updated_at::text, content_hash FROM pages WHERE slug = 'concepts/stable-topic'`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await runPhaseSynthesizeConcepts(engine, { _atoms: [...atoms].reverse() });
+    const after = await engine.executeRaw<{ updated_at: string; content_hash: string }>(
+      `SELECT updated_at::text, content_hash FROM pages WHERE slug = 'concepts/stable-topic'`,
+    );
+    expect(after[0]).toEqual(before[0]);
+    const page = await engine.getPage('concepts/stable-topic');
+    expect(page?.compiled_truth.match(/## Supporting atoms/g)).toHaveLength(1);
   });
 });

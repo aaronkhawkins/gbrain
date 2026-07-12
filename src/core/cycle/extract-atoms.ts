@@ -51,6 +51,7 @@ import type { ProgressReporter } from '../progress.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
+import { createHash } from 'node:crypto';
 
 const DEFAULT_BUDGET_USD = 0.3;
 
@@ -529,8 +530,14 @@ export async function runPhaseExtractAtoms(
       }
 
       if (!opts.dryRun) {
-        for (const atom of atoms) {
-          const slug = `atoms/${todayDate()}/${slugify(atom.title)}`;
+        for (const [atomIndex, atom] of atoms.entries()) {
+          // Model titles are not identities: unrelated sources commonly
+          // produce the same short title. Source hash + response position
+          // keeps writes deterministic without allowing one atom to replace
+          // another in the same source.
+          const sourceIdentity = createHash('sha256').update(item.contentHash).digest('hex').slice(0, 12);
+          const identitySuffix = `${sourceIdentity}-${atomIndex + 1}`;
+          const slug = `atoms/${todayDate()}/${slugify(atom.title)}-${identitySuffix}`;
           const originFrontmatter =
             item.kind === 'transcript'
               ? { source_path: item.filePath }

@@ -160,7 +160,8 @@ export async function runPhaseSynthesizeConcepts(
     );
     // Research-derived atoms promote by distinct original sources. Legacy
     // transcript atoms have no source_slug and retain count-based behavior.
-    const supportCount = sourceBacked.length > 0 ? supportingSources.length : ordered.length;
+    const legacyEvidenceCount = ordered.length - sourceBacked.length;
+    const supportCount = supportingSources.length + legacyEvidenceCount;
     if (supportCount < TIER_T3_MIN) continue;
     const tier: AtomGroup['tier'] =
       supportCount >= TIER_T1_MIN ? 'T1' : supportCount >= TIER_T2_MIN ? 'T2' : 'T3';
@@ -171,6 +172,7 @@ export async function runPhaseSynthesizeConcepts(
       supportingAtoms: dedupeEvidence(ordered.map((atom) => ({
         source_id: atom.source_id ?? 'default',
         slug: atom.slug,
+        ...(atom.source_hash && { source_hash: atom.source_hash }),
       }))),
       supportingSources,
       supportCount,
@@ -263,21 +265,31 @@ export async function runPhaseSynthesizeConcepts(
 
     if (!opts.dryRun) {
       const title = group.conceptSlug.split('/').pop() ?? group.conceptSlug;
-      const evidenceSection = renderEvidence(group.supportingSources);
-      await engine.putPage(`concepts/${title}`, {
+      const evidenceSection = renderEvidence(group.supportingSources, group.supportingAtoms);
+      const compiledTruth = evidenceSection ? `${narrative}\n\n${evidenceSection}` : narrative;
+      const frontmatter = {
+        type: 'concept',
+        tier: group.tier,
+        mention_count: group.atomTitles.length,
+        composite_score: group.supportCount,
+        support_count: group.supportCount,
+        supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
+        supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
+        synthesized_by: 'synthesize_concepts-v0.41',
+      };
+      const conceptSlug = `concepts/${title}`;
+      const existing = await engine.getPage(conceptSlug, { sourceId: 'default' });
+      if (conceptPageMatches(existing, compiledTruth, frontmatter)) {
+        conceptsWritten++;
+        opts.progress?.tick(1, `${conceptsWritten} concepts`);
+        await maybeYield();
+        continue;
+      }
+      await engine.putPage(conceptSlug, {
         title: title.replace(/-/g, ' '),
         type: 'concept',
-        compiled_truth: evidenceSection ? `${narrative}\n\n${evidenceSection}` : narrative,
-        frontmatter: {
-          type: 'concept',
-          tier: group.tier,
-          mention_count: group.atomTitles.length,
-          composite_score: group.atomTitles.length,
-          support_count: group.supportCount,
-          supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
-          supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
-          synthesized_by: 'synthesize_concepts-v0.41',
-        },
+        compiled_truth: compiledTruth,
+        frontmatter,
         timeline: '',
       });
     }
@@ -358,12 +370,41 @@ function dedupeEvidence(refs: EvidenceRef[]): EvidenceRef[] {
   );
 }
 
-function renderEvidence(sources: EvidenceRef[]): string {
-  if (sources.length === 0) return '';
-  const links = sources.slice(0, MAX_SUPPORTING_SOURCES).map((source) =>
-    `- [[${source.slug}]] (source: ${source.source_id})`,
+function renderEvidence(sources: EvidenceRef[], atoms: EvidenceRef[]): string {
+  if (sources.length === 0 && atoms.length === 0) return '';
+  const sourceLinks = sources.slice(0, MAX_SUPPORTING_SOURCES).map((source) =>
+    `- [[${source.source_id}:${source.slug}]]`,
   );
-  return `## Supporting research\n\n${links.join('\n')}`;
+  const atomLinks = atoms.slice(0, MAX_SUPPORTING_ATOMS).map((atom) =>
+    `- [[${atom.source_id}:${atom.slug}]]`,
+  );
+  return [
+    ...(sourceLinks.length > 0 ? [`## Supporting research\n\n${sourceLinks.join('\n')}`] : []),
+    ...(atomLinks.length > 0 ? [`## Supporting atoms\n\n${atomLinks.join('\n')}`] : []),
+  ].join('\n\n');
+}
+
+function conceptPageMatches(
+  existing: Awaited<ReturnType<BrainEngine['getPage']>>,
+  compiledTruth: string,
+  expectedFrontmatter: Record<string, unknown>,
+): boolean {
+  if (!existing || existing.compiled_truth !== compiledTruth) return false;
+  const actual = existing.frontmatter as Record<string, unknown>;
+  return Object.entries(expectedFrontmatter).every(([key, value]) =>
+    canonicalJson(actual[key]) === canonicalJson(value),
+  );
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 /**
