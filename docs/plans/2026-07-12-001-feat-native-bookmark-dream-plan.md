@@ -1,7 +1,7 @@
 ---
 title: Native Bookmark Knowledge Processing in GBrain Dream
 type: feat
-status: active
+status: completed
 date: 2026-07-12
 ---
 
