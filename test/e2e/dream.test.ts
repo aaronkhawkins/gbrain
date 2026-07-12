@@ -23,6 +23,22 @@ mock.module('../../src/core/embedding.ts', () => ({
   currentEmbeddingSignature: () => 'test:model:1536',
 }));
 
+mock.module('../../src/core/ai/gateway.ts', () => ({
+  chat: async () => ({
+    text: JSON.stringify([{
+      title: 'Native bookmark insight',
+      atom_type: 'insight',
+      body: 'A durable insight extracted through the native dream phase.',
+      source_quote: 'A representative source quote.',
+      lesson: 'Use the native dream lifecycle.',
+      virality_score: 40,
+      emotional_register: 'practical',
+      concepts: ['Native Bookmark Research'],
+    }]),
+    usage: { input_tokens: 10, output_tokens: 10 },
+  }),
+}));
+
 const { runDream } = await import('../../src/commands/dream.ts');
 
 const skip = !hasDatabase();
@@ -138,4 +154,41 @@ describeE2E('E2E: gbrain dream CLI against real Postgres', () => {
     // Read-only phase selection doesn't touch the lock table.
     expect(after[0].n).toBe(before[0].n);
   });
+
+  test('creator-pack dream phases turn marked bookmarks into an evidence-linked concept', async () => {
+    const engine = getEngine();
+    const previousPack = process.env.GBRAIN_SCHEMA_PACK;
+    process.env.GBRAIN_SCHEMA_PACK = 'gbrain-creator';
+    try {
+      for (const id of ['one', 'two']) {
+        await engine.putPage(`media/x/bookmark-${id}`, {
+          title: `Bookmark ${id}`,
+          type: 'media',
+          compiled_truth: `Research bookmark ${id}. ${'Useful native research context. '.repeat(25)}`,
+          frontmatter: {
+            type: 'media',
+            intake_adapter: 'birdclaw-bookmarks-to-brain',
+            content_kind: 'x-bookmark',
+            concept_synthesis_candidate: true,
+          },
+          timeline: '',
+        });
+      }
+
+      await captureLog(() => runDream(engine, ['--dir', repo, '--phase', 'extract_atoms', '--json']));
+      await captureLog(() => runDream(engine, ['--dir', repo, '--phase', 'synthesize_concepts', '--json']));
+
+      const concept = await engine.getPage('concepts/native-bookmark-research');
+      expect(concept).not.toBeNull();
+      expect(concept?.compiled_truth).toContain('## Supporting research');
+      const supporting = concept?.frontmatter.supporting_sources as Array<{ slug: string }>;
+      expect(supporting.map((source) => source.slug)).toEqual([
+        'media/x/bookmark-one',
+        'media/x/bookmark-two',
+      ]);
+    } finally {
+      if (previousPack === undefined) delete process.env.GBRAIN_SCHEMA_PACK;
+      else process.env.GBRAIN_SCHEMA_PACK = previousPack;
+    }
+  }, 60_000);
 });

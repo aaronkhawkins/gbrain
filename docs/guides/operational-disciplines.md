@@ -116,5 +116,7 @@ on nightly_schedule("02:00"):
 4. Run `gbrain doctor`. Confirm it returns a health report with database status, page count, and any flagged issues.
 5. After a dream cycle runs, check a page that had unlinked entity mentions. Confirm new links were added (`gbrain get_links <slug>`).
 
+For X bookmark research, BirdClaw is only the collector; native creator-pack dream phases perform extraction and concept synthesis. See [BirdClaw Bookmarks in the Native Dream Cycle](birdclaw-native-dream.md) for the eligibility contract, two-pass timing, pilot, cutover, and rollback procedure.
+
 ---
 *Part of the [GBrain Skillpack](../GBRAIN_SKILLPACK.md).*
