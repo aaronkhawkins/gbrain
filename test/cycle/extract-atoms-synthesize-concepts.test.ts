@@ -470,12 +470,19 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     const before = await engine.executeRaw<{ updated_at: string; content_hash: string }>(
       `SELECT updated_at::text, content_hash FROM pages WHERE slug = 'concepts/stable-topic'`,
     );
+    const receiptsBefore = await engine.executeRaw<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM pages WHERE type = 'extract_receipt'`,
+    );
     await new Promise((resolve) => setTimeout(resolve, 5));
     await runPhaseSynthesizeConcepts(engine, { _atoms: [...atoms].reverse() });
     const after = await engine.executeRaw<{ updated_at: string; content_hash: string }>(
       `SELECT updated_at::text, content_hash FROM pages WHERE slug = 'concepts/stable-topic'`,
     );
     expect(after[0]).toEqual(before[0]);
+    const receiptsAfter = await engine.executeRaw<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM pages WHERE type = 'extract_receipt'`,
+    );
+    expect(receiptsAfter[0].count).toBe(receiptsBefore[0].count);
     const page = await engine.getPage('concepts/stable-topic');
     expect(page?.compiled_truth.match(/## Supporting atoms/g)).toHaveLength(1);
   });

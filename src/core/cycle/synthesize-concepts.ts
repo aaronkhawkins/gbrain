@@ -193,6 +193,8 @@ export async function runPhaseSynthesizeConcepts(
 
   // 4. Per group: synthesize narrative (LLM for T1/T2, deterministic for T3+)
   let conceptsWritten = 0;
+  let conceptsProcessed = 0;
+  let conceptsUnchanged = 0;
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
   const failures: Array<{ concept: string; error: string }> = [];
@@ -280,8 +282,9 @@ export async function runPhaseSynthesizeConcepts(
       const conceptSlug = `concepts/${title}`;
       const existing = await engine.getPage(conceptSlug, { sourceId: 'default' });
       if (conceptPageMatches(existing, compiledTruth, frontmatter)) {
-        conceptsWritten++;
-        opts.progress?.tick(1, `${conceptsWritten} concepts`);
+        conceptsProcessed++;
+        conceptsUnchanged++;
+        opts.progress?.tick(1, `${conceptsProcessed} concepts`);
         await maybeYield();
         continue;
       }
@@ -294,8 +297,9 @@ export async function runPhaseSynthesizeConcepts(
       });
     }
     conceptsWritten++;
+    conceptsProcessed++;
     // v0.41.19.0 (T4): one tick per concept group with running count.
-    opts.progress?.tick(1, `${conceptsWritten} concepts`);
+    opts.progress?.tick(1, `${conceptsProcessed} concepts`);
 
     // v0.41.19.0 (T3): replaced bare per-iteration fire with throttled
     // helper. Same hook, same cycle-lock refresh effect, just at the
@@ -347,6 +351,7 @@ export async function runPhaseSynthesizeConcepts(
       (failures.length > 0 ? ` (${failures.length} LLM-failed → template fallback)` : ''),
     details: {
       concepts_written: conceptsWritten,
+      concepts_unchanged: conceptsUnchanged,
       tier_counts: tierCounts,
       groups_found: atomGroups.length,
       atoms_seen: atoms.length,
