@@ -29,6 +29,24 @@ const DEFAULT_BUDGET_USD = 1.5;
 const TIER_T1_MIN = 10;
 const TIER_T2_MIN = 5;
 const TIER_T3_MIN = 2;
+const MAX_SUPPORTING_ATOMS = 20;
+const MAX_SUPPORTING_SOURCES = 20;
+
+interface ConceptAtom {
+  slug: string;
+  concept_refs: string[];
+  body: string;
+  title: string;
+  source_id?: string;
+  source_slug?: string;
+  source_hash?: string;
+}
+
+interface EvidenceRef {
+  source_id: string;
+  slug: string;
+  source_hash?: string;
+}
 
 export interface SynthesizeConceptsOpts {
   brainDir?: string;
@@ -44,13 +62,16 @@ export interface SynthesizeConceptsOpts {
   /** Test seam: alternative chat function. */
   _chat?: typeof gatewayChat;
   /** Test seam: skip DB query; cluster these atoms directly. */
-  _atoms?: Array<{ slug: string; concept_refs: string[]; body: string; title: string }>;
+  _atoms?: ConceptAtom[];
 }
 
 interface AtomGroup {
   conceptSlug: string;
   atomTitles: string[];
   atomBodies: string[];
+  supportingAtoms: EvidenceRef[];
+  supportingSources: EvidenceRef[];
+  supportCount: number;
   tier: 'T1' | 'T2' | 'T3' | 'T4';
 }
 
@@ -75,9 +96,15 @@ export async function runPhaseSynthesizeConcepts(
         slug: string;
         title: string;
         compiled_truth: string;
-        frontmatter: { concepts?: string[]; imported_from?: string };
+        source_id: string;
+        frontmatter: {
+          concepts?: string[];
+          imported_from?: string;
+          source_slug?: string;
+          source_hash?: string;
+        };
       }>(
-        `SELECT slug, title, compiled_truth, frontmatter
+        `SELECT slug, source_id, title, compiled_truth, frontmatter
            FROM pages
           WHERE type = 'atom'
             AND deleted_at IS NULL
@@ -90,6 +117,9 @@ export async function runPhaseSynthesizeConcepts(
           title: r.title,
           body: r.compiled_truth,
           concept_refs: r.frontmatter!.concepts!,
+          source_id: r.source_id,
+          source_slug: r.frontmatter?.source_slug,
+          source_hash: r.frontmatter?.source_hash,
         }));
     } catch {
       // No atoms table or query failed — phase no-ops cleanly.
@@ -107,12 +137,11 @@ export async function runPhaseSynthesizeConcepts(
   }
 
   // 2. Group atoms by concept slug
-  const groups = new Map<string, { titles: string[]; bodies: string[] }>();
+  const groups = new Map<string, ConceptAtom[]>();
   for (const atom of atoms) {
     for (const conceptSlug of atom.concept_refs) {
-      const existing = groups.get(conceptSlug) ?? { titles: [], bodies: [] };
-      existing.titles.push(atom.title);
-      existing.bodies.push(atom.body);
+      const existing = groups.get(conceptSlug) ?? [];
+      existing.push(atom);
       groups.set(conceptSlug, existing);
     }
   }
@@ -120,17 +149,35 @@ export async function runPhaseSynthesizeConcepts(
   // 3. Filter to count ≥2, assign tier
   const atomGroups: AtomGroup[] = [];
   for (const [conceptSlug, data] of groups) {
-    const count = data.titles.length;
-    if (count < TIER_T3_MIN) continue;
+    const ordered = [...data].sort((a, b) => evidenceKey(a).localeCompare(evidenceKey(b)));
+    const sourceBacked = ordered.filter((atom) => atom.source_slug);
+    const supportingSources = dedupeEvidence(
+      sourceBacked.map((atom) => ({
+        source_id: atom.source_id ?? 'default',
+        slug: atom.source_slug!,
+        ...(atom.source_hash && { source_hash: atom.source_hash }),
+      })),
+    );
+    // Research-derived atoms promote by distinct original sources. Legacy
+    // transcript atoms have no source_slug and retain count-based behavior.
+    const supportCount = sourceBacked.length > 0 ? supportingSources.length : ordered.length;
+    if (supportCount < TIER_T3_MIN) continue;
     const tier: AtomGroup['tier'] =
-      count >= TIER_T1_MIN ? 'T1' : count >= TIER_T2_MIN ? 'T2' : 'T3';
+      supportCount >= TIER_T1_MIN ? 'T1' : supportCount >= TIER_T2_MIN ? 'T2' : 'T3';
     atomGroups.push({
       conceptSlug,
-      atomTitles: data.titles,
-      atomBodies: data.bodies,
+      atomTitles: ordered.map((atom) => atom.title),
+      atomBodies: ordered.map((atom) => atom.body),
+      supportingAtoms: dedupeEvidence(ordered.map((atom) => ({
+        source_id: atom.source_id ?? 'default',
+        slug: atom.slug,
+      }))),
+      supportingSources,
+      supportCount,
       tier,
     });
   }
+  atomGroups.sort((a, b) => a.conceptSlug.localeCompare(b.conceptSlug));
 
   if (atomGroups.length === 0) {
     return {
@@ -216,16 +263,19 @@ export async function runPhaseSynthesizeConcepts(
 
     if (!opts.dryRun) {
       const title = group.conceptSlug.split('/').pop() ?? group.conceptSlug;
+      const evidenceSection = renderEvidence(group.supportingSources);
       await engine.putPage(`concepts/${title}`, {
         title: title.replace(/-/g, ' '),
         type: 'concept',
-        compiled_truth: narrative,
+        compiled_truth: evidenceSection ? `${narrative}\n\n${evidenceSection}` : narrative,
         frontmatter: {
           type: 'concept',
           tier: group.tier,
           mention_count: group.atomTitles.length,
           composite_score: group.atomTitles.length,
-          synthesized_at: new Date().toISOString(),
+          support_count: group.supportCount,
+          supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
+          supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
           synthesized_by: 'synthesize_concepts-v0.41',
         },
         timeline: '',
@@ -294,6 +344,26 @@ export async function runPhaseSynthesizeConcepts(
       dry_run: opts.dryRun ?? false,
     },
   };
+}
+
+function evidenceKey(atom: ConceptAtom): string {
+  return `${atom.source_id ?? 'default'}::${atom.source_slug ?? atom.slug}::${atom.slug}`;
+}
+
+function dedupeEvidence(refs: EvidenceRef[]): EvidenceRef[] {
+  const unique = new Map<string, EvidenceRef>();
+  for (const ref of refs) unique.set(`${ref.source_id}::${ref.slug}`, ref);
+  return [...unique.values()].sort((a, b) =>
+    `${a.source_id}::${a.slug}`.localeCompare(`${b.source_id}::${b.slug}`),
+  );
+}
+
+function renderEvidence(sources: EvidenceRef[]): string {
+  if (sources.length === 0) return '';
+  const links = sources.slice(0, MAX_SUPPORTING_SOURCES).map((source) =>
+    `- [[${source.slug}]] (source: ${source.source_id})`,
+  );
+  return `## Supporting research\n\n${links.join('\n')}`;
 }
 
 /**

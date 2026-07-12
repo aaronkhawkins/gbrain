@@ -352,4 +352,63 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     );
     expect(rows[0].compiled_truth).toContain('Custom synthesized narrative');
   });
+
+  test('research concepts require two distinct original sources', async () => {
+    const oneSource = [1, 2, 3].map((i) => ({
+      slug: `atoms/a${i}`,
+      title: `A${i}`,
+      body: `body ${i}`,
+      concept_refs: ['ios-development'],
+      source_id: 'birdclaw',
+      source_slug: 'bookmarks/post-1',
+    }));
+    const result = await runPhaseSynthesizeConcepts(engine, { _atoms: oneSource });
+    expect(result.status).toBe('skipped');
+  });
+
+  test('writes bounded source-aware evidence for research concepts', async () => {
+    const atoms = Array.from({ length: 25 }, (_, i) => ({
+      slug: `atoms/a${i}`,
+      title: `A${i}`,
+      body: `body ${i}`,
+      concept_refs: ['ios-development'],
+      source_id: i === 0 ? 'other-source' : 'birdclaw',
+      source_slug: `bookmarks/post-${i}`,
+      source_hash: `hash-${i}`,
+    })).reverse();
+    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: stubChat('Native summary.') });
+    const rows = await engine.executeRaw<{
+      compiled_truth: string;
+      frontmatter: {
+        support_count: number;
+        supporting_atoms: Array<{ source_id: string; slug: string }>;
+        supporting_sources: Array<{ source_id: string; slug: string; source_hash?: string }>;
+        synthesized_at?: string;
+      };
+    }>(`SELECT compiled_truth, frontmatter FROM pages WHERE slug = 'concepts/ios-development'`);
+    expect(rows[0].frontmatter.support_count).toBe(25);
+    expect(rows[0].frontmatter.supporting_atoms).toHaveLength(20);
+    expect(rows[0].frontmatter.supporting_sources).toHaveLength(20);
+    expect(rows[0].frontmatter.supporting_sources[0]).toEqual({
+      source_id: 'birdclaw',
+      slug: 'bookmarks/post-1',
+      source_hash: 'hash-1',
+    });
+    expect(rows[0].compiled_truth).toContain('## Supporting research');
+    expect(rows[0].compiled_truth).toContain('[[bookmarks/post-1]] (source: birdclaw)');
+    expect(rows[0].frontmatter.synthesized_at).toBeUndefined();
+  });
+
+  test('same source slug in different source ids counts as distinct evidence', async () => {
+    const atoms = ['source-a', 'source-b'].map((source_id) => ({
+      slug: `atoms/${source_id}`,
+      title: source_id,
+      body: source_id,
+      concept_refs: ['shared-topic'],
+      source_id,
+      source_slug: 'bookmarks/same-slug',
+    }));
+    const result = await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
+    expect(result.details?.concepts_written).toBe(1);
+  });
 });
