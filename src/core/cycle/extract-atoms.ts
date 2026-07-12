@@ -154,7 +154,7 @@ CONCEPTS: 1-5 specific durable topic names separated by semicolons
 
 atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
 
-Output ONLY the JSON array, no prose.`;
+Output ONLY the labeled records, with no preamble or closing prose.`;
 
 interface DiscoveredPage {
   slug: string;
