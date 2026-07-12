@@ -63,6 +63,14 @@ describe('gbrain schema CLI (Phase C)', () => {
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('Bundled packs:');
     expect(r.stdout).toContain('gbrain-base');
+    expect(r.stdout).toContain('gbrain-everything');
+  });
+
+  test('schema use activates bundled creator packs', () => {
+    const r = gbrain(['schema', 'use', 'gbrain-everything']);
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(DEFAULT_GBRAIN_HOME, '.gbrain', 'config.json'), 'utf-8'));
+    expect(cfg.schema_pack).toBe('gbrain-everything');
   });
 
   test('schema show gbrain-base prints manifest details', () => {
