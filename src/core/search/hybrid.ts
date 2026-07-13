@@ -15,6 +15,7 @@ import type { SearchResult, SearchOpts, HybridSearchMeta } from '../types.ts';
 import { embed, embedQuery } from '../embedding.ts';
 import { registerBackgroundWorkDrainer } from '../background-work.ts';
 import { resolveEmbeddingColumn, isCacheSafe } from './embedding-column.ts';
+import { embeddingIdentityGate } from './embedding-identity.ts';
 import {
   resolveAdaptiveReturn,
   applyAdaptiveReturn,
@@ -867,6 +868,10 @@ export async function hybridSearch(
   const resolvedCol = cfgForColumn
     ? resolveEmbeddingColumn(opts, cfgForColumn)
     : resolveEmbeddingColumn(opts, { engine: 'pglite' });
+  const embeddingIdentity = await embeddingIdentityGate(
+    engine,
+    resolvedCol,
+  );
 
   const limit = opts?.limit || resolvedMode.searchLimit;
   const offset = opts?.offset || 0;
@@ -1042,7 +1047,7 @@ export async function hybridSearch(
   // provider (Voyage, ZE) works fine.
   const { isAvailable } = await import('../ai/gateway.ts');
   const providerProbe = resolvedCol.embeddingModel || undefined;
-  if (!isAvailable('embedding', providerProbe)) {
+  if (!embeddingIdentity.vectorSearchAllowed || !isAvailable('embedding', providerProbe)) {
     // v0.43 — fuse the relational arm with keyword so typed-edge answers
     // survive on the no-embedding-provider path (the relational win is most
     // valuable exactly when vector is unavailable).
@@ -1073,6 +1078,11 @@ export async function hybridSearch(
     lastRank1Score = noEmbedBudgeted[0] ? (noEmbedBudgeted[0].base_score ?? noEmbedBudgeted[0].score) : undefined;
     emitMeta({
       vector_enabled: false,
+      ...(!embeddingIdentity.vectorSearchAllowed && {
+        vector_disabled_reason: embeddingIdentity.status === 'compatible'
+          ? 'embedding_identity_unknown' as const
+          : `embedding_identity_${embeddingIdentity.status}` as Exclude<HybridSearchMeta['vector_disabled_reason'], undefined>,
+      }),
       detail_resolved: detailResolved,
       expansion_applied: false,
       intent: suggestions.intent,
@@ -1722,6 +1732,7 @@ export async function hybridSearchCached(
       // Emit meta describing the cache path.
       const cachedMeta: HybridSearchMeta = {
         vector_enabled: hit.meta?.vector_enabled ?? true,
+        ...(hit.meta?.vector_disabled_reason ? { vector_disabled_reason: hit.meta.vector_disabled_reason } : {}),
         detail_resolved: hit.meta?.detail_resolved ?? null,
         expansion_applied: hit.meta?.expansion_applied ?? false,
         intent: hit.meta?.intent,
@@ -1779,6 +1790,7 @@ export async function hybridSearchCached(
   // too (same drop class).
   const finalMeta: HybridSearchMeta = {
     vector_enabled: innerMeta?.vector_enabled ?? false,
+    ...(innerMeta?.vector_disabled_reason ? { vector_disabled_reason: innerMeta.vector_disabled_reason } : {}),
     detail_resolved: innerMeta?.detail_resolved ?? null,
     expansion_applied: innerMeta?.expansion_applied ?? false,
     intent: innerMeta?.intent,

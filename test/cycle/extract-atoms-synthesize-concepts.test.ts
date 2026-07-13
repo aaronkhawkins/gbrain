@@ -178,6 +178,12 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       `SELECT slug, type FROM pages WHERE type = 'atom'`,
     );
     expect(rows.length).toBe(2);
+    const indexed = await engine.executeRaw<{ count: number | string }>(
+      `SELECT COUNT(DISTINCT p.id)::int AS count
+         FROM pages p JOIN content_chunks cc ON cc.page_id = p.id
+        WHERE p.type = 'atom'`,
+    );
+    expect(Number(indexed[0].count)).toBe(2);
   });
 
   test('persists normalized concepts in atom frontmatter', async () => {
@@ -360,6 +366,12 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(tiers.T1).toBe(1); // ai-agents (12)
     expect(tiers.T2).toBe(1); // founder-psychology (6)
     expect(tiers.T3).toBe(1); // hardware-renaissance (3)
+    const indexed = await engine.executeRaw<{ count: number | string }>(
+      `SELECT COUNT(DISTINCT p.id)::int AS count
+         FROM pages p JOIN content_chunks cc ON cc.page_id = p.id
+        WHERE p.type = 'concept'`,
+    );
+    expect(Number(indexed[0].count)).toBe(3);
   });
 
   test('atoms with no concept refs are filtered out', async () => {

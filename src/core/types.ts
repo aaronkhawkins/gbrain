@@ -1566,6 +1566,8 @@ export interface EvalCaptureFailure {
 export interface HybridSearchMeta {
   /** True iff vector search actually ran. False when OPENAI_API_KEY missing or embed failed. */
   vector_enabled: boolean;
+  /** Present when vector ranking failed closed because identity was not proven. */
+  vector_disabled_reason?: 'embedding_identity_empty' | 'embedding_identity_unselected' | 'embedding_identity_incompatible' | 'embedding_identity_unknown';
   /** Post-auto-detect detail level. */
   detail_resolved: 'low' | 'medium' | 'high' | null;
   /** True iff multi-query expansion (Haiku) actually fired and produced variants. */

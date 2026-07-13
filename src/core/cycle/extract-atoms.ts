@@ -59,6 +59,7 @@ import {
   type ExtractionResponsePolicy,
 } from './bookmark-extraction-policy.ts';
 import { BIRDCLAW_RESEARCH_POLICY } from './research-provenance.ts';
+import { putGeneratedSearchablePage } from '../generated-page-indexer.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 
@@ -585,7 +586,8 @@ export async function runPhaseExtractAtoms(
           // v0.41.2.1 D9 #1 — thread sourceId through every putPage so
           // atoms land in the source we discovered them from. Pre-fix
           // the third arg was missing and atoms always wrote to 'default'.
-          await engine.putPage(
+          await putGeneratedSearchablePage(
+            engine,
             slug,
             {
               title: atom.title,

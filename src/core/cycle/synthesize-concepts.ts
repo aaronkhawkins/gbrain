@@ -25,6 +25,7 @@ import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import { BIRDCLAW_RESEARCH_POLICY, hasResearchPolicy } from './research-provenance.ts';
+import { putGeneratedSearchablePage } from '../generated-page-indexer.ts';
 
 const DEFAULT_BUDGET_USD = 1.5;
 const TIER_T1_MIN = 10;
@@ -306,13 +307,13 @@ export async function runPhaseSynthesizeConcepts(
         await maybeYield();
         continue;
       }
-      await engine.putPage(conceptSlug, {
+      await putGeneratedSearchablePage(engine, conceptSlug, {
         title: title.replace(/-/g, ' '),
         type: 'concept',
         compiled_truth: compiledTruth,
         frontmatter,
         timeline: '',
-      });
+      }, { sourceId: 'default' });
     }
     conceptsWritten++;
     conceptsProcessed++;
