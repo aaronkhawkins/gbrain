@@ -88,3 +88,13 @@ succeeds. Deletion should be a reviewable commit, not an incidental merge edit.
 Contributing any layer upstream is a separate product and privacy decision. A
 fork reconciliation, tag or release never creates or implies an upstream pull
 request.
+
+## Research quality gate
+
+Building a release is not permission to clean the live brain or release the
+bookmark backlog. First run the compiled binary through the
+[Isolated Research-Wiki Pilot](isolated-research-pilot.md). The pilot uses a
+dedicated PGLite brain, replays immutable already-collected records, exercises
+the scheduled sync/dream path twice, and requires both content idempotency and
+the predeclared human scorecard. Any failed threshold leaves cleanup and backlog
+release blocked.

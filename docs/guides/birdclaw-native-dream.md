@@ -16,6 +16,12 @@ Unmarked media never enters atom extraction. Concept promotion from research req
 
 ## Safe pilot
 
+The runnable, privacy-safe harness and predeclared knowledge-quality gate are
+documented in [Isolated Research-Wiki Pilot](isolated-research-pilot.md). The
+outline below explains what to inspect; use the harness for the actual replay
+so production `GBRAIN_HOME`, database URLs, X collection, and unrelated backlog
+cannot enter the run.
+
 1. Leave the existing combined BirdClaw job running while preparing the pilot. Do not let the custom and native synthesizers own the same concept namespace.
 2. Create an isolated brain/database and import a small, representative set of marked bookmarks into a dedicated source.
 3. Activate `gbrain-creator` or `gbrain-everything`; other packs intentionally skip these phases.
@@ -62,7 +68,12 @@ An ordinary upstream build retains the normal upstream upgrade behavior.
 
 ## Cutover
 
-After the pilot passes, change the BirdClaw scheduler to collector-only mode. It should collect, import, commit, and run `gbrain sync`, then stop. The ordinary GBrain dream schedule owns extraction and synthesis. Keep the previous combined invocation available for rollback until the native backlog is drained and a quality sample is accepted.
+After every threshold in the pilot scorecard passes, a later operator-controlled
+change may keep BirdClaw in collector-only mode. It should collect, import,
+commit, and run `gbrain sync`, then stop. The ordinary GBrain dream schedule
+owns extraction and synthesis. A failed threshold blocks cleanup and production
+backlog release. Keep the previous combined invocation available for rollback
+until the native backlog is drained and a quality sample is accepted.
 
 Legacy `pipeline_status`, `needs_enrichment`, and custom analysis timestamps are compatibility metadata only. Native receipts, source hashes, atom pages, and concept provenance become the processing system of record.
 
