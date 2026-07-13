@@ -213,7 +213,12 @@ async function main() {
   }
 
   if (command === '--version' || command === 'version') {
-    console.log(`gbrain ${VERSION}`);
+    if (args.includes('--json')) {
+      const { getBuildIdentity } = await import('./core/build-identity.ts');
+      console.log(JSON.stringify({ version: VERSION, build: getBuildIdentity() }, null, 2));
+    } else {
+      console.log(`gbrain ${VERSION}`);
+    }
     return;
   }
 
