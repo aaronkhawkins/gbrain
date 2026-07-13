@@ -26,6 +26,8 @@ const DEFAULT_USERNAME = 'opencode';
 const DEFAULT_PROVIDER_ID = 'openai';
 const DEFAULT_AGENT = 'gbrain';
 const CLEAN_CWD = join(tmpdir(), 'gbrain-opencode-server');
+const REQUEST_TIMEOUT_MS = 120_000;
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export interface OpenCodeServerOptions {
   baseUrl?: string;
@@ -262,10 +264,17 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
     this.agent = options.agent ?? DEFAULT_AGENT;
     this.directory = options.directory ?? CLEAN_CWD;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
-    mkdirSync(this.directory, { recursive: true });
-    try { new URL(this.baseUrl); } catch {
-      throw new AIConfigError(`Invalid OpenCode server URL: ${this.baseUrl}`);
+    let endpoint: URL;
+    try { endpoint = new URL(this.baseUrl); } catch {
+      throw new AIConfigError('Invalid OpenCode server URL.');
     }
+    if (!['127.0.0.1', '::1', '[::1]'].includes(endpoint.hostname)) {
+      throw new AIConfigError('OpenCode server endpoint must use a numeric loopback address.');
+    }
+    if (!this.password) {
+      throw new AIConfigError('OpenCode server authentication is required.');
+    }
+    mkdirSync(this.directory, { recursive: true });
   }
 
   private headers(): Record<string, string> {
@@ -294,23 +303,40 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
 
   private async request(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
     let response: Response;
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
         headers: { ...this.headers(), ...(init.headers ?? {}) },
-        signal,
+        signal: requestSignal,
       });
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      throw new AITransientError(`OpenCode server request failed: ${error instanceof Error ? error.message : String(error)}`);
+    } catch {
+      if (signal?.aborted) throw new AITransientError('OpenCode server request was aborted.');
+      throw new AITransientError('OpenCode server request failed or timed out.');
     }
     if (response.ok) return response;
-    const detail = (await response.text().catch(() => '')).slice(0, 500);
-    const message = `OpenCode server HTTP ${response.status}${detail ? `: ${detail}` : ''}`;
+    const message = `OpenCode server HTTP ${response.status}.`;
     if (response.status === 401 || response.status === 403 || response.status === 404) {
       throw new AIConfigError(message, 'Check the OpenCode server URL, password, and ChatGPT OAuth login.');
     }
     throw new AITransientError(message);
+  }
+
+  private async readJson(response: Response): Promise<OpenCodeMessageResponse> {
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+      throw new AITransientError('OpenCode server response exceeded the configured size limit.');
+    }
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
+      throw new AITransientError('OpenCode server response exceeded the configured size limit.');
+    }
+    try {
+      return JSON.parse(text) as OpenCodeMessageResponse;
+    } catch {
+      throw new AITransientError('OpenCode server returned an invalid response envelope.');
+    }
   }
 
   async doGenerate(options: LanguageModelV2CallOptions): Promise<{
@@ -338,7 +364,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
           permission: [{ permission: '*', pattern: '*', action: 'deny' }],
         }),
       }, options.abortSignal);
-      const session = await sessionResponse.json() as { id?: string };
+      const session = await this.readJson(sessionResponse) as { id?: string };
       if (!session.id) throw new AITransientError('OpenCode server did not return a session id.');
       sessionId = session.id;
 
@@ -367,7 +393,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
             : { type: 'json_schema', schema: requestedSchema, retryCount: 2 },
         }),
       }, options.abortSignal);
-      let payload = await response.json() as OpenCodeMessageResponse;
+      let payload = await this.readJson(response);
       let retryUsage: { input?: number; output?: number; total?: number } | undefined;
       let recoveredToolFreeText = false;
       if (this.isStructuredOutputError(payload) && !jsonFormat && tools.length === 0) {
@@ -391,11 +417,10 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
             }],
           }),
         }, options.abortSignal);
-        payload = await response.json() as OpenCodeMessageResponse;
+        payload = await this.readJson(response);
       }
       if ((payload.info?.error || this.topLevelError(payload)) && !recoveredToolFreeText) {
-        const error = payload.info?.error ?? this.topLevelError(payload);
-        throw new AITransientError(`OpenCode assistant error: ${JSON.stringify(error).slice(0, 500)}`);
+        throw new AITransientError('OpenCode assistant returned an error envelope.');
       }
       const inputTokens = (payload.info?.tokens?.input ?? 0) + (retryUsage?.input ?? 0);
       const outputTokens = (payload.info?.tokens?.output ?? 0) + (retryUsage?.output ?? 0);

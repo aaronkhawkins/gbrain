@@ -69,14 +69,72 @@ describe('opencode-server recipe', () => {
 
 describe('OpenCodeServerLanguageModel', () => {
   test('preserves provider-native colons inside model ids', () => {
-    const model = new OpenCodeServerLanguageModel('qwen3.6:35b', { providerId: 'ollama' });
+    const model = new OpenCodeServerLanguageModel('qwen3.6:35b', { providerId: 'ollama', password: 'test-secret' });
     expect(model.modelId).toBe('qwen3.6:35b');
+  });
+
+  test('rejects non-loopback, wildcard, and unauthenticated endpoints without echoing secrets', () => {
+    for (const baseUrl of ['http://example.test:4097', 'http://0.0.0.0:4097', 'http://[::]:4097']) {
+      expect(() => new OpenCodeServerLanguageModel('gpt-5.5', {
+        baseUrl,
+        password: 'oauth-private-value',
+      })).toThrow('loopback');
+    }
+    expect(() => new OpenCodeServerLanguageModel('gpt-5.5', {
+      baseUrl: 'http://127.0.0.1:4097',
+    })).toThrow('authentication');
+  });
+
+  test('bounds response size and redacts HTTP/provider response bodies', async () => {
+    const oversized = new OpenCodeServerLanguageModel('gpt-5.5', {
+      password: 'oauth-private-value',
+      fetch: (async () => new Response('{}', {
+        headers: { 'content-length': '3000000' },
+      })) as unknown as typeof globalThis.fetch,
+    });
+    await expect(oversized.doGenerate(options())).rejects.toThrow('size limit');
+
+    const secretBody = 'oauth-private-value provider-private-output';
+    const failed = new OpenCodeServerLanguageModel('gpt-5.5', {
+      password: 'oauth-private-value',
+      fetch: (async () => new Response(secretBody, { status: 503 })) as unknown as typeof globalThis.fetch,
+    });
+    try {
+      await failed.doGenerate(options());
+      throw new Error('expected failure');
+    } catch (error) {
+      expect((error as Error).message).toContain('HTTP 503');
+      expect((error as Error).message).not.toContain('oauth-private-value');
+      expect((error as Error).message).not.toContain('provider-private-output');
+    }
+  });
+
+  test('bounds requests with an abort signal and returns a redacted error', async () => {
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', {
+      password: 'oauth-private-value',
+      fetch: ((_: RequestInfo | URL, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          if (init?.signal?.aborted) return reject(new Error('oauth-private-value'));
+          init?.signal?.addEventListener('abort', () => reject(new Error('oauth-private-value')));
+        });
+      }) as unknown as typeof globalThis.fetch,
+    });
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await model.doGenerate({ ...options(), abortSignal: controller.signal });
+      throw new Error('expected failure');
+    } catch (error) {
+      expect((error as Error).message).toContain('aborted');
+      expect((error as Error).message).not.toContain('oauth-private-value');
+    }
   });
 
   test('returns final text, usage, deny-all permissions, and deletes the session', async () => {
     const fake = fakeServer({ text: 'Done.', tool_calls: [] });
     const model = new OpenCodeServerLanguageModel('opencode-server:gpt-5.5', {
       baseUrl: fake.baseUrl,
+      password: 'test-secret',
       directory: '/tmp/gbrain-opencode-test',
     });
 
@@ -100,7 +158,7 @@ describe('OpenCodeServerLanguageModel', () => {
 
   test('normalizes an omitted tool_calls field only when no tools were offered', async () => {
     const fake = fakeServer({ text: 'Done.' });
-    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });
 
     const result = await model.doGenerate(options());
 
@@ -110,7 +168,7 @@ describe('OpenCodeServerLanguageModel', () => {
 
   test('uses the caller JSON schema for AI SDK structured generation', async () => {
     const fake = fakeServer({ queries: ['Swift development', 'iOS architecture'] });
-    const model = new OpenCodeServerLanguageModel('gpt-5.4-mini', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.4-mini', { baseUrl: fake.baseUrl, password: 'test-secret' });
     const schema = {
       type: 'object',
       properties: { queries: { type: 'array', items: { type: 'string' } } },
@@ -154,6 +212,7 @@ describe('OpenCodeServerLanguageModel', () => {
     servers.push(server);
     const model = new OpenCodeServerLanguageModel('gpt-5.4-mini', {
       baseUrl: `http://127.0.0.1:${server.port}`,
+      password: 'test-secret',
     });
 
     const result = await model.doGenerate({
@@ -189,6 +248,7 @@ describe('OpenCodeServerLanguageModel', () => {
     servers.push(server);
     const model = new OpenCodeServerLanguageModel('gpt-5.5', {
       baseUrl: `http://127.0.0.1:${server.port}`,
+      password: 'test-secret',
     });
 
     const result = await model.doGenerate(options());
@@ -217,7 +277,10 @@ describe('OpenCodeServerLanguageModel', () => {
       },
     });
     try {
-      const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: `http://127.0.0.1:${server.port}` });
+      const model = new OpenCodeServerLanguageModel('gpt-5.5', {
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        password: 'test-secret',
+      });
       const result = await model.doGenerate(options());
       expect(result.content).toEqual([{ type: 'text', text: '[{"title":"Recovered"}]' }]);
       expect(messageCalls).toBe(2);
@@ -231,7 +294,7 @@ describe('OpenCodeServerLanguageModel', () => {
       text: '',
       tool_calls: [{ id: 'toolu_1', name: 'brain_search', input: { query: 'iOS' } }],
     });
-    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });
 
     const result = await model.doGenerate(options([{
       type: 'function',
@@ -262,7 +325,7 @@ describe('OpenCodeServerLanguageModel', () => {
       text: '',
       tool_calls: [{ name: 'brain_search', arguments: { query: 'iOS' } }],
     });
-    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });
 
     const result = await model.doGenerate(options([{
       type: 'function',
@@ -311,6 +374,7 @@ describe('OpenCodeServerLanguageModel', () => {
     servers.push(server);
     const model = new OpenCodeServerLanguageModel('gpt-5.5', {
       baseUrl: `http://127.0.0.1:${server.port}`,
+      password: 'test-secret',
     });
 
     const result = await model.doGenerate(options([{
@@ -345,6 +409,7 @@ describe('OpenCodeServerLanguageModel', () => {
     servers.push(server);
     const model = new OpenCodeServerLanguageModel('gpt-5.5', {
       baseUrl: `http://127.0.0.1:${server.port}`,
+      password: 'test-secret',
     });
 
     const result = await model.doGenerate(options());
@@ -358,7 +423,7 @@ describe('OpenCodeServerLanguageModel', () => {
       text: '',
       tool_calls: [{ id: 'toolu_1', name: 'bash', input: { command: 'whoami' } }],
     });
-    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });
 
     await expect(model.doGenerate(options([{
       type: 'function',
@@ -368,7 +433,7 @@ describe('OpenCodeServerLanguageModel', () => {
     expect(fake.requests.at(-1)?.method).toBe('DELETE');
   });
 
-  test('sends optional HTTP Basic credentials without exposing them in payloads', async () => {
+  test('sends required HTTP Basic credentials without exposing them in payloads', async () => {
     const fake = fakeServer({ text: 'ok', tool_calls: [] });
     const model = new OpenCodeServerLanguageModel('gpt-5.5', {
       baseUrl: fake.baseUrl,
@@ -386,7 +451,7 @@ describe('OpenCodeServerLanguageModel', () => {
 
   test('classifies authentication errors as configuration failures', async () => {
     const fake = fakeServer({}, { status: 401 });
-    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });
 
     try {
       await model.doGenerate(options());
@@ -399,7 +464,7 @@ describe('OpenCodeServerLanguageModel', () => {
 
   test('classifies server errors as retryable failures', async () => {
     const fake = fakeServer({}, { status: 503 });
-    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl });
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });
 
     try {
       await model.doGenerate(options());

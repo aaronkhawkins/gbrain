@@ -24,6 +24,7 @@ import type { ProgressReporter } from '../progress.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
+import { BIRDCLAW_RESEARCH_POLICY, hasResearchPolicy } from './research-provenance.ts';
 
 const DEFAULT_BUDGET_USD = 1.5;
 const TIER_T1_MIN = 10;
@@ -40,6 +41,7 @@ interface ConceptAtom {
   source_id?: string;
   source_slug?: string;
   source_hash?: string;
+  research_policy?: string;
 }
 
 interface EvidenceRef {
@@ -72,6 +74,7 @@ interface AtomGroup {
   supportingAtoms: EvidenceRef[];
   supportingSources: EvidenceRef[];
   supportCount: number;
+  researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
   tier: 'T1' | 'T2' | 'T3' | 'T4';
 }
 
@@ -102,6 +105,7 @@ export async function runPhaseSynthesizeConcepts(
           imported_from?: string;
           source_slug?: string;
           source_hash?: string;
+          research_policy?: string;
         };
       }>(
         `SELECT slug, source_id, title, compiled_truth, frontmatter
@@ -120,6 +124,7 @@ export async function runPhaseSynthesizeConcepts(
           source_id: r.source_id,
           source_slug: r.frontmatter?.source_slug,
           source_hash: r.frontmatter?.source_hash,
+          research_policy: r.frontmatter?.research_policy,
         }));
     } catch {
       // No atoms table or query failed — phase no-ops cleanly.
@@ -150,18 +155,25 @@ export async function runPhaseSynthesizeConcepts(
   const atomGroups: AtomGroup[] = [];
   for (const [conceptSlug, data] of groups) {
     const ordered = [...data].sort((a, b) => evidenceKey(a).localeCompare(evidenceKey(b)));
-    const sourceBacked = ordered.filter((atom) => atom.source_slug);
-    const supportingSources = dedupeEvidence(
-      sourceBacked.map((atom) => ({
-        source_id: atom.source_id ?? 'default',
-        slug: atom.source_slug!,
-        ...(atom.source_hash && { source_hash: atom.source_hash }),
-      })),
-    );
-    // Research-derived atoms promote by distinct original sources. Legacy
-    // transcript atoms have no source_slug and retain count-based behavior.
-    const legacyEvidenceCount = ordered.length - sourceBacked.length;
-    const supportCount = supportingSources.length + legacyEvidenceCount;
+    // Mixed groups deliberately use upstream behavior. A research marker is
+    // never inherited by unmarked atoms merely because concept refs collide.
+    const markedCount = ordered.filter((atom) => hasResearchPolicy({
+      research_policy: atom.research_policy,
+    })).length;
+    const researchPolicy = markedCount === ordered.length
+      ? BIRDCLAW_RESEARCH_POLICY
+      : undefined;
+    const sourceBacked = researchPolicy ? ordered.filter((atom) => atom.source_slug) : [];
+    const supportingSources = researchPolicy
+      ? dedupeEvidence(sourceBacked.map((atom) => ({
+          source_id: atom.source_id ?? 'default',
+          slug: atom.source_slug!,
+          ...(atom.source_hash && { source_hash: atom.source_hash }),
+        })))
+      : [];
+    // Marked research promotes by distinct original sources. Unmarked and
+    // mixed groups retain upstream count-based promotion.
+    const supportCount = researchPolicy ? supportingSources.length : ordered.length;
     if (supportCount < TIER_T3_MIN) continue;
     const tier: AtomGroup['tier'] =
       supportCount >= TIER_T1_MIN ? 'T1' : supportCount >= TIER_T2_MIN ? 'T2' : 'T3';
@@ -169,13 +181,16 @@ export async function runPhaseSynthesizeConcepts(
       conceptSlug,
       atomTitles: ordered.map((atom) => atom.title),
       atomBodies: ordered.map((atom) => atom.body),
-      supportingAtoms: dedupeEvidence(ordered.map((atom) => ({
-        source_id: atom.source_id ?? 'default',
-        slug: atom.slug,
-        ...(atom.source_hash && { source_hash: atom.source_hash }),
-      }))),
+      supportingAtoms: researchPolicy
+        ? dedupeEvidence(ordered.map((atom) => ({
+            source_id: atom.source_id ?? 'default',
+            slug: atom.slug,
+            ...(atom.source_hash && { source_hash: atom.source_hash }),
+          })))
+        : [],
       supportingSources,
       supportCount,
+      ...(researchPolicy && { researchPolicy }),
       tier,
     });
   }
@@ -274,9 +289,12 @@ export async function runPhaseSynthesizeConcepts(
         tier: group.tier,
         mention_count: group.atomTitles.length,
         composite_score: group.supportCount,
-        support_count: group.supportCount,
-        supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
-        supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
+        ...(group.researchPolicy && {
+          research_policy: group.researchPolicy,
+          support_count: group.supportCount,
+          supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
+          supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
+        }),
         synthesized_by: 'synthesize_concepts-v0.41',
       };
       const conceptSlug = `concepts/${title}`;

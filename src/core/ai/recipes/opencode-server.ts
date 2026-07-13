@@ -10,11 +10,10 @@ export const opencodeServer: Recipe = {
   tier: 'native',
   implementation: 'opencode-server',
   auth_env: {
-    required: [],
+    required: ['GBRAIN_OPENCODE_SERVER_PASSWORD'],
     optional: [
       'GBRAIN_OPENCODE_SERVER_URL',
       'GBRAIN_OPENCODE_SERVER_USERNAME',
-      'GBRAIN_OPENCODE_SERVER_PASSWORD',
       'GBRAIN_OPENCODE_PROVIDER_ID',
       'GBRAIN_OPENCODE_AGENT',
     ],
@@ -35,7 +34,7 @@ export const opencodeServer: Recipe = {
     },
   },
   setup_hint:
-    'Run `opencode providers login --provider OpenAI`, then keep a local-only ' +
-    '`opencode serve` process running. Optional connection settings live in ' +
+    'Run `opencode providers login --provider OpenAI`, then keep an authenticated local-only ' +
+    '`opencode serve` process running. Set GBRAIN_OPENCODE_SERVER_PASSWORD; other connection settings live in ' +
     'GBRAIN_OPENCODE_SERVER_URL/USERNAME/PASSWORD/PROVIDER_ID/AGENT.',
 };

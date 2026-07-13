@@ -44,7 +44,10 @@ beforeAll(() => {
   });
   configureGateway({
     chat_model: 'opencode-server:gpt-5.5',
-    env: { GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${server.port}` },
+    env: {
+      GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${server.port}`,
+      GBRAIN_OPENCODE_SERVER_PASSWORD: 'test-secret',
+    },
   });
 });
 
@@ -113,7 +116,10 @@ test('uses assistant text parts when a tool-free structured wrapper is empty', a
   });
   configureGateway({
     chat_model: 'opencode-server:gpt-5.5',
-    env: { GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${fallbackServer.port}` },
+    env: {
+      GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${fallbackServer.port}`,
+      GBRAIN_OPENCODE_SERVER_PASSWORD: 'test-secret',
+    },
   });
   try {
     const { chat } = await import('../../src/core/ai/gateway.ts');
@@ -124,7 +130,10 @@ test('uses assistant text parts when a tool-free structured wrapper is empty', a
     fallbackServer.stop(true);
     configureGateway({
       chat_model: 'opencode-server:gpt-5.5',
-      env: { GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${server.port}` },
+      env: {
+        GBRAIN_OPENCODE_SERVER_URL: `http://127.0.0.1:${server.port}`,
+        GBRAIN_OPENCODE_SERVER_PASSWORD: 'test-secret',
+      },
     });
   }
 });

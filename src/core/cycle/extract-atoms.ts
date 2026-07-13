@@ -48,10 +48,17 @@ import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult } from '../cycle.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { ProgressReporter } from '../progress.ts';
-import { chat as gatewayChat } from '../ai/gateway.ts';
+import { chat as gatewayChat, getChatModel } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { createHash } from 'node:crypto';
+import {
+  EXTRACTABLE_PAGE_TYPES,
+  extractionAdmissionSql,
+  extractionResponsePolicy,
+  type ExtractionResponsePolicy,
+} from './bookmark-extraction-policy.ts';
+import { BIRDCLAW_RESEARCH_POLICY } from './research-provenance.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 
@@ -66,14 +73,7 @@ const ATOM_TYPES = [
 // future pack-aware refactor is a one-line change to pull from the
 // active pack manifest (symmetric with the existing
 // src/core/facts/eligibility.ts:49 TODO).
-const EXTRACTABLE_PAGE_TYPES = [
-  'meeting', 'source', 'article', 'video', 'book', 'original', 'media',
-] as const;
-const MEDIA_EXTRACTION_PREDICATE = `(p.type <> 'media' OR (
-  p.frontmatter->>'intake_adapter' = 'birdclaw-bookmarks-to-brain'
-  AND p.frontmatter->>'content_kind' = 'x-bookmark'
-  AND lower(COALESCE(p.frontmatter->>'concept_synthesis_candidate', '')) = 'true'
-))`;
+const EXTRACTION_ADMISSION_PREDICATE = extractionAdmissionSql('p');
 const PAGE_DISCOVERY_BUDGET = 50;
 const MIN_PAGE_CHARS_FOR_EXTRACTION = 500;
 const MAX_CONCEPT_REFS = 5;
@@ -100,7 +100,14 @@ export interface ExtractAtomsOpts {
    * Mirrors _transcripts shape. `undefined` triggers discovery; `[]`
    * explicitly suppresses page discovery (for transcript-only tests).
    */
-  _pages?: Array<{ slug: string; content: string; contentHash: string }>;
+  _pages?: Array<{
+    slug: string;
+    content: string;
+    contentHash: string;
+    researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
+  }>;
+  /** Test/explicit-policy seam. Production uses the configured gateway model. */
+  _model?: string;
   /**
    * v0.41.19.0 (T3): cooperative yield hook fired from inside the work
    * loop on a 30s throttle AND immediately after every `await chat()`
@@ -133,7 +140,25 @@ interface ExtractedAtom {
   concepts?: string[];
 }
 
-const EXTRACT_PROMPT = `You extract atomic content nuggets from a research source.
+const DEFAULT_EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
+
+An atom is a single-source, self-contained idea that could become a tweet,
+quote, or short essay angle. Each atom must:
+  - Stand alone (no "as discussed above")
+  - Have a clear point (not just descriptive)
+  - Be specific (not a generic platitude)
+
+Output a JSON array of atoms (1-3 per source, never more than 3).
+Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
+source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
+(0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
+practical, controversial), concepts (1-5 specific durable topic names)}.
+
+atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
+
+Output ONLY the JSON array, no prose.`;
+
+const RESEARCH_EXTRACT_PROMPT = `You extract atomic content nuggets from a research source.
 
 An atom is a single-source, self-contained idea that could become a tweet,
 quote, or short essay angle. Each atom must:
@@ -160,6 +185,7 @@ interface DiscoveredPage {
   slug: string;
   content: string;
   contentHash: string;
+  researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
 }
 
 /**
@@ -188,11 +214,12 @@ export async function discoverExtractablePages(
   const sql = `
     SELECT p.slug,
            p.compiled_truth,
-           p.content_hash
+           p.content_hash,
+           CASE WHEN p.type = 'media' THEN '${BIRDCLAW_RESEARCH_POLICY}' END AS research_policy
     FROM pages p
     WHERE p.source_id = $1
       AND p.type = ANY($2::text[])
-      AND ${MEDIA_EXTRACTION_PREDICATE}
+      AND ${EXTRACTION_ADMISSION_PREDICATE}
       AND p.deleted_at IS NULL
       AND p.content_hash IS NOT NULL
       AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -223,11 +250,13 @@ export async function discoverExtractablePages(
       slug: string;
       compiled_truth: string;
       content_hash: string;
+      research_policy?: typeof BIRDCLAW_RESEARCH_POLICY;
     }>(sql, params);
     return rows.map((r) => ({
       slug: r.slug,
       content: r.compiled_truth,
       contentHash: r.content_hash,
+      ...(r.research_policy && { researchPolicy: r.research_policy }),
     }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -265,7 +294,7 @@ export async function countExtractAtomsBacklog(
       ? `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.source_id = $1
            AND p.type = ANY($2::text[])
-           AND ${MEDIA_EXTRACTION_PREDICATE}
+           AND ${EXTRACTION_ADMISSION_PREDICATE}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -279,7 +308,7 @@ export async function countExtractAtomsBacklog(
            )`
       : `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.type = ANY($1::text[])
-           AND ${MEDIA_EXTRACTION_PREDICATE}
+           AND ${EXTRACTION_ADMISSION_PREDICATE}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -394,7 +423,7 @@ export async function runPhaseExtractAtoms(
   // 1b. Get pages (test seam OR production discovery).
   //     _pages === undefined triggers discovery; _pages: [] suppresses it
   //     deliberately (transcript-only regression tests).
-  let pages: Array<{ slug: string; content: string; contentHash: string }>;
+  let pages: Array<{ slug: string; content: string; contentHash: string; researchPolicy?: string }>;
   if (opts._pages !== undefined) {
     pages = opts._pages;
   } else {
@@ -425,7 +454,7 @@ export async function runPhaseExtractAtoms(
   //    as a brain page).
   type WorkItem =
     | { kind: 'transcript'; filePath: string; content: string; contentHash: string }
-    | { kind: 'page'; slug: string; content: string; contentHash: string };
+    | { kind: 'page'; slug: string; content: string; contentHash: string; researchPolicy?: string };
 
   const seenHashes = new Set<string>();
   const work: WorkItem[] = [];
@@ -474,6 +503,10 @@ export async function runPhaseExtractAtoms(
   const failures: Array<{ source: string; error: string }> = [];
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
+  let configuredModel = opts._model;
+  if (!configuredModel) {
+    try { configuredModel = getChatModel(); } catch { configuredModel = ''; }
+  }
 
   // v0.41.19.0 (T3): throttled yield helper. Fires `opts.yieldDuringPhase`
   // every 30s. Cycle.ts threads `buildYieldDuringPhase(lock, outer)` so
@@ -507,9 +540,11 @@ export async function runPhaseExtractAtoms(
     }
 
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
+    const researchPolicy = item.kind === 'page' ? item.researchPolicy : undefined;
+    const responsePolicy = extractionResponsePolicy(researchPolicy, configuredModel ?? '');
     try {
       const result = await chat({
-        system: EXTRACT_PROMPT,
+        system: responsePolicy === 'labeled' ? RESEARCH_EXTRACT_PROMPT : DEFAULT_EXTRACT_PROMPT,
         messages: [
           {
             role: 'user',
@@ -527,7 +562,7 @@ export async function runPhaseExtractAtoms(
       estimatedSpendUsd +=
         (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
 
-      const atoms = parseAtomsResponse(result.text);
+      const atoms = parseAtomsResponse(result.text, responsePolicy);
       if (atoms.length === 0) {
         if (item.kind === 'transcript') transcriptsProcessed++;
         else pagesProcessed++;
@@ -566,6 +601,7 @@ export async function runPhaseExtractAtoms(
                 ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
                 ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
                 ...(atom.concepts && { concepts: atom.concepts }),
+                ...(researchPolicy === BIRDCLAW_RESEARCH_POLICY && { research_policy: researchPolicy }),
                 extracted_at: new Date().toISOString(),
                 extracted_by: 'extract_atoms-v0.41.2.1',
               },
@@ -658,7 +694,10 @@ export async function runPhaseExtractAtoms(
  * common LLM mistakes: extra prose around the JSON, missing fields,
  * invalid atom_type values. Rejects (returns empty) on hard parse fail.
  */
-export function parseAtomsResponse(raw: string): ExtractedAtom[] {
+export function parseAtomsResponse(
+  raw: string,
+  policy: ExtractionResponsePolicy | 'auto' = 'auto',
+): ExtractedAtom[] {
   // Strip markdown code fences if the LLM wrapped JSON in them.
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -666,7 +705,7 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
 
   // Find the first JSON array bracket.
   const arrayStart = cleaned.indexOf('[');
-  if (arrayStart === -1) return parseLabeledAtomsResponse(raw);
+  if (arrayStart === -1) return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
   cleaned = cleaned.slice(arrayStart);
 
   let parsed: unknown;
@@ -675,15 +714,15 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
   } catch {
     // Try trimming back from the end to recover from trailing prose.
     const arrayEnd = cleaned.lastIndexOf(']');
-    if (arrayEnd === -1) return parseLabeledAtomsResponse(raw);
+    if (arrayEnd === -1) return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
     try {
       parsed = JSON.parse(cleaned.slice(0, arrayEnd + 1));
     } catch {
-      return parseLabeledAtomsResponse(raw);
+      return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
     }
   }
 
-  if (!Array.isArray(parsed)) return parseLabeledAtomsResponse(raw);
+  if (!Array.isArray(parsed)) return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {

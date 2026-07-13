@@ -158,6 +158,33 @@ describe('v0.41.2.1: discoverExtractablePages SQL contract', () => {
       'media/x/bookmark',
       'media/x/string-marked',
     ]);
+    expect(discovered.every((page) => page.researchPolicy === 'birdclaw-research-v1')).toBe(true);
+  });
+
+  test('rejects BirdClaw digest and source pages from research intake', async () => {
+    for (const type of ['source', 'media']) {
+      await seedPage({
+        slug: `${type}/birdclaw-digest`,
+        type,
+        frontmatter: {
+          intake_adapter: 'birdclaw-bookmarks-to-brain',
+          content_kind: 'bookmark-digest',
+          concept_synthesis_candidate: true,
+        },
+      });
+    }
+    await seedPage({
+      slug: 'media/x/bookmark',
+      type: 'media',
+      frontmatter: {
+        intake_adapter: 'birdclaw-bookmarks-to-brain',
+        content_kind: 'x-bookmark',
+        concept_synthesis_candidate: true,
+      },
+    });
+
+    const discovered = await discoverExtractablePages(engine, 'default');
+    expect(discovered.map((page) => page.slug)).toEqual(['media/x/bookmark']);
   });
 
   test('NOT EXISTS subquery skips pages whose source_hash has existing atoms', async () => {

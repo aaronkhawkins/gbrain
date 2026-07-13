@@ -193,6 +193,37 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(rows[0].frontmatter.concepts).toEqual(['agent-workflows', 'ios-development']);
   });
 
+  test('keeps default JSON extraction for unrelated pages and stamps only eligible research atoms', async () => {
+    const calls: ChatOpts[] = [];
+    const chat = async (opts: ChatOpts): Promise<ChatResult> => {
+      calls.push(opts);
+      return stubChat('[{"title":"Scoped","atom_type":"insight","body":"body","concepts":["iOS Development"]}]')(opts);
+    };
+    await runPhaseExtractAtoms(engine, {
+      _model: 'opencode-server:gpt-5.5',
+      _transcripts: [],
+      _pages: [
+        { slug: 'articles/default', content: 'default body', contentHash: 'default-hash' },
+        {
+          slug: 'media/x/bookmark',
+          content: 'bookmark body',
+          contentHash: 'bookmark-hash',
+          researchPolicy: 'birdclaw-research-v1',
+        },
+      ],
+      _chat: chat,
+    });
+
+    expect(calls[0]?.system).toContain('JSON array');
+    expect(calls[0]?.system).not.toContain('TITLE:');
+    expect(calls[1]?.system).toContain('TITLE:');
+    const rows = await engine.executeRaw<{ frontmatter: Record<string, unknown> }>(
+      `SELECT frontmatter FROM pages WHERE type = 'atom' ORDER BY frontmatter->>'source_hash'`,
+    );
+    const policies = rows.map((row) => row.frontmatter.research_policy).filter(Boolean);
+    expect(policies).toEqual(['birdclaw-research-v1']);
+  });
+
   test('same model title from different sources creates distinct atoms', async () => {
     const chat = stubChat(`[{"title":"Shared title","atom_type":"insight","body":"body","concepts":["Shared Topic"]}]`);
     await runPhaseExtractAtoms(engine, {
@@ -397,7 +428,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(rows[0].compiled_truth).toContain('Custom synthesized narrative');
   });
 
-  test('research concepts require two distinct original sources', async () => {
+  test('marked research concepts require two distinct original sources', async () => {
     const oneSource = [1, 2, 3].map((i) => ({
       slug: `atoms/a${i}`,
       title: `A${i}`,
@@ -405,6 +436,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       concept_refs: ['ios-development'],
       source_id: 'birdclaw',
       source_slug: 'bookmarks/post-1',
+      research_policy: 'birdclaw-research-v1',
     }));
     const result = await runPhaseSynthesizeConcepts(engine, { _atoms: oneSource });
     expect(result.status).toBe('skipped');
@@ -419,6 +451,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       source_id: i === 0 ? 'other-source' : 'birdclaw',
       source_slug: `bookmarks/post-${i}`,
       source_hash: `hash-${i}`,
+      research_policy: 'birdclaw-research-v1',
     })).reverse();
     await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: stubChat('Native summary.') });
     const rows = await engine.executeRaw<{
@@ -456,12 +489,13 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       concept_refs: ['shared-topic'],
       source_id,
       source_slug: 'bookmarks/same-slug',
+      research_policy: 'birdclaw-research-v1',
     }));
     const result = await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
     expect(result.details?.concepts_written).toBe(1);
   });
 
-  test('legacy atoms retain count-based promotion in a mixed evidence group', async () => {
+  test('mixed marked and unmarked groups use upstream count behavior without research marker inheritance', async () => {
     const atoms = Array.from({ length: 9 }, (_, i) => ({
       slug: `atoms/legacy-${i}`,
       title: `Legacy ${i}`,
@@ -475,6 +509,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       concept_refs: ['established-topic'],
       source_id: 'birdclaw',
       source_slug: 'media/x/bookmark',
+      research_policy: 'birdclaw-research-v1',
     } as (typeof atoms)[number]);
     const result = await runPhaseSynthesizeConcepts(engine, {
       _atoms: atoms,
@@ -482,6 +517,27 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     });
     expect(result.details?.concepts_written).toBe(1);
     expect((result.details?.tier_counts as Record<string, number>).T1).toBe(1);
+    const page = await engine.getPage('concepts/established-topic');
+    expect(page?.frontmatter.research_policy).toBeUndefined();
+    expect(page?.frontmatter.supporting_sources).toBeUndefined();
+    expect(page?.compiled_truth).not.toContain('## Supporting research');
+  });
+
+  test('unmarked concepts retain upstream count tiering and rendering', async () => {
+    const atoms = Array.from({ length: 5 }, (_, i) => ({
+      slug: `atoms/default-${i}`,
+      title: `Default ${i}`,
+      body: `default ${i}`,
+      concept_refs: ['default-topic'],
+      source_id: 'default',
+      source_slug: `articles/source-${i}`,
+    }));
+    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: stubChat('Default summary.') });
+    const page = await engine.getPage('concepts/default-topic');
+    expect(page?.frontmatter.tier).toBe('T2');
+    expect(page?.frontmatter.composite_score).toBe(5);
+    expect(page?.frontmatter.supporting_sources).toBeUndefined();
+    expect(page?.compiled_truth).toBe('Default summary.');
   });
 
   test('unchanged deterministic synthesis does not rewrite the concept page', async () => {
@@ -507,6 +563,6 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     );
     expect(receiptsAfter[0].count).toBe(receiptsBefore[0].count);
     const page = await engine.getPage('concepts/stable-topic');
-    expect(page?.compiled_truth.match(/## Supporting atoms/g)).toHaveLength(1);
+    expect(page?.compiled_truth).not.toContain('## Supporting atoms');
   });
 });
