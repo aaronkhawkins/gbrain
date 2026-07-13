@@ -5,12 +5,14 @@
  * making operators run five other commands (gbrain sources status, gbrain
  * stats, gbrain jobs supervisor status, gbrain jobs list, tail audit logs).
  *
- * Six sections:
+ * Eight sections:
+ *   - Build      — local artifact identity + upgrade posture
  *   - Sync       — per-source last_sync_at + staleness
  *   - Cycle      — TWO rows: last FULL cycle (autopilot-cycle) +
  *                  last TARGETED run (any autopilot-* job). Reflects
  *                  v0.36.4.0's health-aware autopilot (healthy brains run
  *                  targeted handlers most ticks, full cycle every ~60min).
+ *   - Research   — aggregate-only BirdClaw backlog + native provenance
  *   - Locks      — active rows in gbrain_cycle_locks
  *   - Workers    — supervisor health from the audit JSONL
  *   - Queue      — live minion_jobs counts BY status (NO time window —
@@ -24,13 +26,15 @@
  *
  * Thin-client mode (isThinClient(cfg)):
  *   - Sync + Cycle route through `get_status_snapshot` MCP op (admin scope)
+ *   - Build always describes the local CLI; Research is explicitly unavailable
+ *     until the remote status operation supplies a separately-scoped snapshot.
  *   - Locks/Workers/Queue/Autopilot render "local-only — N/A on remote brain"
  *     because they're host-local concerns; pretending the local install's
  *     local-host operational state is the remote brain's would lie to the
  *     operator.
  *
  * --json emits a stable envelope:
- *   { schema_version: 1, sync, cycle, locks?, workers?, queue?, autopilot? }
+ *   { schema_version: 1, build?, sync?, cycle?, research?, locks?, workers?, queue?, autopilot? }
  * Sections may be omitted (thin-client mode, --section filter, or
  * section-build failure that didn't break the whole snapshot).
  */
@@ -40,6 +44,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { gbrainPath, loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { VERSION } from '../version.ts';
+import { getBuildIdentity, type BuildIdentity } from '../core/build-identity.ts';
+import { collectResearchHealth, type ResearchHealth } from '../core/research-health.ts';
 import {
   buildSyncStatusReport,
   type SyncStatusReport,
@@ -51,7 +57,7 @@ import {
 
 const SCHEMA_VERSION = 1 as const;
 
-const VALID_SECTIONS = ['sync', 'cycle', 'locks', 'workers', 'queue', 'autopilot'] as const;
+const VALID_SECTIONS = ['build', 'sync', 'cycle', 'research', 'locks', 'workers', 'queue', 'autopilot'] as const;
 type Section = (typeof VALID_SECTIONS)[number];
 
 // ---------------------------------------------------------------------------
@@ -111,8 +117,13 @@ export interface StatusReport {
   remote_version?: string;
   generated_at: string;
   mode: 'local' | 'thin-client';
+  /** Identity of this CLI artifact; never inferred from a remote server. */
+  build?: BuildIdentity;
+  /** Remote server build identity, when a future status op supplies it. */
+  remote_build?: BuildIdentity;
   sync?: SyncStatusReport;
   cycle?: CycleSnapshot;
+  research?: ResearchHealth | { remote_unavailable: true };
   locks?: LockRow[] | { local_only_remote: true };
   workers?: WorkerSummary | { local_only_remote: true };
   queue?: QueueCounts | { local_only_remote: true };
@@ -355,6 +366,8 @@ async function buildLocalReport(
     mode: 'local',
   };
 
+  if (want('build')) report.build = getBuildIdentity();
+
   // #1984: a shared budget so `gbrain status --deadline-ms=N` never blocks a
   // poller past N. Each async section is raced against the REMAINING budget, so
   // one slow/hung section (cross-region DB, lock contention) can't strand the
@@ -397,6 +410,17 @@ async function buildLocalReport(
       warnings.push(`cycle section failed: ${(err as Error).message}`);
     }
   }
+  if (want('research')) {
+    try {
+      report.research = await withSectionDeadline(
+        collectResearchHealth(engine),
+        remaining(),
+        () => markStale('research'),
+      );
+    } catch (err) {
+      warnings.push(`research section failed: ${(err as Error).message}`);
+    }
+  }
   if (want('locks')) {
     report.locks = await withSectionDeadline(buildLocks(engine), remaining(), () => markStale('locks'));
   }
@@ -426,6 +450,8 @@ async function buildThinClientReport(
     generated_at: new Date().toISOString(),
     mode: 'thin-client',
   };
+
+  if (want('build')) report.build = getBuildIdentity();
 
   if (want('sync') || want('cycle')) {
     try {
@@ -472,6 +498,7 @@ async function buildThinClientReport(
     }
   }
   if (want('locks')) report.locks = { local_only_remote: true };
+  if (want('research')) report.research = { remote_unavailable: true };
   if (want('workers')) report.workers = { local_only_remote: true };
   if (want('queue')) report.queue = { local_only_remote: true };
   if (want('autopilot')) report.autopilot = { local_only_remote: true };
@@ -496,6 +523,16 @@ function renderHuman(report: StatusReport): string {
     lines.push(`⚠ partial snapshot — stale sections: ${(report.stale_sections ?? []).join(', ')} (--deadline-ms budget hit)`);
   }
   lines.push('');
+
+  if (report.build) {
+    const b = report.build;
+    const revision = [b.tag, b.sha].filter(Boolean).join(' / ') || 'metadata unavailable';
+    lines.push('Build:');
+    lines.push(`  ${b.channel} · ${b.artifact} · ${revision}`);
+    if (b.upstream_base) lines.push(`  upstream base: ${b.upstream_base}`);
+    lines.push(`  upgrade: ${b.upgrade_posture}${b.clean === null ? '' : ` · clean=${b.clean}`}`);
+    lines.push('');
+  }
 
   // Sync
   if (report.sync) {
@@ -531,6 +568,24 @@ function renderHuman(report: StatusReport): string {
     };
     lines.push(fmt(report.cycle.last_full, 'Last full cycle'));
     lines.push(fmt(report.cycle.last_targeted, 'Last targeted run'));
+    lines.push('');
+  }
+
+  if (report.research) {
+    lines.push('Research:');
+    if ('remote_unavailable' in report.research) {
+      lines.push('  unavailable from this remote server status API');
+    } else {
+      const r = report.research;
+      lines.push(
+        `  bookmarks=${r.totals.eligible_bookmarks}  backlog=${r.totals.backlog}  ` +
+        `atoms=${r.totals.native_atoms}  concepts=${r.totals.native_concepts}  legacy=${r.totals.legacy_pages}`,
+      );
+      lines.push(`  failures_24h=${r.totals.recent_failures_24h}  newest_native=${r.newest_native_at ?? 'never'}`);
+      for (const s of r.sources) {
+        lines.push(`  ${s.source_id}: bookmarks=${s.eligible_bookmarks} backlog=${s.backlog} atoms=${s.native_atoms} concepts=${s.native_concepts}`);
+      }
+    }
     lines.push('');
   }
 

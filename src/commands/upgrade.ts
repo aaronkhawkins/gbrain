@@ -2,12 +2,21 @@ import { execSync, execFileSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, realpathSync } from 'fs';
 import { basename, join, dirname, resolve } from 'path';
 import { VERSION } from '../version.ts';
+import { managedForkUpgradeGuard } from '../core/build-identity.ts';
 
 const GBRAIN_GITHUB_REPO = 'garrytan/gbrain';
 
 export async function runUpgrade(args: string[]) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: gbrain upgrade [--swap-only]\n\nSelf-update the CLI.\n\nDetects install method (bun, binary, clawhub) and runs the appropriate update.\nAfter upgrading, shows what\'s new and offers to set up new features.\n\n--swap-only  Perform ONLY the binary/source swap and skip post-upgrade\n             (migrations run on the next launch). Used by the autopilot\n             silent self-upgrade channel so the daemon can swap + relaunch\n             without a 30-min blocking post-upgrade inside its tick.');
+    return;
+  }
+
+  const upgradeGuard = managedForkUpgradeGuard();
+  if (!upgradeGuard.allowed) {
+    console.error(upgradeGuard.reason);
+    console.error('Use the managed fork release and rollback procedure documented for this installation.');
+    process.exitCode = 1;
     return;
   }
 

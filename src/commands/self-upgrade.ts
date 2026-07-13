@@ -3,6 +3,7 @@ import { isMinorOrMajorBump, isValidVersionString } from '../core/semver.ts';
 import { fetchChangelog, fetchLatestRelease } from './check-update.ts';
 import { detectInstallMethod, runUpgrade } from './upgrade.ts';
 import { writeUpdateCache } from '../core/self-upgrade.ts';
+import { managedForkUpgradeGuard } from '../core/build-identity.ts';
 
 /**
  * `gbrain self-upgrade [--check-only] [--force] [--json]`
@@ -34,6 +35,24 @@ export async function runSelfUpgrade(args: string[]): Promise<void> {
   const checkOnly = args.includes('--check-only');
   const force = args.includes('--force');
   const json = args.includes('--json');
+
+  const upgradeGuard = managedForkUpgradeGuard();
+  if (!upgradeGuard.allowed) {
+    if (json) {
+      console.log(JSON.stringify({
+        current_version: VERSION,
+        update_available: false,
+        upgrade_allowed: false,
+        upgrade_posture: upgradeGuard.identity.upgrade_posture,
+        build_channel: upgradeGuard.identity.channel,
+        reason: upgradeGuard.reason,
+      }, null, 2));
+    } else {
+      console.error(upgradeGuard.reason);
+    }
+    process.exitCode = 1;
+    return;
+  }
 
   const release = await fetchLatestRelease();
   const latest = release ? release.tag.replace(/^v/, '') : null;
@@ -71,6 +90,8 @@ export async function runSelfUpgrade(args: string[]): Promise<void> {
             current_version: VERSION,
             latest_version: latest ?? '',
             update_available: behind,
+            upgrade_allowed: true,
+            upgrade_posture: upgradeGuard.identity.upgrade_posture,
             install_method: detectInstallMethod(),
             release_url: release?.url ?? '',
             changelog_diff: changelogDiff,

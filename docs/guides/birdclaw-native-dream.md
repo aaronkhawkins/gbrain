@@ -35,6 +35,31 @@ Unmarked media never enters atom extraction. Concept promotion from research req
 - Provider diagnostics identify the OpenCode gateway route; provider failures appear as native warnings or deterministic fallback, never as a legacy processor invocation.
 - A second dream pass creates the expected graph/fact projections.
 
+## Read-only operations
+
+`gbrain status` includes two additive sections for this fork:
+
+- `build` reports the local CLI channel, tag, SHA, upstream base, clean-tree
+  marker, artifact kind, and upgrade posture. It never infers a remote server's
+  identity from the local executable.
+- `research` reports only source-grouped counts and timestamps: eligible
+  bookmarks, native backlog, atoms, concepts, legacy pages, newest activity,
+  and recent failed/dead research jobs. It does not select page text, URLs, or
+  provider configuration. Use `--deadline-ms` or `--fast`; a slow optional
+  query makes the snapshot partial instead of blocking the other sections.
+
+Examples:
+
+```sh
+gbrain status --section build --json
+gbrain status --section research --fast
+```
+
+Compiled managed-fork releases refuse `gbrain upgrade`, `gbrain self-upgrade`,
+and unattended autopilot replacement through the shared build-identity guard.
+Install a verified fork release through the fork's release/rollback procedure.
+An ordinary upstream build retains the normal upstream upgrade behavior.
+
 ## Cutover
 
 After the pilot passes, change the BirdClaw scheduler to collector-only mode. It should collect, import, commit, and run `gbrain sync`, then stop. The ordinary GBrain dream schedule owns extraction and synthesis. Keep the previous combined invocation available for rollback until the native backlog is drained and a quality sample is accepted.

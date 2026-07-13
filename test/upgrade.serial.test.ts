@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { resolveBunGlobalRoot } from '../src/commands/upgrade.ts';
+import { managedForkUpgradeGuard, type BuildIdentity } from '../src/core/build-identity.ts';
 
 // We can't easily mock process.execPath in bun, so we test the upgrade
 // command's --help output and the detection logic via subprocess
@@ -31,6 +32,21 @@ describe('upgrade command', () => {
     const exitCode = await proc.exited;
     expect(stdout).toContain('Usage: gbrain upgrade');
     expect(exitCode).toBe(0);
+  });
+});
+
+describe('managed fork upgrade posture', () => {
+  test('ordinary upstream build preserves existing upgrade behavior', () => {
+    expect(managedForkUpgradeGuard().allowed).toBe(true);
+  });
+
+  test('fork identity refuses the generic upstream path', () => {
+    const identity: BuildIdentity = {
+      channel: 'private-research-fork', tag: 'fork-v1', sha: 'abc123',
+      upstream_base: 'v0.42.59.0', clean: true, artifact: 'compiled',
+      managed_fork: true, upgrade_posture: 'fork-managed',
+    };
+    expect(managedForkUpgradeGuard(identity).allowed).toBe(false);
   });
 });
 

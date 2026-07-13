@@ -21,6 +21,7 @@ import {
   runStatus,
   FAST_DEADLINE_MS,
 } from '../src/commands/status.ts';
+import type { BrainEngine } from '../src/core/engine.ts';
 
 describe('parseDeadlineFlag (#1984)', () => {
   test('no flag → undefined (no budget)', () => {
@@ -78,6 +79,11 @@ describe('parseSectionFlag', () => {
   test('no --section flag → undefined (all sections)', () => {
     expect(parseSectionFlag([])).toBeUndefined();
     expect(parseSectionFlag(['--json'])).toBeUndefined();
+  });
+
+  test('accepts additive build and research sections', () => {
+    expect(parseSectionFlag(['--section', 'build'])).toEqual(new Set(['build']));
+    expect(parseSectionFlag(['--section=research'])).toEqual(new Set(['research']));
   });
 
   test('--section <name> form returns the set', () => {
@@ -140,5 +146,21 @@ describe('runStatus exit codes', () => {
     });
     expect(r.exitCode).toBe(2);
     expect(captured).toContain('--deadline-ms');
+  });
+
+  test('research timeout is partial and does not fail the snapshot', async () => {
+    const engine = {
+      executeRaw: () => new Promise(() => {}),
+    } as unknown as BrainEngine;
+    let output = '';
+    const result = await runStatus(engine, ['--json', '--section', 'research', '--deadline-ms', '5'], {
+      stdout: (value) => { output += value; },
+      stderr: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(output);
+    expect(parsed.partial).toBe(true);
+    expect(parsed.stale_sections).toEqual(['research']);
+    expect(parsed.research).toBeUndefined();
   });
 });

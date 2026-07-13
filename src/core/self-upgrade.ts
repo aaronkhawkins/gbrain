@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { gbrainPath } from './config.ts';
 import { acquirePackLock, type PackLockOpts } from './schema-pack/pack-lock.ts';
 import { isMinorOrMajorBump, isValidVersionString, parseSemver, semverGt, semverLte } from './semver.ts';
+import { managedForkUpgradeGuard } from './build-identity.ts';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -193,6 +194,7 @@ export function canSelfUpdate(
   platform: NodeJS.Platform = process.platform,
   arch: NodeJS.Architecture = process.arch,
 ): boolean {
+  if (!managedForkUpgradeGuard().allowed) return false;
   switch (installMethod) {
     case 'bun':
     case 'bun-link':
