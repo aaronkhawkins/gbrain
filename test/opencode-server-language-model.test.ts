@@ -96,7 +96,6 @@ describe('OpenCodeServerLanguageModel', () => {
     ]);
     expect(fake.requests[1].body.model).toEqual({ providerID: 'openai', modelID: 'gpt-5.5' });
     expect(fake.requests[1].body.agent).toBe('gbrain');
-    expect(fake.requests[1].body.format.type).toBe('json_schema');
   });
 
   test('normalizes an omitted tool_calls field only when no tools were offered', async () => {

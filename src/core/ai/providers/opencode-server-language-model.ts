@@ -199,7 +199,7 @@ function parseStructuredResult(
     value = parseJsonText(rawText);
   }
 
-  if (!value || typeof value !== 'object') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     if (allowPlainText && rawText) return { text: rawText, tool_calls: [] };
     throw new AITransientError('OpenCode server returned no structured response.');
   }
