@@ -15,9 +15,6 @@ export interface ResearchSourceHealth {
   newest_bookmark_at: string | null;
   newest_native_at: string | null;
   recent_failures_24h: number;
-  chunked_native_pages?: number;
-  embedded_native_pages?: number;
-  missing_index_native_pages?: number;
 }
 
 export interface ResearchHealth {

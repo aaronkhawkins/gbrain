@@ -153,6 +153,24 @@ Output a JSON array of atoms (1-3 per source, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
 source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
 (0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
+practical, controversial)}.
+
+atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
+
+Output ONLY the JSON array, no prose.`;
+
+const RESEARCH_JSON_EXTRACT_PROMPT = `You extract atomic content nuggets from a research source.
+
+An atom is a single-source, self-contained idea that could become a tweet,
+quote, or short essay angle. Each atom must:
+  - Stand alone (no "as discussed above")
+  - Have a clear point (not just descriptive)
+  - Be specific (not a generic platitude)
+
+Output a JSON array of atoms (1-3 per source, never more than 3).
+Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
+source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
+(0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
 practical, controversial), concepts (1-5 specific durable topic names)}.
 
 atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
@@ -543,9 +561,12 @@ export async function runPhaseExtractAtoms(
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     const researchPolicy = item.kind === 'page' ? item.researchPolicy : undefined;
     const responsePolicy = extractionResponsePolicy(researchPolicy, configuredModel ?? '');
+    const researchCandidate = researchPolicy === BIRDCLAW_RESEARCH_POLICY;
     try {
       const result = await chat({
-        system: responsePolicy === 'labeled' ? RESEARCH_EXTRACT_PROMPT : DEFAULT_EXTRACT_PROMPT,
+        system: researchCandidate
+          ? (responsePolicy === 'labeled' ? RESEARCH_EXTRACT_PROMPT : RESEARCH_JSON_EXTRACT_PROMPT)
+          : DEFAULT_EXTRACT_PROMPT,
         messages: [
           {
             role: 'user',
@@ -563,7 +584,7 @@ export async function runPhaseExtractAtoms(
       estimatedSpendUsd +=
         (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
 
-      const atoms = parseAtomsResponse(result.text, responsePolicy);
+      const atoms = parseAtomsResponse(result.text, responsePolicy, researchCandidate);
       if (atoms.length === 0) {
         if (item.kind === 'transcript') transcriptsProcessed++;
         else pagesProcessed++;
@@ -699,6 +720,7 @@ export async function runPhaseExtractAtoms(
 export function parseAtomsResponse(
   raw: string,
   policy: ExtractionResponsePolicy | 'auto' = 'auto',
+  includeConcepts = false,
 ): ExtractedAtom[] {
   // Strip markdown code fences if the LLM wrapped JSON in them.
   let cleaned = raw.trim();
@@ -749,7 +771,7 @@ export function parseAtomsResponse(
           : undefined,
       emotional_register:
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
-      concepts: normalizeConceptRefs(obj.concepts),
+      ...(includeConcepts && { concepts: normalizeConceptRefs(obj.concepts) }),
     });
   }
   return atoms;

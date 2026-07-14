@@ -72,22 +72,39 @@ bun "$helper" "${prepare_args[@]}"
 if [[ ! -d "$source_dir/.git" ]]; then
   git -C "$source_dir" init -q -b main
   git -C "$source_dir" -c user.name='GBrain Pilot' -c user.email='pilot@invalid' add bookmarks
-  git -C "$source_dir" -c user.name='GBrain Pilot' -c user.email='pilot@invalid' commit -q -m 'seed immutable collector replay'
+  git -C "$source_dir" -c core.hooksPath=/dev/null -c user.name='GBrain Pilot' -c user.email='pilot@invalid' commit -q -m 'seed immutable collector replay'
 elif ! git -C "$source_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
   echo "[pilot] refusing source checkout without a valid commit" >&2
   exit 2
 fi
+if [[ -n "$(git -C "$source_dir" remote)" ]]; then
+  echo "[pilot] refusing collector replay repository with a Git remote" >&2
+  exit 2
+fi
 
 state="$private_dir/initialized"
+gbrain_log_seq=0
 run_gbrain() {
-  env \
-    -u DATABASE_URL -u GBRAIN_DATABASE_URL \
-    -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u ZEROENTROPY_API_KEY \
-    GBRAIN_HOME="$gbrain_home" \
-    GBRAIN_CHAT_MODEL="$chat_model" \
-    PILOT_SOURCE_DIR="$source_dir" \
-    PILOT_PRIVATE_DIR="$private_dir" \
-    "$gbrain_bin" "$@"
+  local operation=${1:-command}
+  local command_log
+  gbrain_log_seq=$((gbrain_log_seq + 1))
+  command_log=$(printf '%s/gbrain-command-%03d.log' "$private_dir" "$gbrain_log_seq")
+  : > "$command_log"
+  chmod 600 "$command_log"
+  if env \
+      -u DATABASE_URL -u GBRAIN_DATABASE_URL \
+      -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u ZEROENTROPY_API_KEY \
+      GBRAIN_HOME="$gbrain_home" \
+      GBRAIN_CHAT_MODEL="$chat_model" \
+      PILOT_SOURCE_DIR="$source_dir" \
+      PILOT_PRIVATE_DIR="$private_dir" \
+      "$gbrain_bin" "$@" >"$command_log" 2>&1; then
+    return 0
+  else
+    local status=$?
+    echo "[pilot] gbrain $operation failed; inspect the private command logs" >&2
+    return "$status"
+  fi
 }
 
 if [[ ! -e "$state" ]]; then
@@ -107,10 +124,10 @@ run_pass() {
   rm -rf "$export_dir"
   mkdir -m 700 "$export_dir"
   # This is the scheduled production command shape: collector replay, source
-  # sync, bounded atom drain, concept synthesis, then the ordinary dream pass.
-  run_gbrain sync --source research-pilot
+  # sync, bounded atom drain, then the ordinary dream pass (which owns concept
+  # synthesis). Explicitly invoking synthesis as well would spend twice.
+  run_gbrain sync --source research-pilot --no-pull
   run_gbrain dream --source research-pilot --phase extract_atoms --drain --window 300
-  run_gbrain dream --source research-pilot --phase synthesize_concepts
   run_gbrain dream --source research-pilot
   run_gbrain export --dir "$export_dir"
   bun "$helper" tree-digest "$export_dir" "$private_dir/export-pass-$pass-manifest.json"

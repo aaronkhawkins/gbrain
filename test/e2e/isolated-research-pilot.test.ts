@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -64,6 +64,8 @@ set -euo pipefail
 [[ -z "\${DATABASE_URL:-}" ]]
 [[ -z "\${GBRAIN_DATABASE_URL:-}" ]]
 printf '%s\\n' "$*" >> "$PILOT_PRIVATE_DIR/commands.log"
+printf '%s\\n' 'private child output must stay private'
+printf '%s\\n' 'private child error must stay private' >&2
 if [[ "\${1:-}" == export ]]; then
   shift
   [[ "\${1:-}" == --dir ]]
@@ -91,6 +93,9 @@ describe('isolated research pilot', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain('idempotent=true');
+    expect(result.stdout.toString()).not.toContain('private child output');
+    expect(result.stderr.toString()).not.toContain('private child error');
+    expect(result.stdout.toString()).not.toContain(realpathSync(workRoot));
 
     const commands = readFileSync(join(workRoot, 'private', 'commands.log'), 'utf8').trim().split('\n');
     const canonicalWorkRoot = realpathSync(workRoot);
@@ -100,20 +105,54 @@ describe('isolated research pilot', () => {
       'schema use gbrain-creator',
     ]);
     const scheduled = [
-      'sync --source research-pilot',
+      'sync --source research-pilot --no-pull',
       'dream --source research-pilot --phase extract_atoms --drain --window 300',
-      'dream --source research-pilot --phase synthesize_concepts',
       'dream --source research-pilot',
     ];
-    expect(commands.slice(3, 7)).toEqual(scheduled);
-    expect(commands.slice(8, 12)).toEqual(scheduled);
+    expect(commands.slice(3, 6)).toEqual(scheduled);
+    expect(commands.slice(7, 10)).toEqual(scheduled);
 
     const decision = JSON.parse(readFileSync(join(workRoot, 'private', 'decision.json'), 'utf8'));
-    expect(decision.decision).toBe('pass');
+    expect(decision.decision).toBe('candidate_pass_pending_human_review');
+    expect(decision.cleanup_authorized).toBe(false);
+    expect(decision.backlog_release_authorized).toBe(false);
     expect(decision.retrieval.lexical).toEqual({ recall_at_10: 1, ndcg_at_10: 1 });
     expect(decision.retrieval.providers[0].not_worse_than_lexical).toBe(true);
     expect(decision.retrieval.dgx_decision).toBe('deferred');
     expect(Bun.file(join(workRoot, 'private', 'decision.json')).size).toBeGreaterThan(0);
+    const privateLogs = readdirSync(join(workRoot, 'private')).filter((name) => name.startsWith('gbrain-command-'));
+    expect(privateLogs.length).toBeGreaterThan(0);
+    for (const name of privateLogs) {
+      expect(statSync(join(workRoot, 'private', name)).mode & 0o077).toBe(0);
+    }
+  });
+
+  test('rejects a reused collector replay repository with any Git remote', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gbrain-pilot-remote-'));
+    roots.push(root);
+    const inputs = passingInputs(root);
+    const workRoot = join(root, 'private-work');
+    const source = join(workRoot, 'collector-replay');
+    mkdirSync(source, { recursive: true });
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['config', 'user.name', 'Pilot Test'],
+      ['config', 'user.email', 'pilot@example.invalid'],
+    ]) expect(Bun.spawnSync(['git', '-C', source, ...args]).exitCode).toBe(0);
+    writeFileSync(join(source, 'seed'), 'seed\n');
+    expect(Bun.spawnSync(['git', '-C', source, 'add', 'seed']).exitCode).toBe(0);
+    expect(Bun.spawnSync(['git', '-C', source, 'commit', '-qm', 'seed']).exitCode).toBe(0);
+    expect(Bun.spawnSync(['git', '-C', source, 'remote', 'add', 'origin', 'https://example.invalid/private.git']).exitCode).toBe(0);
+
+    const result = Bun.spawnSync({
+      cmd: ['bash', SCRIPT, '--cohort', inputs.cohort, '--work-root', workRoot,
+        '--scorecard-input', inputs.scorecard, '--evaluation-input', inputs.evaluation,
+        '--gbrain-bin', fakeGbrain(root), '--synthetic'],
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toString()).toContain('refusing collector replay repository with a Git remote');
   });
 
   test('any missed threshold blocks cleanup and backlog release', () => {
@@ -126,6 +165,9 @@ describe('isolated research pilot', () => {
     const output = join(root, 'decision.json');
     const result = Bun.spawnSync({ cmd: ['bun', HELPER, 'score', inputs.scorecard, inputs.evaluation, output], stdout: 'pipe', stderr: 'pipe' });
     expect(result.exitCode).toBe(3);
-    expect(JSON.parse(readFileSync(output, 'utf8')).decision).toBe('block_cleanup_and_backlog');
+    const decision = JSON.parse(readFileSync(output, 'utf8'));
+    expect(decision.decision).toBe('block_cleanup_and_backlog');
+    expect(decision.cleanup_authorized).toBe(false);
+    expect(decision.backlog_release_authorized).toBe(false);
   });
 });

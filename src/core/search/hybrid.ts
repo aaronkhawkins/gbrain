@@ -868,10 +868,13 @@ export async function hybridSearch(
   const resolvedCol = cfgForColumn
     ? resolveEmbeddingColumn(opts, cfgForColumn)
     : resolveEmbeddingColumn(opts, { engine: 'pglite' });
-  const embeddingIdentity = await embeddingIdentityGate(
-    engine,
-    resolvedCol,
-  );
+  // The corpus-wide identity preflight currently describes only the primary
+  // text column. Registered alternate/multimodal columns carry their own
+  // provider and dimension contract and must keep using the existing strict
+  // column resolver until equivalent per-column provenance is available.
+  const embeddingIdentity = resolvedCol.name === 'embedding'
+    ? await embeddingIdentityGate(engine, resolvedCol)
+    : null;
 
   const limit = opts?.limit || resolvedMode.searchLimit;
   const offset = opts?.offset || 0;
@@ -1047,7 +1050,12 @@ export async function hybridSearch(
   // provider (Voyage, ZE) works fine.
   const { isAvailable } = await import('../ai/gateway.ts');
   const providerProbe = resolvedCol.embeddingModel || undefined;
-  if (!embeddingIdentity.vectorSearchAllowed || !isAvailable('embedding', providerProbe)) {
+  const primaryTextIdentityBlocked =
+    embeddingIdentity !== null &&
+    !embeddingIdentity.vectorSearchAllowed &&
+    earlyModality === 'text' &&
+    resolvedMode.unified_multimodal !== true;
+  if (primaryTextIdentityBlocked || !isAvailable('embedding', providerProbe)) {
     // v0.43 — fuse the relational arm with keyword so typed-edge answers
     // survive on the no-embedding-provider path (the relational win is most
     // valuable exactly when vector is unavailable).
@@ -1078,7 +1086,7 @@ export async function hybridSearch(
     lastRank1Score = noEmbedBudgeted[0] ? (noEmbedBudgeted[0].base_score ?? noEmbedBudgeted[0].score) : undefined;
     emitMeta({
       vector_enabled: false,
-      ...(!embeddingIdentity.vectorSearchAllowed && {
+      ...(primaryTextIdentityBlocked && embeddingIdentity !== null && {
         vector_disabled_reason: embeddingIdentity.status === 'compatible'
           ? 'embedding_identity_unknown' as const
           : `embedding_identity_${embeddingIdentity.status}` as Exclude<HybridSearchMeta['vector_disabled_reason'], undefined>,
@@ -1635,6 +1643,13 @@ export async function hybridSearchCached(
   const cfgCached = mergedCfgCached ?? ((await import('../config.ts')).loadConfig()) ?? { engine: 'pglite' as const };
   const resolvedColCached = resolveEmbeddingColumn(opts, cfgCached);
   const isNonDefaultColumn = !isCacheSafe(resolvedColCached, cfgCached);
+  // Cache lookup is itself vector retrieval. Enforce the same primary-column
+  // identity preflight before generating a query vector or consulting cached
+  // vector-derived results, rather than relying on the eventual cache-miss
+  // call into hybridSearch to perform the check.
+  const cacheEmbeddingIdentity = resolvedColCached.name === 'embedding'
+    ? await embeddingIdentityGate(engine, resolvedColCached)
+    : null;
 
   // Cache key carries the column + provider so different embedding spaces
   // never collide on the same `(source_id, query_text)` row.
@@ -1672,6 +1687,7 @@ export async function hybridSearchCached(
     (opts?.walkDepth ?? 0) > 0 ||
     Boolean(opts?.nearSymbol) ||
     isNonDefaultColumn ||
+    (cacheEmbeddingIdentity !== null && !cacheEmbeddingIdentity.vectorSearchAllowed) ||
     adaptiveReturnOn;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';

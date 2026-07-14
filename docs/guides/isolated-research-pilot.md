@@ -33,9 +33,15 @@ The script hashes every normalized record, creates one marked media page per
 hash, rejects duplicate ids and unlisted files, and writes an exact private
 cohort manifest. It initializes a local Git repository with no remote and
 commits that immutable replay so `gbrain sync` uses its normal watermark path.
-Public output contains counts and hash prefixes only.
+Any pre-existing Git remote is rejected, and sync runs with `--no-pull` as a
+second no-egress boundary. Child-command output is retained only in mode-0600
+logs below the private artifact directory. Public output contains controlled
+counts, decisions, and hash prefixes only.
 
-The human scorecard is declared before inspecting generated results:
+Predeclare the rubric and representative questions before the run. The numeric
+scorecard records the later human review of the private exports; because this
+initial harness cannot prove that binding, even threshold-passing values produce
+only a candidate pending human review:
 
 ```json
 {
@@ -83,12 +89,14 @@ Committed synthetic test data may use `--synthetic`; never use that relaxation
 for a real cohort.
 
 ```sh
-gbrain sync --source research-pilot
+gbrain sync --source research-pilot --no-pull
 gbrain dream --source research-pilot --phase extract_atoms --drain --window 300
-gbrain dream --source research-pilot --phase synthesize_concepts
 gbrain dream --source research-pilot
 gbrain export --dir PRIVATE_EXPORT_DIRECTORY
 ```
+
+The ordinary dream owns concept synthesis. The harness does not invoke that
+phase separately, which would duplicate reasoning spend inside each pass.
 
 The second content export must have the same file/content digest as the first.
 That catches duplicate pages, evidence churn, and timestamp-only rewrites. A
@@ -108,9 +116,14 @@ Every threshold is mandatory:
 - Representative questions answered with correct evidence: at least four of five.
 - Every embedding candidate: Recall@10 and nDCG@10 no worse than lexical.
 
-Any miss writes `block_cleanup_and_backlog` and exits non-zero. Tune or
-redesign the research processing; do not clean the live database or release
-the production backlog.
+Any miss writes `block_cleanup_and_backlog` and exits non-zero. Meeting the
+mechanical thresholds writes `candidate_pass_pending_human_review`; it does not
+authorize cleanup or backlog release. Every decision records
+`cleanup_authorized: false` and `backlog_release_authorized: false`. A later
+operator-controlled review must bind the human judgments and retrieval results
+to this cohort and export before a separate cleanup plan can be approved. Tune
+or redesign the research processing after a miss; do not clean the live
+database or release the production backlog.
 
 ## Optional OpenAI evaluation
 

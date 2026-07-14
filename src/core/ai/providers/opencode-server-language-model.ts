@@ -20,6 +20,7 @@ import type {
   LanguageModelV2ProviderDefinedTool,
 } from '@ai-sdk/provider';
 import { AIConfigError, AITransientError } from '../errors.ts';
+import { anySignal } from '../../abort-check.ts';
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:4097';
 const DEFAULT_USERNAME = 'opencode';
@@ -278,11 +279,10 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
   }
 
   private headers(): Record<string, string> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (this.password) {
-      headers.authorization = `Basic ${Buffer.from(`${this.username}:${this.password}`).toString('base64')}`;
-    }
-    return headers;
+    return {
+      'content-type': 'application/json',
+      authorization: `Basic ${Buffer.from(`${this.username}:${this.password}`).toString('base64')}`,
+    };
   }
 
   private isStructuredOutputError(payload: OpenCodeMessageResponse): boolean {
@@ -303,8 +303,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
 
   private async request(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
     let response: Response;
-    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const requestSignal = anySignal(AbortSignal.timeout(REQUEST_TIMEOUT_MS), signal);
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,

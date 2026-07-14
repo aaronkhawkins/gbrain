@@ -32,6 +32,7 @@ import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-optio
 import type { CliOptions } from './core/cli-options.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult } from './core/mcp-client.ts';
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
+import { managedForkUpgradeGuard } from './core/build-identity.ts';
 import { VERSION } from './version.ts';
 
 // Build CLI name -> operation lookup
@@ -160,6 +161,10 @@ function maybeEmitUpdateMarker(command: string): void {
     const cfg = loadConfigFileOnly();
     const mode = resolveSelfUpgradeMode(cfg);
     if (mode === 'off') return;
+    // Managed fork releases are upgraded only through their verified release
+    // procedure. Do not fetch or advertise an upstream update that the shared
+    // upgrade guard will intentionally refuse to install.
+    if (!managedForkUpgradeGuard().allowed) return;
 
     const now = Date.now();
     const entry = readUpdateCache();

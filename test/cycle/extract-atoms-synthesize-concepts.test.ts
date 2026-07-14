@@ -108,7 +108,7 @@ describe('v0.41 T5: parseAtomsResponse', () => {
       concepts: [' Agent Workflows ', 'agent workflows', 'iOS Development!', '', 'AI',
         'Enterprise Architecture', 'Knowledge Graphs', 'Local Models', 'ignored sixth'],
     }]);
-    expect(parseAtomsResponse(raw)[0].concepts).toEqual([
+    expect(parseAtomsResponse(raw, 'json', true)[0].concepts).toEqual([
       'agent-workflows',
       'ios-development',
       'enterprise-architecture',
@@ -120,6 +120,8 @@ describe('v0.41 T5: parseAtomsResponse', () => {
   test('ignores malformed concepts without rejecting a valid atom', () => {
     const atom = parseAtomsResponse(
       `[{"title":"T","atom_type":"insight","body":"b","concepts":"not-an-array"}]`,
+      'json',
+      true,
     )[0];
     expect(atom).toBeDefined();
     expect(atom.concepts).toBeUndefined();
@@ -190,7 +192,13 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     const chat = stubChat(`[{"title":"Native bookmark concepts","atom_type":"insight","body":"body","concepts":["Agent Workflows","iOS Development"]}]`);
     await runPhaseExtractAtoms(engine, {
       _transcripts: [],
-      _pages: [{ slug: 'media/x/bookmark', content: 'source', contentHash: 'bookmark-hash' }],
+      _pages: [{
+        slug: 'media/x/bookmark',
+        content: 'source',
+        contentHash: 'bookmark-hash',
+        researchPolicy: 'birdclaw-research-v1',
+      }],
+      _model: 'anthropic:claude-haiku-4-5',
       _chat: chat,
     });
     const rows = await engine.executeRaw<{ frontmatter: { concepts?: string[] } }>(
@@ -222,12 +230,17 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
 
     expect(calls[0]?.system).toContain('JSON array');
     expect(calls[0]?.system).not.toContain('TITLE:');
+    expect(calls[0]?.system).not.toContain('concepts (1-5');
     expect(calls[1]?.system).toContain('TITLE:');
     const rows = await engine.executeRaw<{ frontmatter: Record<string, unknown> }>(
       `SELECT frontmatter FROM pages WHERE type = 'atom' ORDER BY frontmatter->>'source_hash'`,
     );
     const policies = rows.map((row) => row.frontmatter.research_policy).filter(Boolean);
     expect(policies).toEqual(['birdclaw-research-v1']);
+    const ordinary = rows.find((row) => row.frontmatter.source_slug === 'articles/default');
+    const research = rows.find((row) => row.frontmatter.source_slug === 'media/x/bookmark');
+    expect(ordinary?.frontmatter.concepts).toBeUndefined();
+    expect(research?.frontmatter.concepts).toEqual(['ios-development']);
   });
 
   test('same model title from different sources creates distinct atoms', async () => {
@@ -576,5 +589,32 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(receiptsAfter[0].count).toBe(receiptsBefore[0].count);
     const page = await engine.getPage('concepts/stable-topic');
     expect(page?.compiled_truth).not.toContain('## Supporting atoms');
+  });
+
+  test('otherwise unchanged legacy concept is rewritten when searchable chunks are missing', async () => {
+    const atoms = [
+      { slug: 'atoms/one', title: 'One', body: 'one', concept_refs: ['legacy-topic'] },
+      { slug: 'atoms/two', title: 'Two', body: 'two', concept_refs: ['legacy-topic'] },
+    ];
+    const compiledTruth = 'T3 concept. 2 atoms reference this. Top mentions:\n  - One\n  - Two';
+    await engine.putPage('concepts/legacy-topic', {
+      title: 'legacy topic',
+      type: 'concept',
+      compiled_truth: compiledTruth,
+      frontmatter: {
+        type: 'concept',
+        tier: 'T3',
+        mention_count: 2,
+        composite_score: 2,
+        synthesized_by: 'synthesize_concepts-v0.41',
+      },
+      timeline: '',
+    });
+    expect(await engine.getChunks('concepts/legacy-topic')).toHaveLength(0);
+
+    const result = await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
+
+    expect(result.details?.concepts_written).toBe(1);
+    expect((await engine.getChunks('concepts/legacy-topic')).length).toBeGreaterThan(0);
   });
 });

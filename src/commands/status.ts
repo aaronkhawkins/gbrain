@@ -119,8 +119,6 @@ export interface StatusReport {
   mode: 'local' | 'thin-client';
   /** Identity of this CLI artifact; never inferred from a remote server. */
   build?: BuildIdentity;
-  /** Remote server build identity, when a future status op supplies it. */
-  remote_build?: BuildIdentity;
   sync?: SyncStatusReport;
   cycle?: CycleSnapshot;
   research?: ResearchHealth | { remote_unavailable: true };

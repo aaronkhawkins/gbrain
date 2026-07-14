@@ -27,11 +27,14 @@ export interface EmbeddingIdentityDiagnostics {
   disagreements: string[];
 }
 
-const gateCache = new WeakMap<BrainEngine, {
-  key: string;
+interface GateCacheEntry {
   expiresAt: number;
+  pending: boolean;
   value: Promise<EmbeddingIdentityDiagnostics>;
-}>();
+}
+
+const MAX_CACHED_IDENTITIES_PER_ENGINE = 4;
+const gateCache = new WeakMap<BrainEngine, Map<string, GateCacheEntry>>();
 
 /** Search-hot-path wrapper: coalesces concurrent PGLite reads and bounds DB work. */
 export function embeddingIdentityGate(
@@ -41,13 +44,31 @@ export function embeddingIdentityGate(
 ): Promise<EmbeddingIdentityDiagnostics> {
   const key = `${resolved.name}:${resolved.embeddingModel}:${resolved.dimensions}`;
   const now = Date.now();
-  const cached = gateCache.get(engine);
-  if (cached && cached.key === key && cached.expiresAt > now) return cached.value;
+  let entries = gateCache.get(engine);
+  if (!entries) {
+    entries = new Map();
+    gateCache.set(engine, entries);
+  }
+  const cached = entries.get(key);
+  if (cached && (cached.pending || cached.expiresAt > now)) return cached.value;
+
   const value = inspectEmbeddingIdentity(engine, resolved);
-  gateCache.set(engine, { key, expiresAt: now + ttlMs, value });
-  value.catch(() => {
-    if (gateCache.get(engine)?.value === value) gateCache.delete(engine);
-  });
+  const entry: GateCacheEntry = { expiresAt: 0, pending: true, value };
+  entries.set(key, entry);
+  while (entries.size > MAX_CACHED_IDENTITIES_PER_ENGINE) {
+    const oldestSettled = [...entries].find(([, candidate]) => !candidate.pending)?.[0];
+    if (!oldestSettled) break;
+    entries.delete(oldestSettled);
+  }
+  void value.then(
+    () => {
+      entry.pending = false;
+      entry.expiresAt = Date.now() + ttlMs;
+    },
+    () => {
+      if (entries?.get(key)?.value === value) entries.delete(key);
+    },
+  );
   return value;
 }
 
@@ -89,14 +110,15 @@ export async function inspectEmbeddingIdentity(
     const column = await readContentChunksEmbeddingDim(engine);
     const rows = await engine.executeRaw<ProvenanceRow>(
         `SELECT
-           COUNT(*) FILTER (WHERE cc.embedding IS NOT NULL)::int AS embedded_chunks,
-           COALESCE(array_agg(DISTINCT cc.model) FILTER (WHERE cc.embedding IS NOT NULL), ARRAY[]::text[]) AS chunk_models,
-           COALESCE(array_agg(DISTINCT p.embedding_signature) FILTER (WHERE cc.embedding IS NOT NULL AND p.embedding_signature IS NOT NULL), ARRAY[]::text[]) AS page_signatures,
-           COALESCE(array_agg(DISTINCT p.chunker_version) FILTER (WHERE cc.embedding IS NOT NULL AND p.chunker_version IS NOT NULL), ARRAY[]::smallint[]) AS chunker_versions,
-           COALESCE(array_agg(DISTINCT p.contextual_retrieval_mode) FILTER (WHERE cc.embedding IS NOT NULL AND p.contextual_retrieval_mode IS NOT NULL), ARRAY[]::text[]) AS contextual_modes,
-           COALESCE(array_agg(DISTINCT p.corpus_generation) FILTER (WHERE cc.embedding IS NOT NULL AND p.corpus_generation IS NOT NULL), ARRAY[]::text[]) AS corpus_generations
+           COUNT(*)::int AS embedded_chunks,
+           COALESCE(array_agg(DISTINCT cc.model), ARRAY[]::text[]) AS chunk_models,
+           COALESCE(array_agg(DISTINCT p.embedding_signature) FILTER (WHERE p.embedding_signature IS NOT NULL), ARRAY[]::text[]) AS page_signatures,
+           COALESCE(array_agg(DISTINCT p.chunker_version) FILTER (WHERE p.chunker_version IS NOT NULL), ARRAY[]::smallint[]) AS chunker_versions,
+           COALESCE(array_agg(DISTINCT p.contextual_retrieval_mode) FILTER (WHERE p.contextual_retrieval_mode IS NOT NULL), ARRAY[]::text[]) AS contextual_modes,
+           COALESCE(array_agg(DISTINCT p.corpus_generation) FILTER (WHERE p.corpus_generation IS NOT NULL), ARRAY[]::text[]) AS corpus_generations
          FROM content_chunks cc
-         JOIN pages p ON p.id = cc.page_id`,
+         JOIN pages p ON p.id = cc.page_id
+        WHERE cc.embedding IS NOT NULL`,
       );
     const row = rows[0];
     const databaseDimensions = parsePositiveInt(databaseDimensionsRaw);
@@ -128,13 +150,7 @@ export async function inspectEmbeddingIdentity(
     }
 
     const selected = !!databaseModel && databaseDimensions !== null;
-    const status: EmbeddingIdentityStatus = embeddedChunks === 0
-      ? 'empty'
-      : !selected
-        ? 'unselected'
-        : disagreements.length > 0
-          ? 'incompatible'
-          : 'compatible';
+    const status = resolveEmbeddingIdentityStatus(embeddedChunks, selected, disagreements);
 
     return {
       status,
@@ -156,6 +172,16 @@ export async function inspectEmbeddingIdentity(
   } catch {
     return unknownDiagnostics(desired, ['embedding provenance could not be read']);
   }
+}
+
+function resolveEmbeddingIdentityStatus(
+  embeddedChunks: number,
+  selected: boolean,
+  disagreements: string[],
+): EmbeddingIdentityStatus {
+  if (embeddedChunks === 0) return 'empty';
+  if (!selected) return 'unselected';
+  return disagreements.length > 0 ? 'incompatible' : 'compatible';
 }
 
 function unknownDiagnostics(

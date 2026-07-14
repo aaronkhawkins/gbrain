@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { inspectEmbeddingIdentity } from '../src/core/search/embedding-identity.ts';
-import { hybridSearch } from '../src/core/search/hybrid.ts';
+import { hybridSearch, hybridSearchCached } from '../src/core/search/hybrid.ts';
 import type { HybridSearchMeta } from '../src/core/types.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 
@@ -81,6 +81,35 @@ describe('embedding identity fail-closed diagnostics', () => {
     expect(results.map((row) => row.slug)).toContain('concepts/searchable');
     expect(meta?.vector_enabled).toBe(false);
     expect(meta?.vector_disabled_reason).toBe('embedding_identity_incompatible');
+  });
+
+  test('cached hybrid search checks identity before query embedding or cache lookup', async () => {
+    await engine.setConfig('embedding_model', 'ollama:nomic-embed-text');
+    await engine.setConfig('embedding_dimensions', '1536');
+    await seedEmbedded('zeroentropyai:zembed-1');
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      throw new Error('embedding provider must not be called');
+    }) as unknown as typeof fetch;
+    let meta: HybridSearchMeta | undefined;
+
+    try {
+      const results = await hybridSearchCached(engine, 'searchable concept', {
+        limit: 5,
+        useCache: true,
+        onMeta: (value) => { meta = value; },
+      });
+
+      expect(results.map((row) => row.slug)).toContain('concepts/searchable');
+      expect(meta?.cache?.status).toBe('disabled');
+      expect(meta?.vector_enabled).toBe(false);
+      expect(meta?.vector_disabled_reason).toBe('embedding_identity_incompatible');
+      expect(fetchCalls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('empty and non-primary spaces fail closed without writing vectors', async () => {

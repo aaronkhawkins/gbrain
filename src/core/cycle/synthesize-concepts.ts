@@ -25,7 +25,7 @@ import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import { BIRDCLAW_RESEARCH_POLICY, hasResearchPolicy } from './research-provenance.ts';
-import { putGeneratedSearchablePage } from '../generated-page-indexer.ts';
+import { generatedPageChunks, putGeneratedSearchablePage } from '../generated-page-indexer.ts';
 
 const DEFAULT_BUDGET_USD = 1.5;
 const TIER_T1_MIN = 10;
@@ -158,10 +158,10 @@ export async function runPhaseSynthesizeConcepts(
     const ordered = [...data].sort((a, b) => evidenceKey(a).localeCompare(evidenceKey(b)));
     // Mixed groups deliberately use upstream behavior. A research marker is
     // never inherited by unmarked atoms merely because concept refs collide.
-    const markedCount = ordered.filter((atom) => hasResearchPolicy({
+    const allMarked = ordered.every((atom) => hasResearchPolicy({
       research_policy: atom.research_policy,
-    })).length;
-    const researchPolicy = markedCount === ordered.length
+    }));
+    const researchPolicy = allMarked
       ? BIRDCLAW_RESEARCH_POLICY
       : undefined;
     const sourceBacked = researchPolicy ? ordered.filter((atom) => atom.source_slug) : [];
@@ -300,7 +300,7 @@ export async function runPhaseSynthesizeConcepts(
       };
       const conceptSlug = `concepts/${title}`;
       const existing = await engine.getPage(conceptSlug, { sourceId: 'default' });
-      if (conceptPageMatches(existing, compiledTruth, frontmatter)) {
+      if (await conceptPageIsCurrent(engine, conceptSlug, existing, compiledTruth, frontmatter)) {
         conceptsProcessed++;
         conceptsUnchanged++;
         opts.progress?.tick(1, `${conceptsProcessed} concepts`);
@@ -418,6 +418,26 @@ function conceptPageMatches(
   return Object.entries(expectedFrontmatter).every(([key, value]) =>
     canonicalJson(actual[key]) === canonicalJson(value),
   );
+}
+
+async function conceptPageIsCurrent(
+  engine: BrainEngine,
+  slug: string,
+  existing: Awaited<ReturnType<BrainEngine['getPage']>>,
+  compiledTruth: string,
+  expectedFrontmatter: Record<string, unknown>,
+): Promise<boolean> {
+  if (!conceptPageMatches(existing, compiledTruth, expectedFrontmatter)) return false;
+
+  const expected = generatedPageChunks({ compiled_truth: compiledTruth, timeline: '' });
+  const actual = await engine.getChunks(slug, { sourceId: 'default' });
+  return actual.length === expected.length && actual.every((chunk, index) => {
+    const wanted = expected[index];
+    return wanted !== undefined &&
+      chunk.chunk_index === wanted.chunk_index &&
+      chunk.chunk_source === wanted.chunk_source &&
+      chunk.chunk_text === wanted.chunk_text;
+  });
 }
 
 function canonicalJson(value: unknown): string {

@@ -75,7 +75,7 @@ function prepare(cohortPath: string, sourceDir: string, manifestPath: string, pr
     if (seen.has(id)) fail(`duplicate cohort id at record ${index + 1}`);
     seen.add(id);
     const recordHash = sha256(JSON.stringify({ id, text }));
-    return { id, text, recordHash };
+    return { text, recordHash };
   }).sort((a, b) => a.recordHash.localeCompare(b.recordHash));
 
   const files: Array<{ path: string; sha256: string; source_record_hash: string }> = [];
@@ -252,9 +252,15 @@ function score(scorecardPath: string, evaluationPath: string, outputPath: string
   const qualityPass = Object.values(qualityChecks).every(Boolean);
   const embeddingPass = providers.every((provider) => provider.not_worse_than_lexical);
   const passed = qualityPass && embeddingPass;
+  // This harness validates isolated mechanics and records supplied judgments.
+  // It cannot authorize destructive production work: a human must verify that
+  // those judgments are actually bound to this pilot's private exports first.
+  const decision = passed ? 'candidate_pass_pending_human_review' : 'block_cleanup_and_backlog';
   atomicPrivateJson(outputPath, {
     schema_version: 1,
-    decision: passed ? 'pass' : 'block_cleanup_and_backlog',
+    decision,
+    cleanup_authorized: false,
+    backlog_release_authorized: false,
     thresholds: {
       useful_atom_rate_min: 0.8,
       source_link_correctness_min: 1,
@@ -269,7 +275,7 @@ function score(scorecardPath: string, evaluationPath: string, outputPath: string
     quality_checks: qualityChecks,
     retrieval: { lexical, providers, dgx_decision: 'deferred' },
   });
-  console.log(JSON.stringify({ decision: passed ? 'pass' : 'block_cleanup_and_backlog', quality_pass: qualityPass, embedding_pass: embeddingPass }));
+  console.log(JSON.stringify({ decision, cleanup_authorized: false, backlog_release_authorized: false, quality_pass: qualityPass, embedding_pass: embeddingPass }));
   if (!passed) process.exit(3);
 }
 
