@@ -30,6 +30,7 @@ const PASSTHROUGHS: Array<{ envVar: string; recipeId: string }> = [
   { envVar: 'LITELLM_BASE_URL', recipeId: 'litellm' },
   { envVar: 'OPENROUTER_BASE_URL', recipeId: 'openrouter' },
   { envVar: 'NVIDIA_NIM_BASE_URL', recipeId: 'nvidia-nim' },
+  { envVar: 'VLLM_BASE_URL', recipeId: 'vllm' },
 ];
 
 const TEST_VALUE = 'http://proxy.example.test/v1';

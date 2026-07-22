@@ -23,7 +23,9 @@ import type { PhaseResult } from '../cycle.ts';
 import type { ProgressReporter } from '../progress.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
-import { chat as gatewayChat } from '../ai/gateway.ts';
+import { chat as gatewayChat, getChatModel } from '../ai/gateway.ts';
+import { resolveModel } from '../model-config.ts';
+import { estimateChatCostUsd } from '../ai/chat-pricing.ts';
 import { BIRDCLAW_RESEARCH_POLICY, hasResearchPolicy } from './research-provenance.ts';
 import { generatedPageChunks, putGeneratedSearchablePage } from '../generated-page-indexer.ts';
 import { createHash } from 'node:crypto';
@@ -66,6 +68,8 @@ export interface SynthesizeConceptsOpts {
   progress?: ProgressReporter;
   /** Test seam: alternative chat function. */
   _chat?: typeof gatewayChat;
+  /** Test/explicit-policy seam. Production resolves the per-task model key. */
+  _model?: string;
   /** Test seam: skip DB query; cluster these atoms directly. */
   _atoms?: ConceptAtom[];
 }
@@ -221,6 +225,16 @@ export async function runPhaseSynthesizeConcepts(
   let conceptsUnchanged = 0;
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
+  let configuredModel = opts._model;
+  if (!configuredModel) {
+    let fallback = 'anthropic:claude-sonnet-4-6';
+    try { fallback = getChatModel(); } catch { /* gateway may not be configured in tests */ }
+    configuredModel = await resolveModel(engine, {
+      configKey: 'models.dream.synthesize_concepts',
+      tier: 'reasoning',
+      fallback,
+    });
+  }
   const failures: Array<{ concept: string; error: string }> = [];
   const tierCounts = { T1: 0, T2: 0, T3: 0, T4: 0 };
 
@@ -314,6 +328,7 @@ export async function runPhaseSynthesizeConcepts(
       } else {
         try {
           const result = await chat({
+            model: configuredModel || undefined,
             system: SYNTH_PROMPT,
             messages: [
               {
@@ -334,9 +349,11 @@ export async function runPhaseSynthesizeConcepts(
           // codex flagged. Throttle inside maybeYield bounds the actual
           // refresh rate.
           await maybeYield();
-          // Sonnet at ~$3/M input + $15/M output
-          estimatedSpendUsd +=
-            (result.usage.input_tokens * 3.0 + result.usage.output_tokens * 15.0) / 1_000_000;
+          estimatedSpendUsd += estimateChatCostUsd(
+            result.model || configuredModel,
+            result.usage.input_tokens,
+            result.usage.output_tokens,
+          );
           narrative = result.text.trim() || deterministicNarrative(group);
           if (!result.text.trim()) synthesisStatus = 'fallback_error';
         } catch (err) {

@@ -39,6 +39,8 @@ const TIERS: ModelTier[] = ['utility', 'reasoning', 'deep', 'subagent'];
 
 const PER_TASK_KEYS: Array<{ key: string; tier: ModelTier; description: string }> = [
   { key: 'models.dream.synthesize',         tier: 'reasoning', description: 'Dream synthesis (conversation → brain pages)' },
+  { key: 'models.dream.extract_atoms',      tier: 'utility',   description: 'Native atom extraction from transcripts and pages' },
+  { key: 'models.dream.synthesize_concepts', tier: 'reasoning', description: 'Native concept synthesis from extracted atoms' },
   { key: 'models.dream.synthesize_verdict', tier: 'utility',   description: 'Dream synthesis verdict (Haiku judge)' },
   { key: 'models.dream.patterns',           tier: 'reasoning', description: 'Pattern discovery (cross-take themes)' },
   { key: 'models.drift',                    tier: 'reasoning', description: 'Drift LLM judge (v0.29 scaffold)' },
@@ -507,9 +509,14 @@ async function probeModel(modelStr: string, touchpoint: 'chat' | 'expansion'): P
   const start = Date.now();
   try {
     const { chat } = await import('../core/ai/gateway.ts');
-    // Use AbortController so the 5s timeout doesn't hang on a stuck network.
+    // OpenCode includes local session setup plus subscription-backed inference;
+    // five seconds is routinely too short even when both sides are healthy.
+    const timeoutMs = modelStr.startsWith('opencode-server:') ? 20_000 : 5_000;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error('probe timed out after 5s')), 5000);
+    const timeoutId = setTimeout(
+      () => controller.abort(new Error(`probe timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
     try {
       await chat({
         model: modelStr,
@@ -536,7 +543,15 @@ function shouldSkipProvider(modelStr: string, skip: string[]): boolean {
 
 export async function runModels(engine: BrainEngine, args: string[]): Promise<void> {
   const json = args.includes('--json');
-  const sub = args[1] === 'doctor' ? 'doctor' : args[1] === 'help' || args.includes('--help') || args.includes('-h') ? 'help' : 'read';
+  // CLI dispatch passes subcommand-only argv on current Bun entrypoints, while
+  // older direct callers include the leading `models` token. Accept both.
+  const positional = args.filter(arg => !arg.startsWith('-'));
+  const requestedSubcommand = positional[0] === 'models' ? positional[1] : positional[0];
+  const sub = requestedSubcommand === 'doctor'
+    ? 'doctor'
+    : requestedSubcommand === 'help' || args.includes('--help') || args.includes('-h')
+      ? 'help'
+      : 'read';
 
   if (sub === 'help') {
     process.stdout.write(

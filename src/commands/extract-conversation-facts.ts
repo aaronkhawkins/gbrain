@@ -740,6 +740,10 @@ async function processPage(
         source: PER_SEGMENT_SOURCE_PREFIX,
         engine: state.engine,
         abortSignal: state.signal,
+        // This caller already owns per-segment retry/error reporting. Surface
+        // provider and parse failures here instead of silently turning them
+        // into an indistinguishable zero-fact extraction.
+        throwOnFailure: true,
       });
     } catch (err) {
       if (isAbortError(err)) throw err;

@@ -156,6 +156,74 @@ describe('OpenCodeServerLanguageModel', () => {
     expect(fake.requests[1].body.agent).toBe('gbrain');
   });
 
+  test('normalizes the observed OpenCode step envelope and preserves its finish reason', async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (request.method === 'POST' && path === '/session') return Response.json({ id: 'ses_live_shape' });
+        if (request.method === 'POST' && path === '/session/ses_live_shape/message') {
+          return Response.json({
+            info: {
+              finish: 'stop',
+              tokens: { input: 170, output: 5, total: 175 },
+            },
+            parts: [
+              { type: 'step-start', id: 'step_1' },
+              { type: 'text', id: 'part_1', text: 'READY' },
+              { type: 'step-finish', id: 'step_2', reason: 'stop' },
+            ],
+          });
+        }
+        if (request.method === 'DELETE') return Response.json(true);
+        return new Response('not found', { status: 404 });
+      },
+    });
+    servers.push(server);
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', {
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      password: 'test-secret',
+    });
+
+    const result = await model.doGenerate(options());
+
+    expect(result.content).toEqual([{ type: 'text', text: 'READY' }]);
+    expect(result.finishReason).toBe('stop');
+    expect(result.usage).toEqual({ inputTokens: 170, outputTokens: 5, totalTokens: 175 });
+  });
+
+  test('preserves output-budget exhaustion so the gateway can classify empty output', async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (request.method === 'POST' && path === '/session') return Response.json({ id: 'ses_length' });
+        if (request.method === 'POST' && path === '/session/ses_length/message') {
+          return Response.json({
+            info: {
+              finish: 'length',
+              tokens: { input: 170, output: 128, total: 298 },
+            },
+            parts: [{ type: 'step-finish', reason: 'length' }],
+          });
+        }
+        if (request.method === 'DELETE') return Response.json(true);
+        return new Response('not found', { status: 404 });
+      },
+    });
+    servers.push(server);
+    const model = new OpenCodeServerLanguageModel('gpt-5.5', {
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      password: 'test-secret',
+    });
+
+    const result = await model.doGenerate(options());
+
+    expect(result.content).toEqual([{ type: 'text', text: '' }]);
+    expect(result.finishReason).toBe('length');
+    expect(result.usage.outputTokens).toBe(128);
+  });
+
   test('normalizes an omitted tool_calls field only when no tools were offered', async () => {
     const fake = fakeServer({ text: 'Done.' });
     const model = new OpenCodeServerLanguageModel('gpt-5.5', { baseUrl: fake.baseUrl, password: 'test-secret' });

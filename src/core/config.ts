@@ -662,6 +662,7 @@ export async function loadConfigWithEngine(
   // first use so a malformed DB row doesn't kill engine connect.
   const dbEmbeddingColumns = await dbStr('embedding_columns');
   const dbSearchEmbeddingColumn = await dbStr('search_embedding_column');
+  const dbVllmBaseUrl = await dbStr('provider_base_urls.vllm');
 
   // DB applies only when env did NOT win. Env presence is detected by the
   // sync loadConfig() already setting the field. For each flag, prefer the
@@ -693,6 +694,12 @@ export async function loadConfigWithEngine(
   }
   if (merged.search_embedding_column === undefined && dbSearchEmbeddingColumn !== undefined) {
     merged.search_embedding_column = dbSearchEmbeddingColumn;
+  }
+  if (dbVllmBaseUrl !== undefined && merged.provider_base_urls?.vllm === undefined) {
+    merged.provider_base_urls = {
+      ...(merged.provider_base_urls ?? {}),
+      vllm: dbVllmBaseUrl,
+    };
   }
 
   // v0.41 content-sanity DB-plane merge (D1: lint lifts to read these
@@ -866,6 +873,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.tier.subagent',
   'models.aliases',
   'models.dream.synthesize',
+  'models.dream.extract_atoms',
+  'models.dream.synthesize_concepts',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
   'models.drift',

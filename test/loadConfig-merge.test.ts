@@ -60,6 +60,29 @@ describe('loadConfigWithEngine (Phase 4 / F3)', () => {
     expect(merged?.embedding_image_ocr_model).toBe('openai:gpt-4o-mini');
   });
 
+  test('DB-plane vLLM base URL reaches the gateway config container', async () => {
+    const base: GBrainConfig = { engine: 'postgres' };
+    const merged = await loadConfigWithEngine(makeEngine({
+      'provider_base_urls.vllm': 'http://private-vllm:8888/v1',
+    }), base);
+
+    expect(merged?.provider_base_urls).toEqual({
+      vllm: 'http://private-vllm:8888/v1',
+    });
+  });
+
+  test('file-plane vLLM base URL wins over DB-plane value', async () => {
+    const base: GBrainConfig = {
+      engine: 'postgres',
+      provider_base_urls: { vllm: 'http://file-vllm:8888/v1' },
+    };
+    const merged = await loadConfigWithEngine(makeEngine({
+      'provider_base_urls.vllm': 'http://db-vllm:8888/v1',
+    }), base);
+
+    expect(merged?.provider_base_urls?.vllm).toBe('http://file-vllm:8888/v1');
+  });
+
   test('file/env precedence: file value wins over DB value', async () => {
     const base: GBrainConfig = {
       engine: 'pglite',

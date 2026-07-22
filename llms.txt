@@ -32,6 +32,8 @@ Repo: https://github.com/garrytan/gbrain
 
 - [docs/ai-providers/zeroentropy.md](https://raw.githubusercontent.com/garrytan/gbrain/master/docs/ai-providers/zeroentropy.md): ZeroEntropy zembed-1 embedding + zerank-2 reranker (hosted): API key, embedding switch, reranker config.
 - [docs/ai-providers/llama-server-reranker.md](https://raw.githubusercontent.com/garrytan/gbrain/master/docs/ai-providers/llama-server-reranker.md): Local reranker via llama.cpp --reranking: Qwen3-Reranker or self-hosted ZE weights, --alias setup, gbrain config keys, cold-start timeout, budget-cap interaction.
+- [docs/ai-providers/vllm.md](https://raw.githubusercontent.com/garrytan/gbrain/master/docs/ai-providers/vllm.md): Private local chat through vLLM: direct OpenAI-compatible routing, background task model keys, Qwen thinking control, and operational verification.
+- [docs/ai-providers/opencode-server.md](https://raw.githubusercontent.com/garrytan/gbrain/master/docs/ai-providers/opencode-server.md): OpenAI subscription transport through a loopback OpenCode server for interactive reasoning and GBrain-owned tool execution.
 
 ## Debugging
 

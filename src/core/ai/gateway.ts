@@ -2214,6 +2214,17 @@ function instantiateExpansion(recipe: Recipe, modelId: string, cfg: AIGatewayCon
   }
 }
 
+function openAICompatibleProviderOptions(recipe: Recipe): Record<string, any> | undefined {
+  if (recipe.id !== 'vllm') return undefined;
+  return {
+    vllm: {
+      // Skippy serves Qwen with thinking enabled by default. Background
+      // extraction wants bounded final text, not a hidden reasoning budget.
+      chat_template_kwargs: { enable_thinking: false },
+    },
+  };
+}
+
 const ExpansionSchema = z.object({
   queries: z.array(z.string()).min(1).max(5),
 });
@@ -2249,6 +2260,7 @@ export async function expand(query: string): Promise<string[]> {
         '',
         `Query: ${query}`,
       ].join('\n'),
+      providerOptions: openAICompatibleProviderOptions(recipe),
     });
 
     const expansions = result.object?.queries ?? [];
@@ -2264,9 +2276,9 @@ export async function expand(query: string): Promise<string[]> {
   } catch (err) {
     // Expansion is best-effort: on failure, fall back to the original query alone.
     const normalized = normalizeAIError(err, 'expand');
-    if (normalized instanceof AIConfigError) {
-      console.warn(`[ai.gateway] expansion disabled: ${normalized.message}`);
-    }
+    const providerId = getExpansionModel().split(':', 1)[0] || 'unknown';
+    const category = normalized instanceof AIConfigError ? 'configuration error' : 'provider unavailable';
+    console.warn(`[ai.gateway] expansion fallback (${providerId}): ${category}`);
     return [query];
   }
 }
@@ -2469,6 +2481,23 @@ export interface ChatOpts {
    * ignored on providers without `supports_prompt_cache`.
    */
   cacheSystem?: boolean;
+}
+
+function validateChatResult(result: ChatResult): ChatResult {
+  const hasUsableContent = result.text.trim().length > 0 || result.blocks.some(block =>
+    block.type === 'tool-call' || (block.type === 'text' && block.text.trim().length > 0),
+  );
+  if (hasUsableContent || result.usage.output_tokens <= 0) return result;
+  if (result.stopReason === 'refusal' || result.stopReason === 'content_filter') return result;
+  if (result.stopReason === 'length') {
+    throw new AIConfigError(
+      `[chat(${result.model})] model exhausted its output budget before returning usable content.`,
+      'Increase maxTokens or disable provider-side thinking for this task.',
+    );
+  }
+  throw new AITransientError(
+    `[chat(${result.model})] provider reported output tokens but returned no text or tool calls.`,
+  );
 }
 
 /**
@@ -2746,7 +2775,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     let threw: unknown = null;
     try {
       res = await _chatTransport(opts);
-      return res;
+      return validateChatResult(res);
     } catch (err) {
       threw = err;
       throw err;
@@ -2808,6 +2837,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   if (useCache) {
     providerOptions.anthropic = { cacheControl: { type: 'ephemeral' } };
   }
+  Object.assign(providerOptions, openAICompatibleProviderOptions(recipe));
 
   let _budgetRecorded = false;
   const _recordBudget = (modelLabel: string, inputTokens: number, outputTokens: number): void => {
@@ -2877,7 +2907,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     const outTok = Number(usage.outputTokens ?? usage.completionTokens ?? 0);
     _recordBudget(`${recipe.id}:${modelId}`, inTok, outTok);
 
-    return {
+    return validateChatResult({
       text: blocks.filter(b => b.type === 'text').map(b => (b as { type: 'text'; text: string }).text).join(''),
       blocks,
       stopReason: mapStopReason((result as any).finishReason, providerMetadata),
@@ -2890,7 +2920,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
       model: `${recipe.id}:${modelId}`,
       providerId: recipe.id,
       providerMetadata,
-    };
+    });
   } catch (err) {
     // Pessimistic fallback (A3 amended): when err.usage isn't there, charge
     // the worst-case ceiling — better to overcount on failure than under.

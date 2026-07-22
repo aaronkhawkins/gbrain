@@ -51,10 +51,13 @@ interface OpenCodeMessageResponse {
   info?: {
     structured?: unknown;
     error?: unknown;
+    finish?: string;
     tokens?: { input?: number; output?: number; total?: number };
   };
-  parts?: Array<{ type?: string; text?: string }>;
+  parts?: Array<{ type?: string; text?: string; reason?: string }>;
 }
+
+type FinishReason = 'stop' | 'length' | 'content-filter' | 'tool-calls' | 'error' | 'other' | 'unknown';
 
 function responseText(payload: OpenCodeMessageResponse): string {
   return payload.parts
@@ -62,6 +65,17 @@ function responseText(payload: OpenCodeMessageResponse): string {
     .map(part => part.text ?? '')
     .join('\n')
     .trim() ?? '';
+}
+
+function openCodeFinishReason(payload: OpenCodeMessageResponse): FinishReason {
+  const stepFinish = payload.parts?.findLast(part => part.type === 'step-finish')?.reason;
+  const reason = (payload.info?.finish ?? stepFinish)?.toLowerCase().replaceAll('_', '-');
+  if (!reason || reason === 'stop' || reason === 'end') return 'stop';
+  if (reason === 'length' || reason === 'max-tokens' || reason === 'max-output-tokens') return 'length';
+  if (reason === 'content-filter') return 'content-filter';
+  if (reason === 'tool' || reason === 'tool-call' || reason === 'tool-calls') return 'tool-calls';
+  if (reason === 'error') return 'error';
+  return 'other';
 }
 
 function parseJsonText(rawText: string): unknown {
@@ -429,7 +443,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       if (jsonFormat) {
         return {
           content: [{ type: 'text', text: JSON.stringify(parseJsonResponse(payload)) }],
-          finishReason: 'stop',
+          finishReason: openCodeFinishReason(payload),
           usage: { inputTokens, outputTokens, totalTokens },
           warnings: [],
         };
@@ -437,7 +451,10 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
       // Plain text is safe only when GBrain offered no tools. Tool-capable turns
       // must retain the validated JSON boundary so OpenCode cannot bypass the
       // gateway's tool allowlist or argument validation.
-      const result = parseStructuredResult(payload, tools.length === 0);
+      const finishReason = openCodeFinishReason(payload);
+      const result = tools.length === 0 && finishReason === 'length' && !responseText(payload)
+        ? { text: '', tool_calls: [] }
+        : parseStructuredResult(payload, tools.length === 0);
       for (const call of result.tool_calls) {
         if (!knownToolNames.has(call.name)) {
           throw new AITransientError(`OpenCode requested unknown GBrain tool "${call.name}".`);
@@ -458,7 +475,7 @@ export class OpenCodeServerLanguageModel implements LanguageModelV2 {
 
       return {
         content,
-        finishReason: result.tool_calls.length > 0 ? 'tool-calls' : 'stop',
+        finishReason: result.tool_calls.length > 0 ? 'tool-calls' : finishReason,
         usage: { inputTokens, outputTokens, totalTokens },
         warnings: [],
       };

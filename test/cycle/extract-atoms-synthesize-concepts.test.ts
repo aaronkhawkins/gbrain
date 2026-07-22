@@ -156,6 +156,43 @@ BODY: Separate domain state from view composition.`);
 });
 
 describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
+  test('routes extraction through models.dream.extract_atoms', async () => {
+    await engine.setConfig('models.dream.extract_atoms', 'vllm:local-qwen');
+    let receivedModel: string | undefined;
+    await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/fake/routed.txt', content: 'content', contentHash: 'routed-hash' }],
+      _pages: [],
+      _chat: async (opts) => {
+        receivedModel = opts.model;
+        return stubChat('[{"title":"Routed","atom_type":"insight","body":"body"}]')(opts);
+      },
+    });
+    expect(receivedModel).toBe('vllm:local-qwen');
+  });
+
+  test('does not consume the phase USD budget for zero-cost local model usage', async () => {
+    await engine.setConfig('models.dream.extract_atoms', 'vllm:local-qwen');
+    const localChat = async (opts: ChatOpts): Promise<ChatResult> => ({
+      ...(await stubChat('[{"title":"Local","atom_type":"insight","body":"body"}]', {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+      })(opts)),
+      model: 'vllm:local-qwen',
+      providerId: 'vllm',
+    });
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [
+        { filePath: '/fake/one.txt', content: 'one', contentHash: 'local-one' },
+        { filePath: '/fake/two.txt', content: 'two', contentHash: 'local-two' },
+      ],
+      _pages: [],
+      _chat: localChat,
+    });
+    expect(result.details?.transcripts_processed).toBe(2);
+    expect(result.details?.transcripts_skipped_budget).toBe(0);
+    expect(result.details?.estimated_spend_usd).toBe(0);
+  });
+
   test('no-op when no transcripts AND no pages provided', async () => {
     // v0.41.2.1: _pages:[] suppresses page-discovery so this matches the
     // pre-v0.41.2.1 "transcript-only no-op" path. Reason changed from
@@ -342,6 +379,54 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
 });
 
 describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
+  test('routes synthesis through models.dream.synthesize_concepts', async () => {
+    await engine.setConfig('models.dream.synthesize_concepts', 'vllm:local-qwen');
+    const atoms = Array.from({ length: 5 }, (_, i) => ({
+      slug: `atoms/routed-${i}`,
+      title: `Routed ${i}`,
+      body: `body ${i}`,
+      concept_refs: ['routed-concept'],
+    }));
+    let receivedModel: string | undefined;
+    await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: async (opts) => {
+        receivedModel = opts.model;
+        return stubChat('Routed summary.')(opts);
+      },
+    });
+    expect(receivedModel).toBe('vllm:local-qwen');
+  });
+
+  test('does not consume the phase USD budget for zero-cost local synthesis', async () => {
+    await engine.setConfig('models.dream.synthesize_concepts', 'vllm:local-qwen');
+    const atoms = ['one', 'two'].flatMap(concept =>
+      Array.from({ length: 5 }, (_, i) => ({
+        slug: `atoms/${concept}-${i}`,
+        title: `${concept} ${i}`,
+        body: `body ${i}`,
+        concept_refs: [`${concept}-concept`],
+      })),
+    );
+    let calls = 0;
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: async (opts) => {
+        calls++;
+        return {
+          ...(await stubChat('Local summary.', {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+          })(opts)),
+          model: 'vllm:local-qwen',
+          providerId: 'vllm',
+        };
+      },
+    });
+    expect(calls).toBe(2);
+    expect(result.details?.estimated_spend_usd).toBe(0);
+  });
+
   test('no-op when no atoms have concept refs', async () => {
     const result = await runPhaseSynthesizeConcepts(engine, { _atoms: [] });
     expect(result.status).toBe('skipped');
