@@ -1,7 +1,7 @@
 ---
 title: "feat: Route background cognition to Skippy and reasoning to OpenAI"
 type: feat
-status: active
+status: completed
 date: 2026-07-22
 ---
 
