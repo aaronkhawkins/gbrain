@@ -376,6 +376,46 @@ describe('runEmbedCore --dry-run never calls the embedding model', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('runEmbedCore --stale egress fix (SQL-side filter)', () => {
+  test('signature-stale page split across cursor batches is stamped after its final chunk', async () => {
+    const chunks = Array.from({ length: 5 }, (_, chunk_index) => ({
+      chunk_index,
+      chunk_text: `chunk-${chunk_index}`,
+      chunk_source: 'compiled_truth',
+      embedded_at: null as string | null,
+      token_count: 1,
+    }));
+    const rows = chunks.map(chunk => ({
+      ...chunk,
+      model: null,
+      source_id: 'default',
+      page_id: 1,
+      embedding_signature: 'old:model:768',
+    }));
+    const stamps: string[] = [];
+    const engine = mockEngine({
+      countStaleChunks: async () => 5,
+      invalidateStaleSignatureEmbeddings: async () => 5,
+      listStaleChunks: async (opts: { batchSize?: number; afterChunkIndex?: number }) =>
+        rows
+          .filter(row => row.chunk_index > (opts.afterChunkIndex ?? -1))
+          .slice(0, opts.batchSize ?? 2),
+      getChunks: async () => chunks,
+      upsertChunks: async (_slug: string, updates: Array<{ chunk_index: number; embedding?: Float32Array }>) => {
+        for (const update of updates) {
+          if (update.embedding) chunks[update.chunk_index].embedded_at = 'now';
+        }
+      },
+      setPageEmbeddingSignature: async (_slug: string, opts: { signature: string }) => {
+        stamps.push(opts.signature);
+      },
+    });
+
+    const result = await runEmbedCore(engine, { stale: true, batchSize: 2 });
+
+    expect(result.embedded).toBe(5);
+    expect(stamps).toEqual(['test:model:1536']);
+  });
+
   test('zero stale chunks: countStaleChunks short-circuits, listPages never called', async () => {
     const { runEmbedCore } = await import('../src/commands/embed.ts');
     let listPagesCalled = false;

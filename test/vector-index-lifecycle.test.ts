@@ -3,6 +3,8 @@ import {
   chunkEmbeddingIndexSql,
   applyChunkEmbeddingIndexPolicy,
   PGVECTOR_HNSW_VECTOR_MAX_DIMS,
+  PGVECTOR_HNSW_HALFVEC_MAX_DIMS,
+  supportsHnswIndex,
   checkActiveBuild,
   dropZombieIndexes,
   dropAndRebuild,
@@ -12,6 +14,13 @@ import {
 } from '../src/core/vector-index.ts';
 
 describe('chunkEmbeddingIndexSql — pre-v0.30.1 contract', () => {
+  test('type-specific HNSW dimension limits match pgvector', () => {
+    expect(supportsHnswIndex('vector', PGVECTOR_HNSW_VECTOR_MAX_DIMS)).toBe(true);
+    expect(supportsHnswIndex('vector', PGVECTOR_HNSW_VECTOR_MAX_DIMS + 1)).toBe(false);
+    expect(supportsHnswIndex('halfvec', PGVECTOR_HNSW_HALFVEC_MAX_DIMS)).toBe(true);
+    expect(supportsHnswIndex('halfvec', PGVECTOR_HNSW_HALFVEC_MAX_DIMS + 1)).toBe(false);
+  });
+
   test('emits CREATE INDEX for dims ≤ 2000', () => {
     const sql = chunkEmbeddingIndexSql(1536);
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_chunks_embedding');

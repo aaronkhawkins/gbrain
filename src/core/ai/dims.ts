@@ -65,6 +65,13 @@ export function isValidZeroEntropyDim(dims: number): boolean {
   return (ZEROENTROPY_VALID_DIMS as readonly number[]).includes(dims);
 }
 
+const NVIDIA_NEMOTRON_3_EMBED_MODEL = 'nvidia/nemotron-3-embed-1b';
+export const NVIDIA_NEMOTRON_3_EMBED_DIMS = 2048;
+
+export function isNvidiaNemotron3EmbedModel(modelId: string): boolean {
+  return modelId === NVIDIA_NEMOTRON_3_EMBED_MODEL;
+}
+
 // v0.36.0.0 (D13): OpenAI text-embedding-3-* accepts arbitrary truncation via
 // Matryoshka — any positive integer up to the model's native size. When a
 // brain is configured with `embedding_dimensions` OUTSIDE that range, OpenAI
@@ -145,6 +152,23 @@ export function dimsProviderOptions(
       // Anthropic has no embedding model.
       return undefined;
     case 'openai-compatible':
+      // NVIDIA Nemotron-3-Embed-1B NIM is fixed at its native 2048-d output.
+      // It uses `passage` rather than gbrain's internal `document` name for
+      // the indexed side of asymmetric retrieval. Do not send `dimensions`:
+      // the NIM does not support Matryoshka reduction for this model.
+      if (isNvidiaNemotron3EmbedModel(modelId)) {
+        if (dims !== NVIDIA_NEMOTRON_3_EMBED_DIMS) {
+          throw new AIConfigError(
+            `NVIDIA NIM model "${modelId}" requires embedding_dimensions=${NVIDIA_NEMOTRON_3_EMBED_DIMS}, got ${dims}.`,
+            `Set \`embedding_dimensions\` to ${NVIDIA_NEMOTRON_3_EMBED_DIMS} and re-embed the brain.`,
+          );
+        }
+        return {
+          openaiCompatible: {
+            input_type: inputType === 'query' ? 'query' : 'passage',
+          },
+        };
+      }
       // ZE zembed-1 — flexible Matryoshka dims + asymmetric input_type.
       // Lives BEFORE the generic openai-compatible fall-through to avoid
       // sending input_type to providers (Azure/DashScope/Zhipu) that

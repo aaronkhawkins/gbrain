@@ -843,7 +843,8 @@ export function isAvailable(touchpoint: TouchpointKind, modelOverride?: string):
 // ---- Embedding ----
 
 /**
- * Carries the asymmetric-embedding `input_type` ('query' | 'document')
+ * Carries the asymmetric-embedding wire `input_type`
+ * ('query' | 'document' | 'passage')
  * across the AI SDK boundary, from embedSubBatch() to the per-recipe fetch
  * shims below (#1400).
  *
@@ -860,7 +861,7 @@ export function isAvailable(touchpoint: TouchpointKind, modelOverride?: string):
  * threads an input_type; shims that need a default (ZE) apply their own.
  * Same module-level ALS pattern as `__budgetStore` below.
  */
-const __embedInputTypeStore = new AsyncLocalStorage<'query' | 'document'>();
+const __embedInputTypeStore = new AsyncLocalStorage<'query' | 'document' | 'passage'>();
 
 /**
  * Voyage AI compatibility shim. Voyage's `/v1/embeddings` endpoint is OpenAI-shaped
@@ -1625,7 +1626,10 @@ async function embedSubBatch(
     // actually emitted one, so non-asymmetric paths run store-empty and the
     // fetch shims leave their wire bodies untouched.
     const threadedInputType = providerOpts?.openaiCompatible?.input_type;
-    const result = await (threadedInputType === 'query' || threadedInputType === 'document'
+    const result = await (
+      threadedInputType === 'query' ||
+      threadedInputType === 'document' ||
+      threadedInputType === 'passage'
       ? __embedInputTypeStore.run(threadedInputType, callTransport)
       : callTransport());
 

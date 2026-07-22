@@ -249,11 +249,15 @@ describe('BudgetTracker.reserve', () => {
   });
 
   test('v0.40.x: local embed providers price at $0 (no TX2 throw under --max-cost)', () => {
-    // FREE_LOCAL_EMBED_PROVIDERS — ollama / llama-server run on local inference
+    // FREE_LOCAL_EMBED_PROVIDERS run on local inference
     // (electricity, not tokens). Pre-fix a --max-cost embed/reindex job
     // configured for a local provider TX2 hard-failed because
     // lookupEmbeddingPrice has no entry for them.
-    for (const modelId of ['ollama:nomic-embed-text', 'llama-server:my-gguf']) {
+    for (const modelId of [
+      'ollama:nomic-embed-text',
+      'llama-server:my-gguf',
+      'nvidia-nim:nvidia/nemotron-3-embed-1b',
+    ]) {
       const t = new BudgetTracker({ maxCostUsd: 0.0001, label: 'test', auditPath });
       expect(() =>
         t.reserve({ modelId, estimatedInputTokens: 5000, maxOutputTokens: 0, kind: 'embed' }),

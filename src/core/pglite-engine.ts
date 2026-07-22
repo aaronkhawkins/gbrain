@@ -2324,7 +2324,7 @@ export class PGLiteEngine implements BrainEngine {
         const { rows } = isFirstPage ? await this.db.query(
           `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
                   cc.model, cc.token_count, p.source_id, cc.page_id,
-                  p.updated_at
+                 p.updated_at, p.embedding_signature
              FROM content_chunks cc
              JOIN pages p ON p.id = cc.page_id
             WHERE cc.embedding IS NULL
@@ -2335,7 +2335,7 @@ export class PGLiteEngine implements BrainEngine {
         ) : await this.db.query(
           `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
                   cc.model, cc.token_count, p.source_id, cc.page_id,
-                  p.updated_at
+                 p.updated_at, p.embedding_signature
              FROM content_chunks cc
              JOIN pages p ON p.id = cc.page_id
             WHERE cc.embedding IS NULL
@@ -2354,7 +2354,7 @@ export class PGLiteEngine implements BrainEngine {
       const { rows } = isFirstPage ? await this.db.query(
         `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
                 cc.model, cc.token_count, p.source_id, cc.page_id,
-                p.updated_at
+               p.updated_at, p.embedding_signature
            FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
           WHERE cc.embedding IS NULL
@@ -2366,7 +2366,7 @@ export class PGLiteEngine implements BrainEngine {
       ) : await this.db.query(
         `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
                 cc.model, cc.token_count, p.source_id, cc.page_id,
-                p.updated_at
+               p.updated_at, p.embedding_signature
            FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
           WHERE cc.embedding IS NULL
@@ -2391,7 +2391,7 @@ export class PGLiteEngine implements BrainEngine {
     if (opts?.sourceId === undefined) {
       const { rows } = await this.db.query(
         `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
-                cc.model, cc.token_count, p.source_id, cc.page_id
+               cc.model, cc.token_count, p.source_id, cc.page_id, p.embedding_signature
            FROM content_chunks cc
            JOIN pages p ON p.id = cc.page_id
           WHERE cc.embedding IS NULL
@@ -2405,7 +2405,7 @@ export class PGLiteEngine implements BrainEngine {
     }
     const { rows } = await this.db.query(
       `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
-              cc.model, cc.token_count, p.source_id, cc.page_id
+             cc.model, cc.token_count, p.source_id, cc.page_id, p.embedding_signature
          FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
         WHERE cc.embedding IS NULL

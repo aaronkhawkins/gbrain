@@ -5614,6 +5614,7 @@ export async function buildChecks(
   try {
     const { getEmbeddingColumnRegistry, resolveEmbeddingColumn, quoteIdentifier } =
       await import('../core/search/embedding-column.ts');
+    const { supportsHnswIndex } = await import('../core/vector-index.ts');
     const { loadConfig: _loadConfig } = await import('../core/config.ts');
     const fileCfg = _loadConfig();
     const mergedCfg = fileCfg ? await (await import('../core/config.ts')).loadConfigWithEngine(engine, fileCfg).catch(() => fileCfg) : null;
@@ -5665,6 +5666,7 @@ export async function buildChecks(
       // Per-column health rollup.
       const issues: string[] = [];
       const okColumns: string[] = [];
+      const exactScanColumns: string[] = [];
       for (const colName of declaredColumns) {
         const entry = registry[colName];
         const actual = actualByName.get(colName);
@@ -5693,6 +5695,11 @@ export async function buildChecks(
           continue;
         }
         if (engine.kind === 'postgres' && haveIndex.get(colName) === false) {
+          if (!supportsHnswIndex(entry.type, entry.dimensions)) {
+            exactScanColumns.push(colName);
+            okColumns.push(colName);
+            continue;
+          }
           issues.push(
             `${colName}: no HNSW index. Search works but uses sequential scan. ` +
               `Fix: CREATE INDEX IF NOT EXISTS idx_chunks_${colName} ON content_chunks USING hnsw (${quoteIdentifier(colName)} ${entry.type}_cosine_ops);`,
@@ -5731,7 +5738,11 @@ export async function buildChecks(
       }
 
       if (issues.length === 0 && !coverageWarn) {
-        const indexNote = engine.kind === 'postgres' ? ' (all indexed)' : '';
+        const indexNote = engine.kind === 'postgres'
+          ? exactScanColumns.length > 0
+            ? ` (indexed where supported; exact scan: ${exactScanColumns.join(', ')})`
+            : ' (all indexed)'
+          : '';
         checks.push({
           name: 'embedding_column_registry',
           status: 'ok',

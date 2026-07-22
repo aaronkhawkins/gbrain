@@ -1,6 +1,6 @@
 # Embedding providers
 
-GBrain ships with 16 embedding-provider recipes covering OpenAI, ZeroEntropy, Voyage, OpenRouter (single key, many hosted models), the major hosted alternatives, three local options, and a universal escape hatch (LiteLLM proxy). Run `gbrain providers list` to see the live registry; `gbrain providers explain --json` emits a machine-readable matrix for agents.
+GBrain ships with 17 embedding-provider recipes covering OpenAI, ZeroEntropy, Voyage, OpenRouter (single key, many hosted models), the major hosted alternatives, local runtimes, and a universal escape hatch (LiteLLM proxy). Run `gbrain providers list` to see the live registry; `gbrain providers explain --json` emits a machine-readable matrix for agents.
 
 This page is the human-readable counterpart: capability per provider, env-var setup, dimensions, cost, and known constraints.
 
@@ -34,6 +34,7 @@ The resolved provider + dimensions get persisted to `~/.gbrain/config.json` atom
 | `zhipu` | `ZHIPUAI_API_KEY` | 1024 | varies | no | no |
 | `ollama` | (none — runs locally) | 768 | 0 | yes | no |
 | `llama-server` | (none — runs locally) | user-set | 0 | yes | no |
+| `nvidia-nim` | `NVIDIA_NIM_BASE_URL` (optional), `NVIDIA_NIM_API_KEY` (optional) | 2048 | 0 | yes | no |
 | `litellm` | `LITELLM_API_KEY` (optional) | user-set | varies | yes (proxy) | yes (backend permitting) |
 | `together` | `TOGETHER_API_KEY` | 768 | varies | no | no |
 | `anthropic` | (no embedding model — chat only) | — | — | — | — |
@@ -152,6 +153,12 @@ The recipe default is `nomic-embed-text`'s 768 dims. If you run one of the large
 `llama.cpp`'s `llama-server --embeddings` endpoint. No env required. Optional `LLAMA_SERVER_BASE_URL` (default `http://localhost:8080/v1`) and `LLAMA_SERVER_API_KEY`.
 
 User-driven models: launch llama-server with `--model <gguf-path> --embeddings`, then run `gbrain init --embedding-model llama-server:<your-id> --embedding-dimensions <N>`. gbrain trusts the dimension you declare (you know the GGUF you launched); the recipe refuses the implicit shorthand `--model llama-server` because there's no canonical first model.
+
+### NVIDIA Embedding NIM (local)
+
+The official NVIDIA NIM for `nvidia/nemotron-3-embed-1b` exposes an OpenAI-compatible `/v1/embeddings` endpoint. Set `NVIDIA_NIM_BASE_URL` to the service's `/v1` URL; `NVIDIA_NIM_API_KEY` is optional for an authenticated local gateway.
+
+Configure it with `--embedding-model nvidia-nim:nvidia/nemotron-3-embed-1b --embedding-dimensions 2048`. The model is asymmetric: GBrain sends `input_type=query` for search and `input_type=passage` for indexed content. Its output is fixed at the native 2048 dimensions, so GBrain rejects other widths and does not send an unsupported `dimensions` parameter. Because pgvector HNSW on `vector` columns supports at most 2000 dimensions, the primary 2048-d column uses an exact scan unless you explicitly create a separate `halfvec` column.
 
 ### LiteLLM proxy (universal escape hatch)
 

@@ -600,6 +600,8 @@ export interface StaleChunkRow {
   source_id: string;
   /** v0.33.3: page_id for cursor pagination in listStaleChunks. */
   page_id: number;
+  /** Page-level embedding provenance used to finish split-page restamps. */
+  embedding_signature?: string | null;
 }
 
 /**

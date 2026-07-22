@@ -1025,7 +1025,13 @@ async function embedAllStale(
           // A partially-stale page keeps preserved chunks of unknown/old
           // provenance, so don't claim it's current. (After invalidate, a
           // signature-drifted page IS fully stale → this stamps it.)
-          if (signature && stale.length === existing.length) {
+          const staleIndexes = new Set(stale.map(c => c.chunk_index));
+          const splitSignaturePageCompleted =
+            signature !== undefined &&
+            stale[0]?.embedding_signature != null &&
+            stale[0].embedding_signature !== signature &&
+            existing.every(c => c.embedded_at || staleIndexes.has(c.chunk_index));
+          if (signature && (stale.length === existing.length || splitSignaturePageCompleted)) {
             await observed(pacer, () =>
               engine.setPageEmbeddingSignature(slug, { sourceId: keySourceId, signature }),
             );

@@ -245,3 +245,47 @@ describe('Voyage hosted — input_type reaches the wire body (opt-in preserved)'
     expect('input_type' in capturedBody).toBe(false);
   });
 });
+
+describe('NVIDIA Embedding NIM — native asymmetric contract reaches the wire', () => {
+  function configureNim(dims = 2048) {
+    configureGateway({
+      embedding_model: 'nvidia-nim:nvidia/nemotron-3-embed-1b',
+      embedding_dimensions: dims,
+      env: {},
+      base_urls: { 'nvidia-nim': 'http://localhost:8000/v1' },
+    });
+  }
+
+  test('embedQuery sends input_type=query and no dimensions override', async () => {
+    configureNim();
+    let capturedBody: any = null;
+    fetchHandler = async (_url, init) => {
+      capturedBody = JSON.parse(init.body as string);
+      return openAIShapedResponse(2048, 1);
+    };
+
+    await embedQuery('where is the deployment runbook?');
+    expect(capturedBody.input_type).toBe('query');
+    expect('dimensions' in capturedBody).toBe(false);
+  });
+
+  test('embed sends NIM input_type=passage and no dimensions override', async () => {
+    configureNim();
+    let capturedBody: any = null;
+    fetchHandler = async (_url, init) => {
+      capturedBody = JSON.parse(init.body as string);
+      return openAIShapedResponse(2048, 1);
+    };
+
+    await embed(['the deployment runbook lives in operations']);
+    expect(capturedBody.input_type).toBe('passage');
+    expect('dimensions' in capturedBody).toBe(false);
+  });
+
+  test('refuses a non-native vector dimension before making a request', async () => {
+    configureNim(768);
+    await expect(embedQuery('hello')).rejects.toThrow(
+      'requires embedding_dimensions=2048',
+    );
+  });
+});

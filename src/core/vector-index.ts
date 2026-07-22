@@ -17,12 +17,19 @@
 import type { BrainEngine } from './engine.ts';
 
 export const PGVECTOR_HNSW_VECTOR_MAX_DIMS = 2000;
+export const PGVECTOR_HNSW_HALFVEC_MAX_DIMS = 4000;
+
+export function supportsHnswIndex(type: 'vector' | 'halfvec', dims: number): boolean {
+  return dims <= (type === 'halfvec'
+    ? PGVECTOR_HNSW_HALFVEC_MAX_DIMS
+    : PGVECTOR_HNSW_VECTOR_MAX_DIMS);
+}
 
 const CHUNK_EMBEDDING_HNSW_INDEX =
   'CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);';
 
 export function chunkEmbeddingIndexSql(dims: number): string {
-  if (dims <= PGVECTOR_HNSW_VECTOR_MAX_DIMS) return CHUNK_EMBEDDING_HNSW_INDEX;
+  if (supportsHnswIndex('vector', dims)) return CHUNK_EMBEDDING_HNSW_INDEX;
   return [
     '-- idx_chunks_embedding skipped: pgvector HNSW vector indexes support',
     `-- at most ${PGVECTOR_HNSW_VECTOR_MAX_DIMS} dimensions; exact vector scans remain available.`,

@@ -153,6 +153,7 @@ const FREE_LOCAL_RERANK_PROVIDERS: ReadonlySet<string> = new Set([
 const FREE_LOCAL_EMBED_PROVIDERS: ReadonlySet<string> = new Set([
   'ollama',
   'llama-server',
+  'nvidia-nim',
 ]);
 
 /**
