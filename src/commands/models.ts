@@ -68,40 +68,47 @@ interface ModelsReport {
   aliases: { defaults: Record<string, string>; user: Record<string, string> };
 }
 
-async function probeSource(engine: BrainEngine, configKey: string, envVar: string): Promise<string | null> {
-  // For per-task probes, return the source the resolver USED (config / env /
-  // tier default / hardcoded). The resolver itself is the source of truth;
-  // we re-walk a subset of its precedence here to attribute the value.
-  const configVal = await engine.getConfig(configKey);
-  if (configVal && configVal.trim()) return `config: ${configKey}`;
-  if (process.env[envVar] && process.env[envVar]!.trim()) return `env: ${envVar}`;
-  return null;
+async function resolveModelSource(
+  engine: BrainEngine,
+  opts: { configKey?: string; tier?: ModelTier; envVar?: string; fallback: string },
+): Promise<string> {
+  // Keep this in the same order as resolveModel. Report entries do not have a
+  // CLI flag or deprecated config key, so their first possible source is the
+  // task key followed by the shared routing layers.
+  if (opts.configKey) {
+    const taskValue = await engine.getConfig(opts.configKey);
+    if (taskValue?.trim()) return `config: ${opts.configKey}`;
+  }
+
+  const globalDefault = await engine.getConfig('models.default');
+  if (globalDefault?.trim()) return 'config: models.default';
+
+  if (opts.tier) {
+    const tierValue = await engine.getConfig(`models.tier.${opts.tier}`);
+    if (tierValue?.trim()) return `config: models.tier.${opts.tier}`;
+  }
+
+  const envVar = opts.envVar ?? 'GBRAIN_MODEL';
+  if (process.env[envVar]?.trim()) return `env: ${envVar}`;
+
+  if (opts.tier && TIER_DEFAULTS[opts.tier]) return `default: tier.${opts.tier}`;
+  return `fallback: ${opts.fallback}`;
 }
 
-async function buildReport(engine: BrainEngine): Promise<ModelsReport> {
+export async function buildModelsReport(engine: BrainEngine): Promise<ModelsReport> {
   const globalDefault = await engine.getConfig('models.default');
 
   const tiers = {} as Record<ModelTier, ModelEntry>;
   for (const t of TIERS) {
-    const tierOverride = await engine.getConfig(`models.tier.${t}`);
-    // What models.default beats tier — re-walk the chain to attribute properly.
-    let source: string;
-    if (globalDefault && globalDefault.trim()) {
-      source = 'config: models.default';
-    } else if (tierOverride && tierOverride.trim()) {
-      source = `config: models.tier.${t}`;
-    } else {
-      source = 'default';
-    }
     const resolved = await resolveModel(engine, { tier: t, fallback: TIER_DEFAULTS[t] });
+    const source = await resolveModelSource(engine, { tier: t, fallback: TIER_DEFAULTS[t] });
     tiers[t] = { tier: t, resolved, source };
   }
 
   const per_task: ModelsReport['per_task'] = [];
   for (const { key, tier, description } of PER_TASK_KEYS) {
     const resolved = await resolveModel(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
-    const explicit = await probeSource(engine, key, 'GBRAIN_MODEL');
-    const source = explicit ?? `tier.${tier}`;
+    const source = await resolveModelSource(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
     per_task.push({ key, tier, resolved, source, description });
   }
 
@@ -541,17 +548,21 @@ function shouldSkipProvider(modelStr: string, skip: string[]): boolean {
   return skip.includes(provider);
 }
 
-export async function runModels(engine: BrainEngine, args: string[]): Promise<void> {
-  const json = args.includes('--json');
+export function parseModelsSubcommand(args: string[]): 'doctor' | 'help' | 'read' {
   // CLI dispatch passes subcommand-only argv on current Bun entrypoints, while
   // older direct callers include the leading `models` token. Accept both.
   const positional = args.filter(arg => !arg.startsWith('-'));
   const requestedSubcommand = positional[0] === 'models' ? positional[1] : positional[0];
-  const sub = requestedSubcommand === 'doctor'
+  return requestedSubcommand === 'doctor'
     ? 'doctor'
     : requestedSubcommand === 'help' || args.includes('--help') || args.includes('-h')
       ? 'help'
       : 'read';
+}
+
+export async function runModels(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const sub = parseModelsSubcommand(args);
 
   if (sub === 'help') {
     process.stdout.write(
@@ -576,7 +587,7 @@ Tiers: utility (haiku-class) | reasoning (sonnet) | deep (opus) | subagent (Anth
   }
 
   if (sub === 'read') {
-    const report = await buildReport(engine);
+    const report = await buildModelsReport(engine);
     if (json) {
       process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     } else {

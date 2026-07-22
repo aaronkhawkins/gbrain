@@ -9,7 +9,7 @@ date: 2026-07-22
 
 ## Summary
 
-Add first-class support for Skippy's OpenAI-compatible vLLM endpoint, give native extraction and concept synthesis explicit model routes, and repair the OpenCode response adapter. Configure Aaron's personal GBrain so high-volume background cognition uses local Qwen while interactive and tool-using reasoning continues through the OpenAI subscription.
+Add first-class support for Skippy's OpenAI-compatible vLLM endpoint, give native extraction and concept synthesis explicit model routes, and repair the OpenCode response adapter. Configure the operator's personal GBrain so high-volume background cognition uses local Qwen while interactive and tool-using reasoning continues through the OpenAI subscription.
 
 ---
 
@@ -26,7 +26,7 @@ GBrain's durable facts and dream jobs are now operational, but their current mod
 - Skippy's vLLM service exposes a standard OpenAI-compatible chat-completions contract and remains an always-available homelab dependency.
 - Qwen should handle fact extraction, query expansion, atom extraction, concept synthesis, and inexpensive dream verdicts; OpenCode should remain the default for interactive chat, think, patterns, transcript synthesis, and tool-using subagents.
 - A direct provider route is preferable to introducing LiteLLM or a custom gateway because the workflow already owns task selection and retries.
-- The rollout may update Aaron's personal GBrain configuration and restart its existing autopilot service after code verification.
+- The rollout may update the operator's personal GBrain configuration and restart its existing autopilot service after code verification.
 
 ---
 
@@ -38,7 +38,7 @@ GBrain's durable facts and dream jobs are now operational, but their current mod
 - R4. OpenCode-backed calls return the actual assistant text produced by the OpenAI subscription route, including the live response shape currently yielding an empty result.
 - R5. Interactive chat, think, transcript synthesis, patterns, and tool-using subagents remain configurable on `opencode-server:*`.
 - R6. Provider failures are visible and correctly classified; malformed empty responses must not masquerade as success, while best-effort expansion may fall back only with a sanitized diagnostic.
-- R7. Existing provider integrations, source isolation, durable Minion retries, embedding configuration, and model assignments outside Aaron's personal brain remain unchanged.
+- R7. Existing provider integrations, source isolation, durable Minion retries, embedding configuration, and model assignments outside the operator's personal brain remain unchanged.
 - R8. The deployed personal-brain route is verified with bounded live calls before background automation resumes.
 
 ---

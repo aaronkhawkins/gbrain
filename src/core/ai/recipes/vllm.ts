@@ -1,7 +1,41 @@
 import type { Recipe } from '../types.ts';
-import { probeOpenAICompat } from '../probes.ts';
 
 const DEFAULT_BASE_URL = 'http://localhost:8000/v1';
+
+async function probeVllm(baseUrl: string, apiKey?: string): Promise<{
+  reachable: boolean;
+  models_endpoint_valid?: boolean;
+  error?: string;
+}> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1000);
+  try {
+    const headers: Record<string, string> = { accept: 'application/json' };
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+
+    const res = await fetch(new URL('/v1/models', baseUrl).toString(), {
+      signal: controller.signal,
+      headers,
+    });
+    if (!res.ok) {
+      return { reachable: true, models_endpoint_valid: false, error: `HTTP ${res.status}` };
+    }
+    const body = await res.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return { reachable: true, models_endpoint_valid: false, error: 'non-JSON response' };
+    }
+    const isList = (body as { object?: unknown; data?: unknown }).object === 'list'
+      && Array.isArray((body as { data?: unknown }).data);
+    return { reachable: true, models_endpoint_valid: isList };
+  } catch (error) {
+    return {
+      reachable: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Self-hosted vLLM exposes an OpenAI-compatible chat-completions API. The
@@ -37,7 +71,7 @@ export const vllm: Recipe = {
   },
   async probe(baseURL?: string) {
     const configured = baseURL ?? process.env.VLLM_BASE_URL ?? DEFAULT_BASE_URL;
-    const result = await probeOpenAICompat(configured);
+    const result = await probeVllm(configured, process.env.VLLM_API_KEY?.trim());
     if (!result.reachable || !result.models_endpoint_valid) {
       return {
         ready: false,
