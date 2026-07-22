@@ -68,6 +68,7 @@ describe('readContentChunksEmbeddingDim', () => {
     const result = await readContentChunksEmbeddingDim(engine);
     expect(result.exists).toBe(true);
     expect(result.dims).toBe(1536);
+    expect(result.columnType).toBe('vector');
   }, 30000);
 
   test('returns { exists: false, dims: null } on a fresh brain (no initSchema)', async () => {
@@ -79,10 +80,27 @@ describe('readContentChunksEmbeddingDim', () => {
       const result = await readContentChunksEmbeddingDim(fresh);
       expect(result.exists).toBe(false);
       expect(result.dims).toBeNull();
+      expect(result.columnType).toBeNull();
     } finally {
       await fresh.disconnect();
     }
   }, 30000);
+});
+
+test('readContentChunksEmbeddingDim recognizes halfvec storage', async () => {
+  let query = 0;
+  const probeEngine = {
+    executeRaw: async () => {
+      query++;
+      return query === 1 ? [{ exists: true }] : [{ formatted: 'halfvec(2048)' }];
+    },
+  } as unknown as PGLiteEngine;
+
+  expect(await readContentChunksEmbeddingDim(probeEngine)).toEqual({
+    exists: true,
+    dims: 2048,
+    columnType: 'halfvec',
+  });
 });
 
 describe('embeddingMismatchMessage', () => {

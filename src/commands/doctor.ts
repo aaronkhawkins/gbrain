@@ -2055,11 +2055,11 @@ export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promi
         message: 'content_chunks.embedding column not found. Fix: run `gbrain init --migrate-only` or check schema.',
       };
     }
-    if (existing.dims === null) {
+    if (existing.dims === null || existing.columnType === null) {
       return {
         name: 'embedding_width_consistency',
         status: 'warn',
-        message: 'content_chunks.embedding is not a vector type. Schema may be corrupt.',
+        message: 'content_chunks.embedding is not a vector or halfvec type. Schema may be corrupt.',
       };
     }
     if (existing.dims !== configDim) {
@@ -2079,14 +2079,14 @@ export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promi
         name: 'embedding_width_consistency',
         status: 'warn',
         message:
-          `Schema width mismatch: content_chunks.embedding is vector(${existing.dims}) but ` +
+          `Schema width mismatch: content_chunks.embedding is ${existing.columnType}(${existing.dims}) but ` +
           `gateway resolved embedding_dimensions = ${configDim}.\n\n${recipe}`,
       };
     }
     return {
       name: 'embedding_width_consistency',
       status: 'ok',
-      message: `Schema width (${existing.dims}d) matches gateway embedding_dimensions`,
+      message: `Schema width (${existing.columnType}(${existing.dims})) matches gateway embedding_dimensions`,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

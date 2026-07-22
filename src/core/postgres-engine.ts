@@ -1698,6 +1698,13 @@ export class PostgresEngine implements BrainEngine {
     // to the transaction so it can never leak onto a pooled connection.
     const rows = await sql.begin(async sql => {
       await sql`SET LOCAL statement_timeout = '8s'`;
+      // pgvector's HNSW cost estimate is conservative for wide halfvec
+      // indexes. At the default random_page_cost=4 Postgres prefers a full
+      // scan + sort even when the measured HNSW path is an order of magnitude
+      // faster (notably halfvec(2048) on a 10k-chunk personal brain). Scope a
+      // modest SSD-appropriate value to this transaction only; it encourages
+      // the ANN index without disabling sequential scans globally.
+      await sql`SET LOCAL random_page_cost = '2'`;
       return await sql.unsafe(rawQuery, params as Parameters<typeof sql.unsafe>[1]);
     });
     return rows.map(rowToSearchResult);

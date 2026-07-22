@@ -78,17 +78,19 @@ export function assertEmbeddingEnabled(cfg: { embedding_disabled?: boolean } | n
 export interface ColumnDimResult {
   /** Whether the `content_chunks.embedding` column exists. False on a fresh brain. */
   exists: boolean;
-  /** Parsed `vector(N)` dimension if known. null when the column doesn't exist or the type isn't vector. */
+  /** Parsed `vector(N)` / `halfvec(N)` dimension when known. */
   dims: number | null;
+  /** Physical pgvector storage type. */
+  columnType: 'vector' | 'halfvec' | null;
 }
 
 /**
- * Read the actual dimension of `content_chunks.embedding` from the engine.
+ * Read the actual dimension and storage type of `content_chunks.embedding`.
  *
  * Uses information_schema + a vector-specific catalog query. Returns
  * { exists: false, dims: null } on a fresh brain that doesn't have the
  * column yet. Returns { exists: true, dims: null } on a brain whose
- * column type isn't `vector` (shouldn't happen but defensive).
+ * column type isn't a supported pgvector type.
  */
 export async function readContentChunksEmbeddingDim(engine: BrainEngine): Promise<ColumnDimResult> {
   // Probe column existence first to avoid noisy errors on fresh brains.
@@ -101,7 +103,7 @@ export async function readContentChunksEmbeddingDim(engine: BrainEngine): Promis
      ) AS exists`,
   );
   const exists = !!existsRows?.[0]?.exists;
-  if (!exists) return { exists: false, dims: null };
+  if (!exists) return { exists: false, dims: null, columnType: null };
 
   // pgvector stores dim in pg_type.typmod when atttypmod is set; format_type
   // returns the human-readable `vector(N)`. We parse N out of that.
@@ -116,10 +118,17 @@ export async function readContentChunksEmbeddingDim(engine: BrainEngine): Promis
         AND NOT a.attisdropped`,
   );
   const formatted = formatRows?.[0]?.formatted ?? null;
-  if (!formatted) return { exists: true, dims: null };
+  if (!formatted) return { exists: true, dims: null, columnType: null };
 
-  const m = formatted.match(/vector\((\d+)\)/i);
-  return { exists: true, dims: m ? parseInt(m[1], 10) : null };
+  const halfMatch = formatted.match(/^halfvec\((\d+)\)$/i);
+  if (halfMatch) {
+    return { exists: true, dims: parseInt(halfMatch[1], 10), columnType: 'halfvec' };
+  }
+  const vectorMatch = formatted.match(/^vector\((\d+)\)$/i);
+  if (vectorMatch) {
+    return { exists: true, dims: parseInt(vectorMatch[1], 10), columnType: 'vector' };
+  }
+  return { exists: true, dims: null, columnType: null };
 }
 
 /**
