@@ -84,6 +84,8 @@ export interface ResolvedPack {
   manifest: SchemaPackManifest;
   identity: string;        // `<name>@<version>+<sha8>` (child only — wire-stable)
   manifest_sha8: string;
+  effective_identity: string;
+  effective_manifest_sha8: string;
   alias_closure_hash: string;
   alias_graph: AliasGraph;
 }
@@ -245,15 +247,6 @@ export async function resolvePack(
   const sha8 = await computeManifestSha8(manifest);
   const id = packIdentity(manifest, sha8);
 
-  // Reference-equality fast path: if a previous resolvePack(manifest, ...)
-  // produced the SAME identity, return the cached resolved object. This
-  // preserves the v0.38 contract that two calls with the same manifest
-  // bytes return the same JS object reference.
-  const existing = _byName.get(manifest.name);
-  if (existing && existing.resolved.identity === id) {
-    return existing.resolved;
-  }
-
   // Walk extends chain to enforce depth cap AND collect names for the
   // cache snapshot (codex C6 — child cache entry must remember every
   // parent so invalidatePackCache(parentName) can cascade).
@@ -274,15 +267,33 @@ export async function resolvePack(
     cursor = await loadByName(parentName);
   }
 
-  // For v0.38 skeleton: closure is computed on the manifest itself.
-  // Full extends-merging (child-wins) is the v0.41+ T20 follow-up.
-  const alias_graph = buildAliasGraph(manifest);
-  const alias_closure_hash = await computeAliasClosureHash(manifest);
+  // Materialize the effective manifest before any pack-aware consumer sees
+  // it. Lens/meta packs intentionally declare only their local delta; without
+  // this merge an active gbrain-everything pack exposed zero page types and
+  // silently disabled inherited aliases, filing rules, and validation.
+  const materialized = await materializeEffectiveManifest(manifest, loadByName);
+  const effectiveManifest = materialized.manifest;
+  for (const dependency of materialized.dependencies) {
+    if (!chain.includes(dependency)) chain.push(dependency);
+  }
+  const effectiveSha8 = await computeManifestSha8(effectiveManifest);
+  const effectiveIdentity = packIdentity(effectiveManifest, effectiveSha8);
+  // Preserve reference equality for genuinely unchanged effective schemas,
+  // while still detecting parent/borrowed changes when child bytes are stable.
+  const existing = _byName.get(manifest.name);
+  if (existing?.resolved.identity === id &&
+      existing.resolved.effective_manifest_sha8 === effectiveSha8) {
+    return existing.resolved;
+  }
+  const alias_graph = buildAliasGraph(effectiveManifest);
+  const alias_closure_hash = await computeAliasClosureHash(effectiveManifest);
 
   const resolved: ResolvedPack = {
-    manifest,
+    manifest: effectiveManifest,
     identity: id,
     manifest_sha8: sha8,
+    effective_identity: effectiveIdentity,
+    effective_manifest_sha8: effectiveSha8,
     alias_closure_hash,
     alias_graph,
   };
@@ -305,6 +316,101 @@ export async function resolvePack(
     lastStatMs: Date.now(),
   });
   return resolved;
+}
+
+async function materializeEffectiveManifest(
+  child: SchemaPackManifest,
+  loadByName: (name: string) => Promise<SchemaPackManifest>,
+  stack: string[] = [],
+): Promise<{ manifest: SchemaPackManifest; dependencies: Set<string> }> {
+  if (stack.includes(child.name)) {
+    throw new ExtendsChainTooDeepError(stack.length + 1, [...stack, child.name]);
+  }
+  if (stack.length + 1 > EXTENDS_DEPTH_HARD_CAP) {
+    throw new ExtendsChainTooDeepError(stack.length + 1, [...stack, child.name]);
+  }
+  const nextStack = [...stack, child.name];
+  const parentResult = child.extends
+    ? await materializeEffectiveManifest(await loadByName(child.extends), loadByName, nextStack)
+    : null;
+  const parent = parentResult?.manifest ?? null;
+  const dependencies = new Set<string>([child.name, ...(parentResult?.dependencies ?? [])]);
+
+  const borrowedPageTypes = [] as SchemaPackManifest['page_types'];
+  const borrowedLinkTypes = [] as SchemaPackManifest['link_types'];
+  const borrowedFrontmatterLinks = [] as SchemaPackManifest['frontmatter_links'];
+  const borrowedEnrichableTypes = [] as SchemaPackManifest['enrichable_types'];
+  const borrowedFilingRules = [] as SchemaPackManifest['filing_rules'];
+  for (const borrow of child.borrow_from) {
+    const borrowedResult = await materializeEffectiveManifest(
+      await loadByName(borrow.pack),
+      loadByName,
+      nextStack,
+    );
+    const borrowed = borrowedResult.manifest;
+    for (const dependency of borrowedResult.dependencies) dependencies.add(dependency);
+    const requestedTypes = new Set(borrow.types ?? []);
+    const requestedLinks = new Set(borrow.link_types ?? []);
+    borrowedPageTypes.push(...borrowed.page_types.filter((type) => requestedTypes.has(type.name)));
+    borrowedLinkTypes.push(...borrowed.link_types.filter((type) => requestedLinks.has(type.name)));
+    borrowedFrontmatterLinks.push(...borrowed.frontmatter_links.filter((rule) =>
+      requestedTypes.has(rule.page_type) && requestedLinks.has(rule.link_type),
+    ));
+    borrowedEnrichableTypes.push(...borrowed.enrichable_types.filter((entry) =>
+      requestedTypes.has(entry.type),
+    ));
+    borrowedFilingRules.push(...borrowed.filing_rules.filter((rule) =>
+      requestedTypes.has(rule.kind),
+    ));
+  }
+
+  return { manifest: {
+    ...(parent ?? child),
+    ...child,
+    page_types: mergeByKey(
+      [...(parent?.page_types ?? []), ...borrowedPageTypes, ...child.page_types],
+      (value) => value.name,
+    ),
+    link_types: mergeByKey(
+      [...(parent?.link_types ?? []), ...borrowedLinkTypes, ...child.link_types],
+      (value) => value.name,
+    ),
+    frontmatter_links: mergeByKey(
+      [...(parent?.frontmatter_links ?? []), ...borrowedFrontmatterLinks, ...child.frontmatter_links],
+      (value) => `${value.page_type}:${value.link_type}:${value.fields.join(',')}`,
+    ),
+    takes_kinds: [...new Set([...(parent?.takes_kinds ?? []), ...child.takes_kinds])],
+    enrichable_types: mergeByKey(
+      [...(parent?.enrichable_types ?? []), ...borrowedEnrichableTypes, ...child.enrichable_types],
+      (value) => value.type,
+    ),
+    filing_rules: mergeByKey(
+      [...(parent?.filing_rules ?? []), ...borrowedFilingRules, ...child.filing_rules],
+      (value) => value.kind,
+    ),
+    phases: [...new Set([...(parent?.phases ?? []), ...(child.phases ?? [])])],
+    calibration_domains: mergeByKey(
+      [...(parent?.calibration_domains ?? []), ...(child.calibration_domains ?? [])],
+      (value) => value.name,
+    ),
+    mapping_rules: mergeByKey(
+      [...(parent?.mapping_rules ?? []), ...(child.mapping_rules ?? [])],
+      mappingRuleKey,
+    ),
+  }, dependencies };
+}
+
+function mappingRuleKey(value: NonNullable<SchemaPackManifest['mapping_rules']>[number]): string {
+  if (value.kind === 'retype') {
+    return `${value.kind}:${value.from_type}:${value.path_filter ?? '*'}`;
+  }
+  return `${value.kind}:${value.from_type}`;
+}
+
+function mergeByKey<T>(values: T[], keyOf: (value: T) => string): T[] {
+  const merged = new Map<string, T>();
+  for (const value of values) merged.set(keyOf(value), value);
+  return [...merged.values()];
 }
 
 /**

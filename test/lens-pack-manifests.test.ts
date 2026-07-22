@@ -245,3 +245,27 @@ describe('v0.41 T4: gbrain-everything meta-pack shape', () => {
     expect(byName.risk_assessment).toBe('scalar_brier');
   });
 });
+
+describe('v0.41 T4: gbrain-everything effective composition', () => {
+  test('materializes inherited and selectively borrowed page types', async () => {
+    const { loadActivePack } = await import('../src/core/schema-pack/load-active.ts');
+    const resolved = await loadActivePack({
+      cfg: null,
+      remote: false,
+      perCall: 'gbrain-everything',
+    });
+    const names = resolved.manifest.page_types.map((type) => type.name);
+    expect(names).toContain('person');
+    expect(names).toContain('thesis');
+    expect(names).toContain('atom');
+    expect(names).toContain('learning');
+    expect(names.length).toBeGreaterThan(20);
+    expect(resolved.manifest.link_types.length).toBeGreaterThan(0);
+    expect(resolved.manifest.filing_rules.map((rule) => rule.kind)).toEqual(
+      expect.arrayContaining(['person', 'thesis', 'atom', 'learning']),
+    );
+    expect(resolved.manifest.phases).toEqual(
+      expect.arrayContaining(['extract_atoms', 'synthesize_concepts']),
+    );
+  });
+});

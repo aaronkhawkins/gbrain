@@ -93,6 +93,8 @@ export interface ExtractInput {
   abortSignal?: AbortSignal;
   /** Cap on number of facts returned per turn. Defaults to 10. */
   maxFactsPerTurn?: number;
+  /** Durable workers set this so transient gateway/parse failures retry. */
+  throwOnFailure?: boolean;
 }
 
 /** A pre-INSERT fact ready for the engine.insertFact path. */
@@ -186,13 +188,17 @@ export async function extractFactsFromTurn(input: ExtractInput): Promise<Extract
     // Re-throw aborts; absorb other errors as "no extraction" — caller's
     // `put_page` backstop will still record the page itself.
     if (isAbort(err)) throw err;
+    if (input.throwOnFailure) throw err;
     return [];
   }
 
   if (result.stopReason === 'refusal' || result.stopReason === 'content_filter') return [];
 
   const parsedRaw = parseExtractorJson(result.text);
-  if (!parsedRaw) return [];
+  if (!parsedRaw) {
+    if (input.throwOnFailure) throw new Error('facts extractor returned invalid JSON');
+    return [];
+  }
 
   const facts: ExtractedFact[] = [];
   for (const candidate of parsedRaw.slice(0, cap)) {

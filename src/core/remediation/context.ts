@@ -31,7 +31,11 @@ export async function loadRecommendationContext(
   // Also extended the API-key check to recognize the ZE key alongside
   // OpenAI (was OpenAI-only). After Lane C.3, zeroentropy_api_key lives
   // in GBrainConfig + propagates to the gateway env dict.
-  const repoPath = await engine.getConfig('sync.repo_path');
+  const { resolveSourceWithTier, getSourcePath } = await import('../source-resolver.ts');
+  const selectedSource = await resolveSourceWithTier(engine, null).catch(() => null);
+  const repoPath = selectedSource
+    ? await getSourcePath(engine, selectedSource.source_id).catch(() => null)
+    : null;
   let embeddingModel: string | undefined;
   let embeddingDimensions: number | undefined;
   try {
@@ -63,6 +67,7 @@ export async function loadRecommendationContext(
     return !!(process.env[envVar] || fromCfg);
   });
   return {
+    sourceId: selectedSource?.source_id,
     repoPath: repoPath ?? undefined,
     embeddingModel,
     embeddingDimensions,

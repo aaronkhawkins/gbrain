@@ -35,7 +35,7 @@ afterAll(async () => {
   await engine.disconnect();
 });
 
-async function putAndReadBackstop(slug: string, content: string): Promise<{ queued: boolean } | { skipped: string } | undefined> {
+async function putAndReadBackstop(slug: string, content: string): Promise<{ queued: boolean; job_id: number } | { skipped: string } | undefined> {
   const r = await dispatchToolCall(engine, 'put_page', { slug, content }, {
     remote: false,
     sourceId: 'default',
@@ -50,7 +50,7 @@ async function putAndReadBackstop(slug: string, content: string): Promise<{ queu
   }
   expect(r.isError).toBeFalsy();
   const payload = JSON.parse(r.content[0].text);
-  return payload.facts_backstop as { queued: boolean } | { skipped: string } | undefined;
+  return payload.facts_backstop as { queued: boolean; job_id: number } | { skipped: string } | undefined;
 }
 
 describe('put_page facts backstop', () => {
@@ -90,6 +90,7 @@ describe('put_page facts backstop', () => {
     const r = result!;
     if ('queued' in r) {
       expect(r.queued).toBe(true);
+      expect(r.job_id).toBeNumber();
     } else {
       // 'backstop_error' or 'queue_shutdown' would be a real failure.
       expect(r.skipped).toMatch(/^(queue_shutdown|backstop_error)?$/);

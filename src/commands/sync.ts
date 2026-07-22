@@ -196,6 +196,10 @@ export interface SyncResult {
   /** Pages re-embedded during this sync's auto-embed step. 0 if --no-embed or skipped. */
   embedded: number;
   pagesAffected: string[];
+  /** Durable facts work queued by this sync (incremental syncs only). */
+  factsJobsEnqueued?: number;
+  factsJobsSkipped?: number;
+  factsEnqueueErrors?: number;
   failedFiles?: number; // count of parse failures (Bug 9)
   /**
    * v0.41.13.0 partial-sync fields (only set when status === 'partial').
@@ -2865,17 +2869,28 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
 
   // v0.31.2: facts extraction now routes through the shared
   // src/core/facts/backstop.ts helper (PR1 commit 6). Sync uses
-  // queue mode (fire-and-forget) + 'high-only' filter so a 50-page
-  // sync doesn't block on N sequential Sonnet calls. The pre-fix
+  // durable mode + 'high-only' filter so a 50-page sync neither blocks on
+  // N sequential model calls nor loses them when the short-lived CLI exits.
+  // The persistent Minion worker owns retries and completion. The pre-fix
   // inline loop is gone — it carried (a) a dead-code type filter
   // ('conversation'/'transcript'/'therapy'/'call' aren't real
   // PageTypes), (b) a divergent eligibility shape from put_page,
   // and (c) raw extract→insert without dedup/supersede.
+  let factsJobSummary: Pick<SyncResult,
+    'factsJobsEnqueued' | 'factsJobsSkipped' | 'factsEnqueueErrors'> = {};
   if (!opts.noExtract && pagesAffected.length > 0 && pagesAffected.length <= 50) {
     const { runFactsBackstop } = await import('../core/facts/backstop.ts');
     const factsSourceId = opts.sourceId ?? 'default';
-    for (const slug of pagesAffected) {
-      try {
+    let factsJobsEnqueued = 0;
+    let factsJobsSkipped = 0;
+    let factsEnqueueErrors = 0;
+    const { runSlidingPool } = await import('../core/worker-pool.ts');
+    const poolResult = await runSlidingPool({
+      items: pagesAffected,
+      workers: Math.min(4, pagesAffected.length),
+      failureLabel: (slug) => slug,
+      onError: 'continue',
+      onItem: async (slug) => {
         // v0.40 D21: source-scoped getPage. Pre-v0.40 this called
         // engine.getPage(slug) WITHOUT sourceId, then wrote facts under
         // factsSourceId. On a federated brain with the same slug in two
@@ -2883,8 +2898,11 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         // would attribute facts to the wrong source. Codex outside-voice
         // catch on the v0.40 plan review.
         const page = await engine.getPage(slug, { sourceId: factsSourceId });
-        if (!page) continue;
-        await runFactsBackstop(
+        if (!page) {
+          factsJobsSkipped++;
+          return;
+        }
+        const factsResult = await runFactsBackstop(
           {
             slug,
             type: page.type,
@@ -2896,12 +2914,16 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
             sourceId: factsSourceId,
             sessionId: `sync:${slug}`,
             source: 'sync:import',
-            mode: 'queue',
+            mode: 'durable',
             notabilityFilter: 'high-only',
           },
         );
-      } catch { /* per-page enqueue is best-effort */ }
-    }
+        if (factsResult.mode === 'durable' && factsResult.enqueued) factsJobsEnqueued++;
+        else factsJobsSkipped++;
+      },
+    });
+    factsEnqueueErrors = poolResult.errored;
+    factsJobSummary = { factsJobsEnqueued, factsJobsSkipped, factsEnqueueErrors };
   }
 
   // Auto-embed (skip for large syncs — embedding calls OpenAI).
@@ -2946,6 +2968,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     chunksCreated,
     embedded,
     pagesAffected,
+    ...factsJobSummary,
   };
 }
 

@@ -208,6 +208,50 @@ describe('runFactsBackstop — mode: queue', () => {
   });
 });
 
+describe('runFactsBackstop — mode: durable', () => {
+  test('persists a retryable facts-absorb job instead of process-local work', async () => {
+    const page = meetingPage('meetings/durable-facts');
+    const r = await runFactsBackstop(page, makeCtx({
+      mode: 'durable',
+      source: 'sync:import',
+      notabilityFilter: 'high-only',
+    }));
+    expect(r.mode).toBe('durable');
+    if (r.mode !== 'durable') return;
+    expect(r.enqueued).toBe(true);
+    expect(r.jobId).toBeNumber();
+    const rows = await engine.executeRaw<{ name: string; status: string; data: Record<string, unknown> }>(
+      `SELECT name, status, data FROM minion_jobs WHERE id = $1`,
+      [r.jobId!],
+    );
+    expect(rows[0]?.name).toBe('facts-absorb');
+    expect(rows[0]?.status).toBe('waiting');
+    expect(rows[0]?.data.slug).toBe(page.slug);
+    expect(rows[0]?.data.notabilityFilter).toBe('high-only');
+    expect(rows[0]?.data.schema_version).toBe(1);
+  });
+
+  test('truthfully reports completed jobs and requeues failed jobs for identical content', async () => {
+    const page = meetingPage('meetings/durable-idempotency');
+    const ctx = makeCtx({ mode: 'durable', source: 'sync:import' });
+    const first = await runFactsBackstop(page, ctx);
+    if (first.mode !== 'durable' || first.jobId === undefined) throw new Error('job not queued');
+    await engine.executeRaw(`UPDATE minion_jobs SET status = 'completed' WHERE id = $1`, [first.jobId]);
+
+    const completed = await runFactsBackstop(page, ctx);
+    expect(completed).toMatchObject({
+      mode: 'durable', enqueued: false, jobId: first.jobId,
+      jobStatus: 'completed', skipped: 'already_completed',
+    });
+
+    await engine.executeRaw(`UPDATE minion_jobs SET status = 'dead' WHERE id = $1`, [first.jobId]);
+    const retried = await runFactsBackstop(page, ctx);
+    expect(retried).toMatchObject({
+      mode: 'durable', enqueued: true, jobId: first.jobId, jobStatus: 'waiting',
+    });
+  });
+});
+
 describe('runFactsBackstop — dedup fast-path', () => {
   test('two near-identical inserts: second comes back as duplicate', async () => {
     // Insert first via inline mode; we'll re-fire with the same fact text

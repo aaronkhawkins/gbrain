@@ -56,7 +56,7 @@ describe('checkPackUpgradeAvailable', () => {
   it('fires on gbrain-base brain with gbrain-base-v2 available', async () => {
     // Default active pack is gbrain-base; gbrain-base-v2 declares
     // migration_from: {pack: gbrain-base, version: "1.x"}.
-    const result = await checkPackUpgradeAvailable(engine);
+    const result = await checkPackUpgradeAvailable(engine, { cfg: null });
     expect(result.check.name).toBe('pack_upgrade_available');
     expect(result.check.status).toBe('warn');
     expect(result.check.message).toContain('gbrain-base-v2');
@@ -67,17 +67,26 @@ describe('checkPackUpgradeAvailable', () => {
   });
 
   it('manual_only routing via render.ts allowlist (D17)', async () => {
-    const result = await checkPackUpgradeAvailable(engine);
+    const result = await checkPackUpgradeAvailable(engine, { cfg: null });
     const step = result.remediations[0];
     const rec = toOnboardRecommendation(step);
     expect(rec.apply_policy).toBe('manual_only');
+  });
+
+  it('uses the configured file-plane pack instead of defaulting to gbrain-base', async () => {
+    const result = await checkPackUpgradeAvailable(engine, {
+      cfg: { schema_pack: 'gbrain-everything' } as never,
+    });
+    expect(result.check.status).toBe('ok');
+    expect(result.check.message).toContain('gbrain-everything');
+    expect(result.remediations).toEqual([]);
   });
 });
 
 describe('checkTypeProliferation (D16 pack-aware ratio)', () => {
   it('returns ok when distinct types under declared+5 threshold', async () => {
     await seedPages(['note', 'meeting', 'slack']);
-    const result = await checkTypeProliferation(engine);
+    const result = await checkTypeProliferation(engine, { cfg: null });
     expect(result.check.status).toBe('ok');
   });
 
@@ -94,9 +103,18 @@ describe('checkTypeProliferation (D16 pack-aware ratio)', () => {
     const types: string[] = [];
     for (let i = 0; i < seedCount; i++) types.push(`custom-type-${i}`);
     await seedPages(types);
-    const result = await checkTypeProliferation(engine);
+    const result = await checkTypeProliferation(engine, { cfg: null });
     expect(result.check.status).toBe('warn');
     expect(result.check.message).toMatch(new RegExp(`${seedCount} distinct`));
+  });
+
+  it('counts effective inherited types for a configured meta-pack', async () => {
+    await seedPages(['note', 'meeting', 'slack']);
+    const result = await checkTypeProliferation(engine, {
+      cfg: { schema_pack: 'gbrain-everything' } as never,
+    });
+    expect(result.check.status).toBe('ok');
+    expect(result.check.message).toContain('pack declares 30');
   });
 });
 

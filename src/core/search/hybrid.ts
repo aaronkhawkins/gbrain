@@ -1651,18 +1651,54 @@ export async function hybridSearchCached(
     ? await embeddingIdentityGate(engine, resolvedColCached)
     : null;
 
+  // Search type closure is pack-dependent. Include the effective alias
+  // closure in the persisted cache identity so changing an inherited or
+  // borrowed pack cannot serve results computed under the old closure.
+  const cachePack = await (async () => {
+    try {
+      const { loadActivePack } = await import('../schema-pack/load-active.ts');
+      const dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
+      const targetSourceIds = opts?.sourceIds?.length
+        ? [...new Set(opts.sourceIds)]
+        : opts?.sourceId ? [opts.sourceId] : [undefined];
+      const perSourceDb = new Map<string, string>();
+      for (const sourceId of targetSourceIds) {
+        if (!sourceId) continue;
+        const value = await engine.getConfig(`schema_pack.source.${sourceId}`);
+        if (value) perSourceDb.set(sourceId, value);
+      }
+      const packs = await Promise.all(targetSourceIds.map((sourceId) => loadActivePack({
+        cfg: cfgCached,
+        remote: false,
+        ...(sourceId && { sourceId }),
+        perSourceDb,
+        dbConfig,
+      })));
+      const effectiveIdentities = new Set(packs.map((pack) => pack.effective_identity));
+      return effectiveIdentities.size === 1 ? packs[0] ?? null : null;
+    } catch {
+      return null;
+    }
+  })();
+
   // Cache key carries the column + provider so different embedding spaces
   // never collide on the same `(source_id, query_text)` row.
   const cacheKnobsHash = knobsHash(resolvedForCache, {
     embeddingColumn: resolvedColCached.name,
     embeddingModel: resolvedColCached.embeddingModel,
+    ...(cachePack && {
+      schemaPack: cachePack.manifest.name,
+      schemaPackVersion: `${cachePack.manifest.version}+${cachePack.effective_manifest_sha8}`,
+    }),
   });
 
   // Cache decision: opts.useCache (explicit) wins over global config; global
   // config wins over mode bundle default. Mode bundle is on for all 3 modes
   // today; the resolver already folded everything through.
   const cacheCfg = await loadCacheConfig(engine);
-  const cacheEnabled = resolvedForCache.cache_enabled;
+  // Fail closed for persisted caching when the active pack could not be
+  // resolved or a federated search spans divergent effective schemas.
+  const cacheEnabled = resolvedForCache.cache_enabled && cachePack !== null;
   const cache = new SemanticQueryCache(engine, {
     ...cacheCfg,
     enabled: cacheEnabled,

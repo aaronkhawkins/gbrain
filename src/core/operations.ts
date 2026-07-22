@@ -1004,16 +1004,17 @@ const put_page: Operation = {
 
     // v0.31 (D23): facts compliance backstop. When an agent writes a page
     // on a conversation-shape slug AND the body has substantive prose, fire
-    // a fact-extraction job into the bounded queue. Skipped on dry-run,
+    // a durable fact-extraction job. Skipped on dry-run,
     // dream-generated content (anti-loop), and non-eligible kinds (sync,
     // ingest, file uploads, code pages). Never blocks the put_page response.
     // v0.31.2: routed through runFactsBackstop (PR1 commit 6) so put_page
     // and sync share the same eligibility/extract/dedup/insert pipeline.
-    // Queue mode preserves the prior fire-and-forget shape (caller's
-    // put_page response stays fast). Default 'all' notability filter
+    // Minion mode preserves the fire-and-forget latency while making the
+    // work retryable and observable after a server restart. Default 'all'
+    // notability filter
     // (MEDIUM facts wait for the dream cycle but DO land via put_page,
     // matching the pre-fix behavior on this surface).
-    let factsQueued: { queued: boolean } | { skipped: string } | undefined;
+    let factsQueued: { queued: boolean; job_id: number } | { skipped: string } | undefined;
     try {
       const { runFactsBackstop } = await import('./facts/backstop.ts');
       const r = await runFactsBackstop(
@@ -1028,12 +1029,12 @@ const put_page: Operation = {
           sourceId: ctx.sourceId ?? 'default',
           sessionId: (ctx as { source_session?: string }).source_session ?? null,
           source: 'mcp:put_page',
-          mode: 'queue',
+          mode: 'durable',
         },
       );
-      if (r.mode === 'queue' && r.enqueued) {
-        factsQueued = { queued: true };
-      } else if (r.mode === 'queue' && r.skipped) {
+      if (r.mode === 'durable' && r.enqueued && r.jobId !== undefined) {
+        factsQueued = { queued: true, job_id: r.jobId };
+      } else if (r.mode === 'durable' && r.skipped) {
         // Preserve the pre-v0.31.2 response shape for MCP clients:
         // 'kind:guide' / 'too_short' / 'subagent_namespace' / 'dream_generated'
         // (bare reasons), not the helper's namespaced 'eligibility_failed:...'
@@ -4511,6 +4512,8 @@ const get_active_schema_pack: Operation = {
       version: pack.manifest.version,
       sha8: pack.manifest_sha8,
       identity: pack.identity,
+      effective_sha8: pack.effective_manifest_sha8,
+      effective_identity: pack.effective_identity,
       page_types_count: pack.manifest.page_types.length,
       link_types_count: pack.manifest.link_types.length,
       primitive_summary: primitiveSummary,

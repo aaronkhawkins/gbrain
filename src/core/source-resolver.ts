@@ -239,11 +239,24 @@ export async function getDefaultSourcePath(
   cwd: string = process.cwd(),
 ): Promise<string | null> {
   const sourceId = await resolveSourceId(engine, null, cwd);
+  return getSourcePath(engine, sourceId);
+}
+
+/** Resolve the configured repository path for one already-selected source. */
+export async function getSourcePath(
+  engine: BrainEngine,
+  sourceId: string,
+): Promise<string | null> {
   const rows = await engine.executeRaw<{ local_path: string | null }>(
     `SELECT local_path FROM sources WHERE id = $1`,
     [sourceId],
   );
   if (rows[0]?.local_path) return rows[0].local_path;
+
+  // The legacy key predates multi-source brains and belongs only to the
+  // seeded default source. Letting another source inherit it can make doctor
+  // or remediation operate on the wrong repository.
+  if (sourceId !== 'default') return null;
 
   // Legacy fallback: pre-v0.18 brains stored the repo path in the global
   // config table under sync.repo_path. The sources table exists but its

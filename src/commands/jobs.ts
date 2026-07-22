@@ -12,6 +12,10 @@ import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
+import {
+  factsContentHash,
+  parseFactsAbsorbJobData,
+} from '../core/facts/durable-job.ts';
 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -1320,6 +1324,46 @@ export async function registerBuiltinHandlers(
   // terminal with "shell handler registered…" lines. The real `jobs work` path
   // omits opts and prints as before.
   const quiet = opts?.quiet === true;
+  worker.register('facts-absorb', async (job) => {
+    const data = parseFactsAbsorbJobData(job.data);
+    const { slug, sourceId } = data;
+
+    const page = await engine.getPage(slug, { sourceId });
+    if (!page) return { skipped: true, reason: 'page_missing', slug, source_id: sourceId };
+
+    const expectedHash = data.contentHash || undefined;
+    if (expectedHash) {
+      const actualHash = factsContentHash(page.compiled_truth ?? '');
+      if (actualHash !== expectedHash) {
+        return { skipped: true, reason: 'page_changed', slug, source_id: sourceId };
+      }
+    }
+
+    const { runFactsBackstop } = await import('../core/facts/backstop.ts');
+    const result = await runFactsBackstop({
+      slug,
+      type: page.type,
+      compiled_truth: page.compiled_truth ?? '',
+      frontmatter: page.frontmatter ?? {},
+    }, {
+      engine,
+      sourceId,
+      sessionId: typeof data.sessionId === 'string' ? data.sessionId : null,
+      source: data.source ?? 'sync:import',
+      mode: 'inline',
+      notabilityFilter: data.notabilityFilter === 'high-only' ? 'high-only' : 'all',
+      abortSignal: job.signal,
+      throwOnExtractionFailure: true,
+      ...(expectedHash && {
+        sourceStillCurrent: async () => {
+          const current = await engine.getPage(slug, { sourceId });
+          return current !== null && factsContentHash(current.compiled_truth ?? '') === expectedHash;
+        },
+      }),
+    });
+    return { slug, source_id: sourceId, ...result };
+  });
+
   worker.register('sync', async (job) => {
     const { performSync } = await import('./sync.ts');
     const repoPath = typeof job.data.repoPath === 'string' ? job.data.repoPath : undefined;

@@ -26,6 +26,7 @@ import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import { BIRDCLAW_RESEARCH_POLICY, hasResearchPolicy } from './research-provenance.ts';
 import { generatedPageChunks, putGeneratedSearchablePage } from '../generated-page-indexer.ts';
+import { createHash } from 'node:crypto';
 
 const DEFAULT_BUDGET_USD = 1.5;
 const TIER_T1_MIN = 10;
@@ -43,6 +44,7 @@ interface ConceptAtom {
   source_slug?: string;
   source_hash?: string;
   research_policy?: string;
+  updated_at?: Date;
 }
 
 interface EvidenceRef {
@@ -77,7 +79,10 @@ interface AtomGroup {
   supportCount: number;
   researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
   tier: 'T1' | 'T2' | 'T3' | 'T4';
+  latestInputUpdatedAt?: Date;
 }
+
+const SYNTHESIS_INPUT_VERSION = 'synthesize-concepts-input-v1';
 
 const SYNTH_PROMPT = `You write a 1-paragraph executive summary of a concept
 based on multiple atom-shaped insights that reference it.
@@ -108,8 +113,9 @@ export async function runPhaseSynthesizeConcepts(
           source_hash?: string;
           research_policy?: string;
         };
+          updated_at: Date;
       }>(
-        `SELECT slug, source_id, title, compiled_truth, frontmatter
+        `SELECT slug, source_id, title, compiled_truth, frontmatter, updated_at
            FROM pages
           WHERE type = 'atom'
             AND deleted_at IS NULL
@@ -126,6 +132,7 @@ export async function runPhaseSynthesizeConcepts(
           source_slug: r.frontmatter?.source_slug,
           source_hash: r.frontmatter?.source_hash,
           research_policy: r.frontmatter?.research_policy,
+          updated_at: r.updated_at,
         }));
     } catch {
       // No atoms table or query failed — phase no-ops cleanly.
@@ -193,6 +200,7 @@ export async function runPhaseSynthesizeConcepts(
       supportCount,
       ...(researchPolicy && { researchPolicy }),
       tier,
+      ...latestUpdatedAt(ordered),
     });
   }
   atomGroups.sort((a, b) => a.conceptSlug.localeCompare(b.conceptSlug));
@@ -238,10 +246,71 @@ export async function runPhaseSynthesizeConcepts(
 
   for (const group of atomGroups) {
     tierCounts[group.tier]++;
+    const title = group.conceptSlug.split('/').pop() ?? group.conceptSlug;
+    const conceptSlug = `concepts/${title}`;
+    const evidenceSection = renderEvidence(group.supportingSources, group.supportingAtoms);
+    const inputHash = synthesisInputHash(group);
+    const baseFrontmatter = {
+      type: 'concept',
+      tier: group.tier,
+      mention_count: group.atomTitles.length,
+      composite_score: group.supportCount,
+      ...(group.researchPolicy && {
+        research_policy: group.researchPolicy,
+        support_count: group.supportCount,
+        supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
+        supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
+      }),
+      synthesized_by: 'synthesize_concepts-v0.41',
+    };
+    const frontmatter = {
+      ...baseFrontmatter,
+      synthesis_input_hash: inputHash,
+    };
+    const existing = opts.dryRun
+      ? null
+      : await engine.getPage(conceptSlug, { sourceId: 'default' });
+
+    // The old implementation called the LLM before checking whether the page
+    // was already current. On a mature brain that meant hundreds of identical
+    // summaries per dream cycle. The input hash is derived solely from the
+    // evidence the prompt consumes, so it is safe to check before synthesis.
+    // Legacy pages have no hash; when their page is newer than every input atom
+    // and their metadata/chunks still match, preserve them without a one-time
+    // expensive regeneration. The first changed atom moves them onto the hash.
+    const previousSynthesisSucceeded = group.tier === 'T3' ||
+      existing?.frontmatter.synthesis_status === 'generated';
+    const exactInputMatch = existing?.frontmatter.synthesis_input_hash === inputHash &&
+      previousSynthesisSucceeded;
+    const legacyNarrativeLooksSuccessful = group.tier === 'T3' ||
+      !existing?.compiled_truth.startsWith(`${group.tier} concept.`);
+    const legacyInputMatch = existing != null &&
+      existing.frontmatter.synthesis_input_hash === undefined &&
+      group.latestInputUpdatedAt !== undefined &&
+      existing.updated_at >= group.latestInputUpdatedAt &&
+      legacyNarrativeLooksSuccessful &&
+      Object.entries(baseFrontmatter).every(([key, value]) =>
+        canonicalJson(existing.frontmatter[key]) === canonicalJson(value),
+      );
+    if (existing && (exactInputMatch || legacyInputMatch)) {
+      const expectedFrontmatter = exactInputMatch ? frontmatter : baseFrontmatter;
+      const compiledTruth = existing.compiled_truth;
+      if (await conceptPageIsCurrent(engine, conceptSlug, existing, compiledTruth, expectedFrontmatter)) {
+        conceptsProcessed++;
+        conceptsUnchanged++;
+        opts.progress?.tick(1, `${conceptsProcessed} concepts`);
+        await maybeYield();
+        continue;
+      }
+    }
+
     let narrative: string;
+    let synthesisStatus: 'generated' | 'deterministic' | 'fallback_budget' | 'fallback_error' =
+      group.tier === 'T3' ? 'deterministic' : 'generated';
     if (group.tier === 'T1' || group.tier === 'T2') {
       if (estimatedSpendUsd >= budgetCap) {
         narrative = deterministicNarrative(group);
+        synthesisStatus = 'fallback_budget';
       } else {
         try {
           const result = await chat({
@@ -269,12 +338,14 @@ export async function runPhaseSynthesizeConcepts(
           estimatedSpendUsd +=
             (result.usage.input_tokens * 3.0 + result.usage.output_tokens * 15.0) / 1_000_000;
           narrative = result.text.trim() || deterministicNarrative(group);
+          if (!result.text.trim()) synthesisStatus = 'fallback_error';
         } catch (err) {
           failures.push({
             concept: group.conceptSlug,
             error: err instanceof Error ? err.message : String(err),
           });
           narrative = deterministicNarrative(group);
+          synthesisStatus = 'fallback_error';
         }
       }
     } else {
@@ -282,25 +353,9 @@ export async function runPhaseSynthesizeConcepts(
     }
 
     if (!opts.dryRun) {
-      const title = group.conceptSlug.split('/').pop() ?? group.conceptSlug;
-      const evidenceSection = renderEvidence(group.supportingSources, group.supportingAtoms);
       const compiledTruth = evidenceSection ? `${narrative}\n\n${evidenceSection}` : narrative;
-      const frontmatter = {
-        type: 'concept',
-        tier: group.tier,
-        mention_count: group.atomTitles.length,
-        composite_score: group.supportCount,
-        ...(group.researchPolicy && {
-          research_policy: group.researchPolicy,
-          support_count: group.supportCount,
-          supporting_atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
-          supporting_sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
-        }),
-        synthesized_by: 'synthesize_concepts-v0.41',
-      };
-      const conceptSlug = `concepts/${title}`;
-      const existing = await engine.getPage(conceptSlug, { sourceId: 'default' });
-      if (await conceptPageIsCurrent(engine, conceptSlug, existing, compiledTruth, frontmatter)) {
+      const outputFrontmatter = { ...frontmatter, synthesis_status: synthesisStatus };
+      if (await conceptPageIsCurrent(engine, conceptSlug, existing, compiledTruth, outputFrontmatter)) {
         conceptsProcessed++;
         conceptsUnchanged++;
         opts.progress?.tick(1, `${conceptsProcessed} concepts`);
@@ -311,7 +366,7 @@ export async function runPhaseSynthesizeConcepts(
         title: title.replace(/-/g, ' '),
         type: 'concept',
         compiled_truth: compiledTruth,
-        frontmatter,
+        frontmatter: outputFrontmatter,
         timeline: '',
       }, { sourceId: 'default' });
     }
@@ -380,6 +435,28 @@ export async function runPhaseSynthesizeConcepts(
       dry_run: opts.dryRun ?? false,
     },
   };
+}
+
+function latestUpdatedAt(atoms: ConceptAtom[]): { latestInputUpdatedAt: Date } | Record<string, never> {
+  const timestamps = atoms
+    .map((atom) => atom.updated_at)
+    .filter((value): value is Date => value instanceof Date);
+  if (timestamps.length !== atoms.length || timestamps.length === 0) return {};
+  return { latestInputUpdatedAt: new Date(Math.max(...timestamps.map((value) => value.getTime()))) };
+}
+
+function synthesisInputHash(group: AtomGroup): string {
+  const input = {
+    version: SYNTHESIS_INPUT_VERSION,
+    concept: group.conceptSlug,
+    tier: group.tier,
+    support_count: group.supportCount,
+    titles: group.atomTitles.slice(0, 10),
+    bodies: group.atomBodies.slice(0, 5).map((body) => body.slice(0, 500)),
+    sources: group.supportingSources.slice(0, MAX_SUPPORTING_SOURCES),
+    atoms: group.supportingAtoms.slice(0, MAX_SUPPORTING_ATOMS),
+  };
+  return createHash('sha256').update(canonicalJson(input)).digest('hex');
 }
 
 function evidenceKey(atom: ConceptAtom): string {

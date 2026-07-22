@@ -17,12 +17,16 @@
  * choke point. Eligibility runs through `isFactsBackstopEligible` from
  * src/core/facts/eligibility.ts; kill-switch via `isFactsExtractionEnabled`.
  *
- * Two execution modes (D8 from /plan-eng-review):
+ * Three execution modes (D8 from /plan-eng-review):
  *
  *   - 'queue' (default): fire-and-forget via `getFactsQueue().enqueue`.
  *     Caller's await is ~zero (just the enqueue + microtask schedule).
  *     Used by sync, put_page, file_upload, code_import. Sync stays fast
  *     even on a 50-page batch.
+ *
+ *   - 'durable': persist a Minion job with idempotency + retry policy.
+ *     Used by short-lived bulk commands such as sync, where a process-local
+ *     queue would be aborted as soon as the CLI exits.
  *
  *   - 'inline': await the full pipeline; return real {inserted, duplicate,
  *     superseded, fact_ids} counts. Used by the explicit extract_facts
@@ -40,6 +44,11 @@
 import type { BrainEngine, FactInsertStatus, NewFact } from '../engine.ts';
 import { isFactsBackstopEligible } from './eligibility.ts';
 import type { PageType } from '../types.ts';
+import {
+  FACTS_ABSORB_JOB_SCHEMA_VERSION,
+  factsContentHash,
+  type FactsAbsorbJobData,
+} from './durable-job.ts';
 
 export interface FactsBackstopCtx {
   engine: BrainEngine;
@@ -57,7 +66,7 @@ export interface FactsBackstopCtx {
    */
   source: 'sync:import' | 'mcp:put_page' | 'mcp:extract_facts' | 'file_upload' | 'code_import';
   /** Execution mode — D8. Default 'queue' (fire-and-forget). */
-  mode?: 'queue' | 'inline';
+  mode?: 'queue' | 'durable' | 'inline';
   /** Notability filter — D4. Default 'all'; sync uses 'high-only'. */
   notabilityFilter?: 'all' | 'high-only';
   /** Abort signal for shutdown propagation. */
@@ -70,6 +79,10 @@ export interface FactsBackstopCtx {
   visibility?: 'private' | 'world';
   /** Override the chat model (extract_facts forwards user's model param when set). */
   model?: string;
+  /** Retry-capable durable workers surface gateway/parse failures. */
+  throwOnExtractionFailure?: boolean;
+  /** Durable workers revalidate the source revision immediately before writes. */
+  sourceStillCurrent?: () => Promise<boolean>;
 }
 
 /** Discriminated return shape based on FactsBackstopCtx.mode. */
@@ -81,12 +94,20 @@ export type FactsBackstopResult =
       skipped?: 'extraction_disabled' | 'queue_overflow' | 'queue_shutdown' | `eligibility_failed:${string}`;
     }
   | {
+      mode: 'durable';
+      enqueued: boolean;
+      jobId?: number;
+      jobStatus?: string;
+      skipped?: 'extraction_disabled' | 'already_completed' | 'cancelled' |
+        `terminal_status:${string}` | `eligibility_failed:${string}`;
+    }
+  | {
       mode: 'inline';
       inserted: number;
       duplicate: number;
       superseded: number;
       fact_ids: number[];
-      skipped?: 'extraction_disabled' | `eligibility_failed:${string}`;
+      skipped?: 'extraction_disabled' | 'source_changed' | `eligibility_failed:${string}`;
     };
 
 interface ParsedPageInput {
@@ -144,6 +165,8 @@ export async function runFactsBackstop(
   if (!enabled) {
     return mode === 'queue'
       ? { mode: 'queue', enqueued: false, queueDepth: 0, skipped: 'extraction_disabled' }
+      : mode === 'durable'
+        ? { mode: 'durable', enqueued: false, skipped: 'extraction_disabled' }
       : { mode: 'inline', inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped: 'extraction_disabled' };
   }
 
@@ -152,10 +175,68 @@ export async function runFactsBackstop(
     const skipped = `eligibility_failed:${eligible.reason}` as const;
     return mode === 'queue'
       ? { mode: 'queue', enqueued: false, queueDepth: 0, skipped }
+      : mode === 'durable'
+        ? { mode: 'durable', enqueued: false, skipped }
       : { mode: 'inline', inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped };
   }
 
   // --- Mode dispatch ---
+  if (mode === 'durable') {
+    const { MinionQueue } = await import('../minions/queue.ts');
+    const queue = new MinionQueue(ctx.engine);
+    // Bind the job to the exact text the extractor will read. Import-level
+    // content hashes can include frontmatter or normalization details and are
+    // therefore not safe for the worker's compiled_truth staleness check.
+    const identityHash = factsContentHash(parsedPage.compiled_truth);
+    const payload: FactsAbsorbJobData = {
+      schema_version: FACTS_ABSORB_JOB_SCHEMA_VERSION,
+      slug: parsedPage.slug,
+      sourceId: ctx.sourceId,
+      sessionId: ctx.sessionId,
+      source: ctx.source,
+      notabilityFilter: ctx.notabilityFilter ?? 'all',
+      contentHash: identityHash,
+    };
+    const job = await queue.add('facts-absorb', payload, {
+      idempotency_key: [
+        'facts-absorb-v1', ctx.sourceId, parsedPage.slug, identityHash,
+        payload.source, payload.notabilityFilter,
+      ].join(':'),
+      max_attempts: 3,
+      backoff_type: 'exponential',
+      backoff_delay: 5_000,
+    });
+    if (job.status === 'completed') {
+      return {
+        mode: 'durable', enqueued: false, jobId: job.id,
+        jobStatus: job.status, skipped: 'already_completed',
+      };
+    }
+    if (job.status === 'failed' || job.status === 'dead') {
+      const retried = await queue.retryJob(job.id);
+      if (retried) {
+        return { mode: 'durable', enqueued: true, jobId: retried.id, jobStatus: retried.status };
+      }
+      return {
+        mode: 'durable', enqueued: false, jobId: job.id,
+        jobStatus: job.status, skipped: `terminal_status:${job.status}`,
+      };
+    }
+    if (job.status === 'cancelled') {
+      return {
+        mode: 'durable', enqueued: false, jobId: job.id,
+        jobStatus: job.status, skipped: 'cancelled',
+      };
+    }
+    const enqueued = job.status === 'waiting' || job.status === 'active' || job.status === 'delayed';
+    return enqueued
+      ? { mode: 'durable', enqueued: true, jobId: job.id, jobStatus: job.status }
+      : {
+          mode: 'durable', enqueued: false, jobId: job.id,
+          jobStatus: job.status, skipped: `terminal_status:${job.status}`,
+        };
+  }
+
   if (mode === 'queue') {
     const { getFactsQueue } = await import('./queue.ts');
     const queue = getFactsQueue();
@@ -197,7 +278,18 @@ export async function runFactsBackstop(
   // here because the caller decides whether the failure is interesting
   // enough to record (vs. retry, vs. surface directly to the user).
   const r = await runPipeline(parsedPage, ctx, ctx.abortSignal);
-  return { mode: 'inline', ...r };
+  const { sourceChanged, ...counts } = r;
+  return sourceChanged
+    ? { mode: 'inline', ...counts, skipped: 'source_changed' }
+    : { mode: 'inline', ...counts };
+}
+
+interface FactsPipelineCounts {
+  inserted: number;
+  duplicate: number;
+  superseded: number;
+  fact_ids: number[];
+  sourceChanged?: boolean;
 }
 
 /**
@@ -240,7 +332,7 @@ async function runPipeline(
   parsedPage: ParsedPageInput,
   ctx: FactsBackstopCtx,
   abortSignal?: AbortSignal,
-): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[] }> {
+): Promise<FactsPipelineCounts> {
   return runPipelineWithBody(
     {
       turnText: parsedPage.compiled_truth,
@@ -281,7 +373,7 @@ async function runPipelineWithBody(
   input: { turnText: string; isDreamGenerated: boolean },
   ctx: FactsBackstopCtx,
   abortSignal?: AbortSignal,
-): Promise<{ inserted: number; duplicate: number; superseded: number; fact_ids: number[] }> {
+): Promise<FactsPipelineCounts> {
   const { extractFactsFromTurn } = await import('./extract.ts');
   const { resolveEntitySlug } = await import('../entities/resolve.ts');
   const { cosineSimilarity } = await import('./classify.ts');
@@ -300,6 +392,7 @@ async function runPipelineWithBody(
     engine: ctx.engine,
     abortSignal,
     model: ctx.model,
+    throwOnFailure: ctx.throwOnExtractionFailure,
   });
 
   const filter = ctx.notabilityFilter ?? 'all';
@@ -383,6 +476,10 @@ async function runPipelineWithBody(
   // every fact.
   const localPath = await lookupSourceLocalPath(ctx.engine, ctx.sourceId);
 
+  if (ctx.sourceStillCurrent && !await ctx.sourceStillCurrent()) {
+    return { inserted, duplicate, superseded, fact_ids, sourceChanged: true };
+  }
+
   // Phase 4: legacy DB-only fallback for unparented + thin-client.
   // Single-row engine.insertFact preserves the v0.31 semantics for
   // these structurally-unfenceable cases.
@@ -399,6 +496,9 @@ async function runPipelineWithBody(
   }
 
   for (const { f, resolvedSlug } of legacyBucket) {
+    if (ctx.sourceStillCurrent && !await ctx.sourceStillCurrent()) {
+      return { inserted, duplicate, superseded, fact_ids, sourceChanged: true };
+    }
     const newFact: NewFact = {
       fact: f.fact,
       kind: f.kind,
@@ -427,6 +527,9 @@ async function runPipelineWithBody(
   // engine.insertFacts batch.
   for (const [slug, group] of byEntity) {
     if (abortSignal?.aborted) break;
+    if (ctx.sourceStillCurrent && !await ctx.sourceStillCurrent()) {
+      return { inserted, duplicate, superseded, fact_ids, sourceChanged: true };
+    }
 
     const inputFacts = group.map(({ f }) => ({
       fact: f.fact,

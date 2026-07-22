@@ -14,9 +14,13 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { runPhaseExtractAtoms, parseAtomsResponse } from '../../src/core/cycle/extract-atoms.ts';
-import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
+import {
+  runPhaseSynthesizeConcepts,
+  type SynthesizeConceptsOpts,
+} from '../../src/core/cycle/synthesize-concepts.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
+import { putGeneratedSearchablePage } from '../../src/core/generated-page-indexer.ts';
 
 let engine: PGLiteEngine;
 
@@ -589,6 +593,97 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(receiptsAfter[0].count).toBe(receiptsBefore[0].count);
     const page = await engine.getPage('concepts/stable-topic');
     expect(page?.compiled_truth).not.toContain('## Supporting atoms');
+  });
+
+  test('unchanged T1/T2 synthesis skips the LLM before generating a narrative', async () => {
+    const atoms = Array.from({ length: 5 }, (_, i) => ({
+      slug: `atoms/llm-${i}`,
+      title: `LLM ${i}`,
+      body: `body ${i}`,
+      concept_refs: ['stable-llm-topic'],
+    }));
+    let calls = 0;
+    const chat = async (...args: Parameters<NonNullable<SynthesizeConceptsOpts['_chat']>>) => {
+      calls++;
+      return stubChat('Stable generated summary.')(...args);
+    };
+
+    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: chat });
+    const second = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: [...atoms].reverse(),
+      _chat: chat,
+    });
+
+    expect(calls).toBe(1);
+    expect(second.details?.concepts_written).toBe(0);
+    expect(second.details?.concepts_unchanged).toBe(1);
+  });
+
+  test('a failed T1/T2 synthesis is retried and replaced after the gateway recovers', async () => {
+    const atoms = Array.from({ length: 5 }, (_, i) => ({
+      slug: `atoms/retry-${i}`,
+      title: `Retry ${i}`,
+      body: `retry body ${i}`,
+      concept_refs: ['retry-topic'],
+    }));
+    let calls = 0;
+    const first = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: async () => {
+        calls++;
+        throw new Error('temporary gateway failure');
+      },
+    });
+    expect(first.status).toBe('warn');
+    expect((await engine.getPage('concepts/retry-topic'))?.frontmatter.synthesis_status)
+      .toBe('fallback_error');
+
+    const second = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: async (opts) => {
+        calls++;
+        return stubChat('Recovered generated summary.')(opts);
+      },
+    });
+
+    expect(calls).toBe(2);
+    expect(second.details?.concepts_written).toBe(1);
+    const recovered = await engine.getPage('concepts/retry-topic');
+    expect(recovered?.compiled_truth).toBe('Recovered generated summary.');
+    expect(recovered?.frontmatter.synthesis_status).toBe('generated');
+  });
+
+  test('legacy synthesized page newer than its atoms skips one-time LLM regeneration', async () => {
+    const atoms = Array.from({ length: 5 }, (_, i) => ({
+      slug: `atoms/legacy-llm-${i}`,
+      title: `Legacy LLM ${i}`,
+      body: `legacy body ${i}`,
+      concept_refs: ['legacy-llm-topic'],
+      updated_at: new Date('2020-01-01T00:00:00Z'),
+    }));
+    await putGeneratedSearchablePage(engine, 'concepts/legacy-llm-topic', {
+      title: 'legacy llm topic',
+      type: 'concept',
+      compiled_truth: 'A previously synthesized legacy summary.',
+      timeline: '',
+      frontmatter: {
+        type: 'concept',
+        tier: 'T2',
+        mention_count: 5,
+        composite_score: 5,
+        synthesized_by: 'synthesize_concepts-v0.41',
+      },
+    });
+    let calls = 0;
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: async (opts) => {
+        calls++;
+        return stubChat('Should not run.')(opts);
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.details?.concepts_unchanged).toBe(1);
   });
 
   test('otherwise unchanged legacy concept is rewritten when searchable chunks are missing', async () => {

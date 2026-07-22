@@ -12,6 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  getSourcePath,
   resolveSourceWithTier,
   SOURCE_TIER_NAMES,
   type SourceTier,
@@ -186,3 +187,15 @@ describe('resolveSourceWithTier — priority assertion', () => {
 // Typecheck-only assertion: SourceTier is the union of SOURCE_TIER_NAMES.
 const _exhaustiveCheck: SourceTier = 'flag';
 void _exhaustiveCheck;
+
+describe('getSourcePath', () => {
+  test('does not inherit the legacy default repo path for a non-default source', async () => {
+    const engine = {
+      executeRaw: async () => [{ local_path: null }],
+      getConfig: async (key: string) => key === 'sync.repo_path' ? '/brains/personal' : null,
+    } as unknown as BrainEngine;
+
+    expect(await getSourcePath(engine, 'company')).toBeNull();
+    expect(await getSourcePath(engine, 'default')).toBe('/brains/personal');
+  });
+});

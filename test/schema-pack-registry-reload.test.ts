@@ -123,6 +123,69 @@ describe('invalidatePackCache — extends-chain cascade (codex C6 fix)', () => {
     invalidatePackCache('c1');
     expect(_cacheNamesForTests().sort()).toEqual(['c2', 'p']);
   });
+
+  it('uses child mapping rules when they override the same parent source type', async () => {
+    const parent = {
+      ...fakeManifest('parent'),
+      mapping_rules: [{ kind: 'retype', from_type: 'legacy', to_type: 'person', subtype_field: 'subtype' }],
+    } as SchemaPackManifest;
+    const child = {
+      ...fakeManifest('child', { extends: 'parent' }),
+      mapping_rules: [{ kind: 'retype', from_type: 'legacy', to_type: 'company', subtype_field: 'subtype' }],
+    } as SchemaPackManifest;
+    const resolved = await resolvePack(child, async () => parent);
+    expect(resolved.manifest.mapping_rules).toHaveLength(1);
+    expect(resolved.manifest.mapping_rules?.[0]).toMatchObject({
+      kind: 'retype', from_type: 'legacy', to_type: 'company',
+    });
+  });
+});
+
+describe('invalidatePackCache — borrow dependency cascade', () => {
+  it('invalidating a borrowed pack evicts the pack that composed it', async () => {
+    const borrowed = fakeManifest('borrowed');
+    const child = {
+      ...fakeManifest('child'),
+      borrow_from: [{ pack: 'borrowed', types: ['person'], link_types: [] }],
+      page_types: [],
+    } as SchemaPackManifest;
+    const loadByName = async (name: string) => {
+      if (name === 'borrowed') return borrowed;
+      throw new Error(`unknown pack ${name}`);
+    };
+    await resolvePack(borrowed, loadByName);
+    await resolvePack(child, loadByName);
+
+    expect(new Set(invalidatePackCache('borrowed').invalidated))
+      .toEqual(new Set(['borrowed', 'child']));
+    expect(_cacheSizeForTests()).toBe(0);
+  });
+
+  it('keeps child identity stable but changes effective identity when borrowed content changes', async () => {
+    let borrowed = fakeManifest('borrowed');
+    const child = {
+      ...fakeManifest('child'),
+      borrow_from: [{ pack: 'borrowed', types: ['person'], link_types: [] }],
+      page_types: [],
+    } as SchemaPackManifest;
+    const loadByName = async (name: string) => {
+      if (name === 'borrowed') return borrowed;
+      throw new Error(`unknown pack ${name}`);
+    };
+    const first = await resolvePack(child, loadByName);
+    borrowed = {
+      ...borrowed,
+      page_types: borrowed.page_types.map((type) => ({ ...type, aliases: ['company'] })),
+    };
+    const second = await resolvePack(child, loadByName);
+
+    expect(second.identity).toBe(first.identity);
+    expect(second.manifest_sha8).toBe(first.manifest_sha8);
+    expect(second.effective_identity).not.toBe(first.effective_identity);
+    expect(second.effective_manifest_sha8).not.toBe(first.effective_manifest_sha8);
+    expect(second.manifest.page_types.find((type) => type.name === 'person')?.aliases)
+      .toContain('company');
+  });
 });
 
 describe('tryCachedPack — TTL gate', () => {
@@ -223,6 +286,28 @@ describe('stat-snapshot cross-process invalidation (D11)', () => {
 
       // tryCachedPack on the CHILD must detect parent's mtime change
       // (parent is in child's chain + files snapshot).
+      expect(tryCachedPack('child')).toBeNull();
+    });
+  });
+
+  it('detects an mtime change in a borrowed pack when checking the child', async () => {
+    await withEnv({ GBRAIN_PACK_STAT_TTL_MS: '0' }, async () => {
+      const borrowedPath = join(tmpDir, 'borrowed.yaml');
+      const childPath = join(tmpDir, 'child.yaml');
+      writeFileSync(borrowedPath, 'borrowed v1', 'utf-8');
+      writeFileSync(childPath, 'child v1', 'utf-8');
+      const borrowed = fakeManifest('borrowed');
+      const child = {
+        ...fakeManifest('child'),
+        borrow_from: [{ pack: 'borrowed', types: ['person'], link_types: [] }],
+      } as SchemaPackManifest;
+      const loadByName = async (name: string) => name === 'borrowed' ? borrowed : child;
+      const loadByPath = (name: string) =>
+        name === 'borrowed' ? borrowedPath : name === 'child' ? childPath : null;
+      await resolvePack(child, loadByName, { loadByPath });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      writeFileSync(borrowedPath, 'borrowed v2', 'utf-8');
+
       expect(tryCachedPack('child')).toBeNull();
     });
   });

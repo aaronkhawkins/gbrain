@@ -16,6 +16,7 @@
 // when ctx threads — onboard surface threads explicitly per A26.
 
 import type { BrainEngine } from '../engine.ts';
+import type { GBrainConfig } from '../config.ts';
 import type { RemediationStep } from '../remediation-step.ts';
 import { makeRemediationStep } from '../remediation-step.ts';
 
@@ -383,9 +384,11 @@ export async function runAllOnboardChecks(
  */
 export async function checkPackUpgradeAvailable(
   engine: BrainEngine,
+  opts: { cfg?: GBrainConfig | null } = {},
 ): Promise<OnboardCheckResult> {
   try {
     const { loadActivePack, findPackSuccessors } = await import('../schema-pack/load-active.ts');
+    const { loadConfigFileOnly } = await import('../config.ts');
     // Read the engine's DB-side schema_pack so a post-unify flip is visible
     // here even before the file-plane config catches up. Falls through to
     // file-plane/env/default resolution when unset.
@@ -393,7 +396,8 @@ export async function checkPackUpgradeAvailable(
     try {
       dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
     } catch { /* engine.config may not exist on very old brains */ }
-    const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
+    const cfg = opts.cfg !== undefined ? opts.cfg : loadConfigFileOnly();
+    const active = await loadActivePack({ cfg, remote: false, dbConfig })
       .catch(() => null);
     if (!active) {
       return {
@@ -459,15 +463,18 @@ export async function checkPackUpgradeAvailable(
  */
 export async function checkTypeProliferation(
   engine: BrainEngine,
+  opts: { cfg?: GBrainConfig | null } = {},
 ): Promise<OnboardCheckResult> {
   let declared = 15;  // fallback to gbrain-base-v2 default if pack unavailable
   try {
     const { loadActivePack } = await import('../schema-pack/load-active.ts');
+    const { loadConfigFileOnly } = await import('../config.ts');
     let dbConfig: string | undefined;
     try {
       dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
     } catch { /* tolerate pre-config brains */ }
-    const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
+    const cfg = opts.cfg !== undefined ? opts.cfg : loadConfigFileOnly();
+    const active = await loadActivePack({ cfg, remote: false, dbConfig })
       .catch(() => null);
     if (active) declared = active.manifest.page_types.length;
   } catch {

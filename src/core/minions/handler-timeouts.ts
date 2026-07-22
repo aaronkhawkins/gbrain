@@ -42,6 +42,7 @@ export const HANDLER_DEFAULT_TIMEOUT_MS: Readonly<Record<string, number>> = {
   // few writes. Generous 10-min budget (vs the tight null-default) covers a
   // slow gateway without the 30-min loop budget.
   chronicle_extract: TEN_MIN_MS,
+  'facts-absorb': TEN_MIN_MS,
 };
 
 /**
