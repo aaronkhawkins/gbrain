@@ -25,6 +25,7 @@ import { zeroentropyai } from './zeroentropyai.ts';
 import { llamaServerReranker } from './llama-server-reranker.ts';
 import { opencodeServer } from './opencode-server.ts';
 import { nvidiaNim } from './nvidia-nim.ts';
+import { vllm } from './vllm.ts';
 
 const ALL: Recipe[] = [
   openai,
@@ -46,6 +47,7 @@ const ALL: Recipe[] = [
   zeroentropyai,
   opencodeServer,
   nvidiaNim,
+  vllm,
 ];
 
 /** Map from `provider:id` key to recipe. */

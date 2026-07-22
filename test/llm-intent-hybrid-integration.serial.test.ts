@@ -10,22 +10,44 @@ import {
   resetGateway,
 } from '../src/core/ai/gateway.ts';
 import { hybridSearch } from '../src/core/search/hybrid.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
 const origFetch = globalThis.fetch;
+let prevGbrainHome: string | undefined;
+let isolatedHome: string;
 
 beforeAll(async () => {
+  prevGbrainHome = process.env.GBRAIN_HOME;
+  isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-llm-intent-home-'));
+  process.env.GBRAIN_HOME = isolatedHome;
+
+  configureGateway({
+    embedding_model: 'openai:text-embedding-3-large',
+    embedding_dimensions: 1536,
+    env: { OPENAI_API_KEY: 'test' },
+  });
+
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  await engine.setConfig('embedding_model', 'openai:text-embedding-3-large');
+  await engine.setConfig('embedding_dimensions', '1536');
 });
 
 afterAll(async () => {
   await engine.disconnect();
+  if (prevGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = prevGbrainHome;
+  rmSync(isolatedHome, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  await engine.setConfig('embedding_model', 'openai:text-embedding-3-large');
+  await engine.setConfig('embedding_dimensions', '1536');
   globalThis.fetch = (async (url: string | URL | Request) => {
     const u = typeof url === 'string' ? url : url.toString();
     if (u.includes('multimodalembeddings')) {
@@ -44,6 +66,18 @@ beforeEach(async () => {
     embedding_multimodal_model: 'voyage:voyage-multimodal-3',
     env: { OPENAI_API_KEY: 'test', VOYAGE_API_KEY: 'test', ANTHROPIC_API_KEY: 'test' },
   });
+  await engine.putPage('notes/embedded-fixture', {
+    type: 'note',
+    title: 'Embedded Fixture',
+    compiled_truth: 'fixture content',
+  });
+  await engine.upsertChunks('notes/embedded-fixture', [{
+    chunk_index: 0,
+    chunk_text: 'fixture content',
+    chunk_source: 'compiled_truth',
+    embedding: new Float32Array(1536).fill(0.1),
+    model: 'openai:text-embedding-3-large',
+  }]);
 });
 
 afterEach(() => {

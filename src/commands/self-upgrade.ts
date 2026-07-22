@@ -4,6 +4,7 @@ import { fetchChangelog, fetchLatestRelease } from './check-update.ts';
 import { detectInstallMethod, runUpgrade } from './upgrade.ts';
 import { writeUpdateCache } from '../core/self-upgrade.ts';
 import { managedForkUpgradeGuard } from '../core/build-identity.ts';
+import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 
 /**
  * `gbrain self-upgrade [--check-only] [--force] [--json]`
@@ -50,7 +51,7 @@ export async function runSelfUpgrade(args: string[]): Promise<void> {
     } else {
       console.error(upgradeGuard.reason);
     }
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
 

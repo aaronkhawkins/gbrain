@@ -58,6 +58,7 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   if (process.env.LITELLM_BASE_URL) envBaseUrls['litellm'] = process.env.LITELLM_BASE_URL;
   if (process.env.OPENROUTER_BASE_URL) envBaseUrls['openrouter'] = process.env.OPENROUTER_BASE_URL;
   if (process.env.NVIDIA_NIM_BASE_URL) envBaseUrls['nvidia-nim'] = process.env.NVIDIA_NIM_BASE_URL;
+  if (process.env.VLLM_BASE_URL) envBaseUrls.vllm = process.env.VLLM_BASE_URL;
 
   return {
     embedding_model: c.embedding_model,

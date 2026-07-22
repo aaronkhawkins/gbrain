@@ -17,6 +17,7 @@ import {
   CANONICAL_PRICING,
   canonicalLookup,
 } from '../src/core/model-pricing.ts';
+import { estimateChatCostUsd } from '../src/core/ai/chat-pricing.ts';
 import { ANTHROPIC_PRICING } from '../src/core/anthropic-pricing.ts';
 import { MODEL_PRICING } from '../src/core/takes-quality-eval/pricing.ts';
 import { estimateAnthropicCost } from '../src/core/brain-score-recommendations.ts';
@@ -83,6 +84,17 @@ describe('canonicalLookup — id normalization', () => {
     expect(canonicalLookup(null)).toBeUndefined();
     expect(canonicalLookup(undefined)).toBeUndefined();
     expect(canonicalLookup('')).toBeUndefined();
+  });
+});
+
+describe('estimateChatCostUsd — task budget accounting', () => {
+  test('uses canonical paid pricing and recipe-declared zero local pricing', () => {
+    expect(estimateChatCostUsd('anthropic:claude-sonnet-4-6', 1_000_000, 1_000_000)).toBe(18);
+    expect(estimateChatCostUsd('vllm:nvidia/Qwen3.6-35B-A3B-NVFP4', 1_000_000, 1_000_000)).toBe(0);
+  });
+
+  test('treats unpriced subscription transports as zero metered API spend', () => {
+    expect(estimateChatCostUsd('opencode-server:gpt-5.5', 1_000_000, 1_000_000)).toBe(0);
   });
 });
 

@@ -27,11 +27,16 @@ import {
 } from '../../src/core/ai/gateway.ts';
 import type { PageInput, SearchOpts } from '../../src/core/types.ts';
 import type { RerankInput, RerankResult } from '../../src/core/ai/gateway.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
+let prevGbrainHome: string | undefined;
+let isolatedHome: string;
 
 const DIMS = 1536; // gateway default embedding dim
-const FAKE_EMB = Array.from({ length: DIMS }, (_, j) => (j === 0 ? 1 : 0.01));
+const FAKE_EMB = new Float32Array(Array.from({ length: DIMS }, (_, j) => (j === 0 ? 1 : 0.01)));
 
 function stubEmbeddings(): void {
   __setEmbedTransportForTests(async (args: any) => ({
@@ -40,9 +45,21 @@ function stubEmbeddings(): void {
 }
 
 beforeAll(async () => {
+  prevGbrainHome = process.env.GBRAIN_HOME;
+  isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-rerank-home-'));
+  process.env.GBRAIN_HOME = isolatedHome;
+
+  configureGateway({
+    embedding_model: 'openai:text-embedding-3-large',
+    embedding_dimensions: DIMS,
+    env: { OPENAI_API_KEY: 'sk-test' },
+  });
+
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  await engine.setConfig('embedding_model', 'openai:text-embedding-3-large');
+  await engine.setConfig('embedding_dimensions', String(DIMS));
 
   // Seed pages whose content includes a shared keyword so the keyword
   // path will match and produce a candidate pool of 4+ items. putPage
@@ -59,7 +76,13 @@ beforeAll(async () => {
   for (const [slug, page, chunkText] of pages) {
     await engine.putPage(slug, page);
     await engine.upsertChunks(slug, [
-      { chunk_index: 0, chunk_text: chunkText, chunk_source: 'compiled_truth' },
+      {
+        chunk_index: 0,
+        chunk_text: chunkText,
+        chunk_source: 'compiled_truth',
+        embedding: FAKE_EMB,
+        model: 'openai:text-embedding-3-large',
+      },
     ]);
   }
 
@@ -69,15 +92,8 @@ beforeAll(async () => {
   // early-returns BEFORE applyReranker, so a setup that lacks embedding
   // would never exercise the reranker integration.
   //
-  // searchVector returns empty lists because chunks have NULL embeddings;
-  // that's fine — vectorLists is `[[]]` (length 1, not 0), so the
-  // keyword-only branch is skipped and the main path runs RRF + dedup +
-  // reranker + budget.
-  configureGateway({
-    embedding_model: 'openai:text-embedding-3-large',
-    embedding_dimensions: DIMS,
-    env: { OPENAI_API_KEY: 'sk-test' },
-  });
+  // Seeded vectors and matching model provenance keep the embedding-identity
+  // safety gate open, so the test reaches the main RRF + reranker path.
   stubEmbeddings();
 });
 
@@ -85,6 +101,9 @@ afterAll(async () => {
   __setEmbedTransportForTests(null);
   resetGateway();
   await engine.disconnect();
+  if (prevGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = prevGbrainHome;
+  rmSync(isolatedHome, { recursive: true, force: true });
 });
 
 describe('hybridSearch — reranker disabled (pass-through)', () => {

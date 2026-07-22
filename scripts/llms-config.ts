@@ -183,6 +183,20 @@ export const SECTIONS: DocSection[] = [
         path: "docs/ai-providers/llama-server-reranker.md",
         includeInFull: false,
       },
+      {
+        title: "docs/ai-providers/vllm.md",
+        description:
+          "Private local chat through vLLM: direct OpenAI-compatible routing, background task model keys, Qwen thinking control, and operational verification.",
+        path: "docs/ai-providers/vllm.md",
+        includeInFull: false,
+      },
+      {
+        title: "docs/ai-providers/opencode-server.md",
+        description:
+          "OpenAI subscription transport through a loopback OpenCode server for interactive reasoning and GBrain-owned tool execution.",
+        path: "docs/ai-providers/opencode-server.md",
+        includeInFull: false,
+      },
     ],
   },
   {

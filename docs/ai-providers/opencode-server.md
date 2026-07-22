@@ -72,19 +72,19 @@ The default GBrain connection is `http://127.0.0.1:4097`. Optional settings:
 
 ## Configure GBrain
 
-Keep inexpensive utility and verdict calls on their existing provider during
-the initial rollout. Route one expensive task at a time:
+Use OpenCode for interactive reasoning and tool-using work while a local provider
+handles high-volume background extraction:
 
 ```bash
 gbrain config set agent.use_gateway_loop true
-gbrain config set models.dream.synthesize opencode-server:gpt-5.5
-```
-
-After synthesis is proven on a bounded corpus:
-
-```bash
-gbrain config set models.dream.patterns opencode-server:gpt-5.5
+gbrain config set models.chat opencode-server:gpt-5.5
 gbrain config set models.think opencode-server:gpt-5.5
+gbrain config set models.dream.synthesize opencode-server:gpt-5.5
+gbrain config set models.dream.patterns opencode-server:gpt-5.5
+gbrain config set models.subagent opencode-server:gpt-5.5
+gbrain config set models.tier.reasoning opencode-server:gpt-5.5
+gbrain config set models.tier.deep opencode-server:gpt-5.5
+gbrain config set models.tier.subagent opencode-server:gpt-5.5
 ```
 
 Do not use this provider for embeddings. It intentionally exposes only the
@@ -100,5 +100,8 @@ chat touchpoint.
   response. GBrain owns multi-turn state and tool replay.
 - HTTP 401/403/404 responses are configuration failures. Network, 429, and 5xx
   failures are retryable provider failures.
-- Keep Anthropic configured as a fallback until live dream and pattern runs are
-  green on representative data.
+- OpenCode finish reasons are preserved. If a model spends its output budget but
+  produces no visible text, GBrain reports an output-budget configuration error
+  instead of accepting an empty answer.
+- This route uses the OpenAI subscription owned by OpenCode. It does not require
+  an Anthropic API fallback for the named interactive workloads.

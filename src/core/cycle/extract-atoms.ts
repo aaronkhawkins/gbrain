@@ -49,6 +49,8 @@ import type { PhaseResult } from '../cycle.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { ProgressReporter } from '../progress.ts';
 import { chat as gatewayChat, getChatModel } from '../ai/gateway.ts';
+import { resolveModel } from '../model-config.ts';
+import { estimateChatCostUsd } from '../ai/chat-pricing.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { createHash } from 'node:crypto';
@@ -524,7 +526,13 @@ export async function runPhaseExtractAtoms(
   const budgetCap = DEFAULT_BUDGET_USD;
   let configuredModel = opts._model;
   if (!configuredModel) {
-    try { configuredModel = getChatModel(); } catch { configuredModel = ''; }
+    let fallback = 'anthropic:claude-haiku-4-5-20251001';
+    try { fallback = getChatModel(); } catch { /* gateway may not be configured in tests */ }
+    configuredModel = await resolveModel(engine, {
+      configKey: 'models.dream.extract_atoms',
+      tier: 'utility',
+      fallback,
+    });
   }
 
   // v0.41.19.0 (T3): throttled yield helper. Fires `opts.yieldDuringPhase`
@@ -564,6 +572,7 @@ export async function runPhaseExtractAtoms(
     const researchCandidate = researchPolicy === BIRDCLAW_RESEARCH_POLICY;
     try {
       const result = await chat({
+        model: configuredModel || undefined,
         system: researchCandidate
           ? (responsePolicy === 'labeled' ? RESEARCH_EXTRACT_PROMPT : RESEARCH_JSON_EXTRACT_PROMPT)
           : DEFAULT_EXTRACT_PROMPT,
@@ -580,9 +589,11 @@ export async function runPhaseExtractAtoms(
       // actual refresh rate so this is cheap when calls are fast.
       await maybeYield();
 
-      // Rough cost estimate — Haiku at ~$0.80/M input + $4/M output
-      estimatedSpendUsd +=
-        (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
+      estimatedSpendUsd += estimateChatCostUsd(
+        result.model || configuredModel,
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+      );
 
       const atoms = parseAtomsResponse(result.text, responsePolicy, researchCandidate);
       if (atoms.length === 0) {
