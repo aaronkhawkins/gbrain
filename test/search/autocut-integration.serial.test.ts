@@ -25,16 +25,33 @@ import {
 } from '../../src/core/ai/gateway.ts';
 import type { PageInput, SearchOpts } from '../../src/core/types.ts';
 import type { RerankInput, RerankResult } from '../../src/core/ai/gateway.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
+let prevGbrainHome: string | undefined;
+let isolatedHome: string;
 
 const DIMS = 1536;
-const FAKE_EMB = Array.from({ length: DIMS }, (_, j) => (j === 0 ? 1 : 0.01));
+const FAKE_EMB = new Float32Array(Array.from({ length: DIMS }, (_, j) => (j === 0 ? 1 : 0.01)));
 
 beforeAll(async () => {
+  prevGbrainHome = process.env.GBRAIN_HOME;
+  isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-autocut-home-'));
+  process.env.GBRAIN_HOME = isolatedHome;
+
+  configureGateway({
+    embedding_model: 'openai:text-embedding-3-large',
+    embedding_dimensions: DIMS,
+    env: { OPENAI_API_KEY: 'sk-test' },
+  });
+
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  await engine.setConfig('embedding_model', 'openai:text-embedding-3-large');
+  await engine.setConfig('embedding_dimensions', String(DIMS));
 
   // Seed 5 pages sharing a keyword so the candidate pool is 5 deep.
   const pages: Array<[string, PageInput, string]> = [
@@ -47,15 +64,16 @@ beforeAll(async () => {
   for (const [slug, page, chunkText] of pages) {
     await engine.putPage(slug, page);
     await engine.upsertChunks(slug, [
-      { chunk_index: 0, chunk_text: chunkText, chunk_source: 'compiled_truth' },
+      {
+        chunk_index: 0,
+        chunk_text: chunkText,
+        chunk_source: 'compiled_truth',
+        embedding: FAKE_EMB,
+        model: 'openai:text-embedding-3-large',
+      },
     ]);
   }
 
-  configureGateway({
-    embedding_model: 'openai:text-embedding-3-large',
-    embedding_dimensions: DIMS,
-    env: { OPENAI_API_KEY: 'sk-test' },
-  });
   __setEmbedTransportForTests(async (args: any) => ({
     embeddings: args.values.map(() => FAKE_EMB),
   }) as any);
@@ -65,6 +83,9 @@ afterAll(async () => {
   __setEmbedTransportForTests(null);
   resetGateway();
   await engine.disconnect();
+  if (prevGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = prevGbrainHome;
+  rmSync(isolatedHome, { recursive: true, force: true });
 });
 
 // A reranker that assigns descending scores from a fixed array (by index).

@@ -16,6 +16,11 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { operations } from '../src/core/operations.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
+import { resetGateway } from '../src/core/ai/gateway.ts';
+import { withEnv } from './helpers/with-env.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
 
@@ -93,14 +98,27 @@ describe('forget_fact dispatch', () => {
 
 describe('extract_facts dispatch (no API key)', () => {
   test('returns inserted=0 / duplicate=0 / superseded=0 when chat gateway unavailable', async () => {
-    const r = await dispatchToolCall(engine, 'extract_facts', {
-      turn_text: 'I am flying to Tokyo Tuesday.',
-    }, { remote: true, sourceId: 'default' });
-    expect(r.isError).toBeFalsy();
-    const payload = JSON.parse(r.content[0].text);
-    expect(payload.inserted).toBe(0);
-    expect(payload.duplicate).toBe(0);
-    expect(payload.superseded).toBe(0);
-    expect(Array.isArray(payload.fact_ids)).toBe(true);
+    const isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-facts-no-key-'));
+    try {
+      await withEnv({
+        GBRAIN_HOME: isolatedHome,
+        OPENAI_API_KEY: undefined,
+        ANTHROPIC_API_KEY: undefined,
+      }, async () => {
+        resetGateway();
+        const r = await dispatchToolCall(engine, 'extract_facts', {
+          turn_text: 'I am flying to Tokyo Tuesday.',
+        }, { remote: true, sourceId: 'default' });
+        expect(r.isError).toBeFalsy();
+        const payload = JSON.parse(r.content[0].text);
+        expect(payload.inserted).toBe(0);
+        expect(payload.duplicate).toBe(0);
+        expect(payload.superseded).toBe(0);
+        expect(Array.isArray(payload.fact_ids)).toBe(true);
+      });
+    } finally {
+      resetGateway();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
   });
 });

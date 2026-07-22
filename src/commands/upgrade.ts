@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rea
 import { basename, join, dirname, resolve } from 'path';
 import { VERSION } from '../version.ts';
 import { managedForkUpgradeGuard } from '../core/build-identity.ts';
+import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 
 const GBRAIN_GITHUB_REPO = 'garrytan/gbrain';
 
@@ -16,7 +17,7 @@ export async function runUpgrade(args: string[]) {
   if (!upgradeGuard.allowed) {
     console.error(upgradeGuard.reason);
     console.error('Use the managed fork release and rollback procedure documented for this installation.');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
 

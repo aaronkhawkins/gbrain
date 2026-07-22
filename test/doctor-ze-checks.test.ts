@@ -123,7 +123,7 @@ describe('checkEmbeddingWidthConsistency', () => {
     });
     const check = await checkEmbeddingWidthConsistency(engine);
     expect(check.status).toBe('ok');
-    expect(check.message).toContain(`${schemaDim}d`);
+    expect(check.message).toContain(`vector(${schemaDim})`);
   });
 
   test('config mismatches schema width: warns with fix hint', async () => {
