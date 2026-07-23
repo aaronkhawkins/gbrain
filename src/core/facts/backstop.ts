@@ -145,6 +145,65 @@ export function __resetBackstopWarningsForTests(): void {
   _warnedKeys.clear();
 }
 
+async function enqueueDurableFactsJob(
+  parsedPage: ParsedPageInput,
+  ctx: FactsBackstopCtx,
+): Promise<Extract<FactsBackstopResult, { mode: 'durable' }>> {
+  const { MinionQueue } = await import('../minions/queue.ts');
+  const queue = new MinionQueue(ctx.engine);
+  // Bind the job to the exact text the extractor will read. Import-level
+  // content hashes can include frontmatter or normalization details and are
+  // therefore not safe for the worker's compiled_truth staleness check.
+  const identityHash = factsContentHash(parsedPage.compiled_truth);
+  const payload: FactsAbsorbJobData = {
+    schema_version: FACTS_ABSORB_JOB_SCHEMA_VERSION,
+    slug: parsedPage.slug,
+    sourceId: ctx.sourceId,
+    sessionId: ctx.sessionId,
+    source: ctx.source,
+    notabilityFilter: ctx.notabilityFilter ?? 'all',
+    contentHash: identityHash,
+  };
+  const job = await queue.add('facts-absorb', payload, {
+    idempotency_key: [
+      'facts-absorb-v1', ctx.sourceId, parsedPage.slug, identityHash,
+      payload.source, payload.notabilityFilter,
+    ].join(':'),
+    max_attempts: 3,
+    backoff_type: 'exponential',
+    backoff_delay: 5_000,
+  });
+  if (job.status === 'completed') {
+    return {
+      mode: 'durable', enqueued: false, jobId: job.id,
+      jobStatus: job.status, skipped: 'already_completed',
+    };
+  }
+  if (job.status === 'failed' || job.status === 'dead') {
+    const retried = await queue.retryJob(job.id);
+    if (retried) {
+      return { mode: 'durable', enqueued: true, jobId: retried.id, jobStatus: retried.status };
+    }
+    return {
+      mode: 'durable', enqueued: false, jobId: job.id,
+      jobStatus: job.status, skipped: `terminal_status:${job.status}`,
+    };
+  }
+  if (job.status === 'cancelled') {
+    return {
+      mode: 'durable', enqueued: false, jobId: job.id,
+      jobStatus: job.status, skipped: 'cancelled',
+    };
+  }
+  const enqueued = job.status === 'waiting' || job.status === 'active' || job.status === 'delayed';
+  return enqueued
+    ? { mode: 'durable', enqueued: true, jobId: job.id, jobStatus: job.status }
+    : {
+        mode: 'durable', enqueued: false, jobId: job.id,
+        jobStatus: job.status, skipped: `terminal_status:${job.status}`,
+      };
+}
+
 /**
  * Run the facts pipeline for one page write. See module docstring for
  * the full lifecycle and mode semantics.
@@ -182,59 +241,7 @@ export async function runFactsBackstop(
 
   // --- Mode dispatch ---
   if (mode === 'durable') {
-    const { MinionQueue } = await import('../minions/queue.ts');
-    const queue = new MinionQueue(ctx.engine);
-    // Bind the job to the exact text the extractor will read. Import-level
-    // content hashes can include frontmatter or normalization details and are
-    // therefore not safe for the worker's compiled_truth staleness check.
-    const identityHash = factsContentHash(parsedPage.compiled_truth);
-    const payload: FactsAbsorbJobData = {
-      schema_version: FACTS_ABSORB_JOB_SCHEMA_VERSION,
-      slug: parsedPage.slug,
-      sourceId: ctx.sourceId,
-      sessionId: ctx.sessionId,
-      source: ctx.source,
-      notabilityFilter: ctx.notabilityFilter ?? 'all',
-      contentHash: identityHash,
-    };
-    const job = await queue.add('facts-absorb', payload, {
-      idempotency_key: [
-        'facts-absorb-v1', ctx.sourceId, parsedPage.slug, identityHash,
-        payload.source, payload.notabilityFilter,
-      ].join(':'),
-      max_attempts: 3,
-      backoff_type: 'exponential',
-      backoff_delay: 5_000,
-    });
-    if (job.status === 'completed') {
-      return {
-        mode: 'durable', enqueued: false, jobId: job.id,
-        jobStatus: job.status, skipped: 'already_completed',
-      };
-    }
-    if (job.status === 'failed' || job.status === 'dead') {
-      const retried = await queue.retryJob(job.id);
-      if (retried) {
-        return { mode: 'durable', enqueued: true, jobId: retried.id, jobStatus: retried.status };
-      }
-      return {
-        mode: 'durable', enqueued: false, jobId: job.id,
-        jobStatus: job.status, skipped: `terminal_status:${job.status}`,
-      };
-    }
-    if (job.status === 'cancelled') {
-      return {
-        mode: 'durable', enqueued: false, jobId: job.id,
-        jobStatus: job.status, skipped: 'cancelled',
-      };
-    }
-    const enqueued = job.status === 'waiting' || job.status === 'active' || job.status === 'delayed';
-    return enqueued
-      ? { mode: 'durable', enqueued: true, jobId: job.id, jobStatus: job.status }
-      : {
-          mode: 'durable', enqueued: false, jobId: job.id,
-          jobStatus: job.status, skipped: `terminal_status:${job.status}`,
-        };
+    return enqueueDurableFactsJob(parsedPage, ctx);
   }
 
   if (mode === 'queue') {
@@ -248,34 +255,14 @@ export async function runFactsBackstop(
     const { isShortLivedCliProcess } = await import('./cli-process-mode.ts');
     if (isShortLivedCliProcess()) {
       try {
-        const { MinionQueue } = await import('../minions/queue.ts');
-        const { createHash } = await import('node:crypto');
-        const contentHash = createHash('sha256')
-          .update(parsedPage.compiled_truth)
-          .digest('hex')
-          .slice(0, 16);
-        const minions = new MinionQueue(ctx.engine);
-        await minions.add(
-          'facts-absorb',
-          {
-            slug: parsedPage.slug,
-            sourceId: ctx.sourceId,
-            source: ctx.source,
-            sessionId: ctx.sessionId,
-            notabilityFilter: ctx.notabilityFilter ?? 'all',
-            visibility: ctx.visibility ?? 'private',
-            ...(ctx.model ? { model: ctx.model } : {}),
-          },
-          {
-            queue: 'default',
-            // Content-hash key: re-submits after edits, dedups rapid
-            // identical writes (idempotent ON CONFLICT returns existing row).
-            idempotency_key: `facts-absorb:${ctx.sourceId}:${parsedPage.slug}:${contentHash}`,
-            max_attempts: 3,
-            timeout_ms: 180_000,
-          },
-        );
-        return { mode: 'queue', enqueued: true, queueDepth: 0 };
+        const durable = await enqueueDurableFactsJob(parsedPage, ctx);
+        const accepted = durable.enqueued || durable.skipped === 'already_completed';
+        return {
+          mode: 'queue',
+          enqueued: accepted,
+          queueDepth: 0,
+          ...(!accepted ? { skipped: 'queue_shutdown' as const } : {}),
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         warnOnce(

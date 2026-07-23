@@ -38,6 +38,7 @@ async function refreshGatewayForJob(engine: BrainEngine): Promise<void> {
 }
 
 const GATEWAY_REFRESH_JOB_NAMES = new Set([
+  'facts-absorb',
   'embed',
   'extract-conversation-facts',
   'enrich',
@@ -1383,7 +1384,7 @@ export async function registerBuiltinHandlers(
   // terminal with "shell handler registered…" lines. The real `jobs work` path
   // omits opts and prints as before.
   const quiet = opts?.quiet === true;
-  worker.register('facts-absorb', async (job) => {
+  registerBuiltinJob(worker, engine, 'facts-absorb', async (job) => {
     const data = parseFactsAbsorbJobData(job.data);
     const { slug, sourceId } = data;
 
@@ -1719,43 +1720,6 @@ export async function registerBuiltinHandlers(
       ? job.data.dir
       : (await engine.getConfig('sync.repo_path')) ?? '.';
     return await runBacklinksCore({ action, dir, dryRun: !!job.data.dryRun });
-  });
-
-  // Local patch 2026-06-11: durable facts:absorb. One-shot CLI processes
-  // (capture/put/sync) can't finish the extraction chat before their exit
-  // drain aborts it, so backstop.ts submits this job instead and the
-  // long-lived worker does the LLM work here. Inline mode: errors throw,
-  // so minion retry/backoff handles transient gateway failures and real
-  // failures stay visible in `gbrain jobs list --status failed`.
-  worker.register('facts-absorb', async (job) => {
-    const slug = typeof job.data.slug === 'string' ? job.data.slug : '';
-    if (!slug) throw new Error('facts-absorb job requires data.slug');
-    const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : 'default';
-    const page = await engine.getPage(slug, { sourceId });
-    if (!page) return { skipped: 'page_missing', slug, sourceId };
-    const { runFactsBackstop } = await import('../core/facts/backstop.ts');
-    const KNOWN_SOURCES = ['sync:import', 'mcp:put_page', 'mcp:extract_facts', 'file_upload', 'code_import'] as const;
-    const source = (KNOWN_SOURCES as readonly string[]).includes(job.data.source as string)
-      ? (job.data.source as typeof KNOWN_SOURCES[number])
-      : 'mcp:put_page';
-    return await runFactsBackstop(
-      {
-        slug: page.slug,
-        type: page.type,
-        compiled_truth: page.compiled_truth,
-        frontmatter: (page.frontmatter ?? {}) as Record<string, unknown>,
-      },
-      {
-        engine,
-        sourceId,
-        sessionId: typeof job.data.sessionId === 'string' ? job.data.sessionId : null,
-        source,
-        mode: 'inline',
-        notabilityFilter: job.data.notabilityFilter === 'high-only' ? 'high-only' : 'all',
-        visibility: job.data.visibility === 'world' ? 'world' : 'private',
-        ...(typeof job.data.model === 'string' && job.data.model ? { model: job.data.model } : {}),
-      },
-    );
   });
 
   // Autopilot-cycle handler: delegates to runCycle. Shares the exact same

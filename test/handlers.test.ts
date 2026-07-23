@@ -47,6 +47,15 @@ describe('registerBuiltinHandlers', () => {
   test('total handler count includes all 7 names', () => {
     expect(worker.registeredNames.length).toBeGreaterThanOrEqual(7);
   });
+
+  test('facts-absorb dispatch rejects a future payload version', async () => {
+    const handler = (worker as any).handlers.get('facts-absorb');
+    expect(handler).toBeDefined();
+    await expect(handler({
+      data: { schema_version: 2, slug: 'meetings/future-payload' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow('unsupported payload schema_version 2');
+  });
 });
 
 describe('autopilot-cycle handler — partial failure does NOT throw', () => {

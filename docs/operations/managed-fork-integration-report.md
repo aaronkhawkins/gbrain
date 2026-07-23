@@ -179,7 +179,7 @@ directions of compatibility, owner, proof, and retirement condition.
 | C07 source/page identity | source resolver and canonical operations | import, Dream, facts, takes, search, both engines | `(source_id, slug)` is identity; opaque source context survives all calls; malformed identities and remote overrides outside scalar/federated grants fail closed; old default-source rows remain readable | Candidate-created non-default rows require a source-aware previous reader or roll-forward | U5 / compatibility-gated | `test/source-scope-resolver.test.ts`, source resolver, ingestion roundtrip, extraction, engine parity, and real-Postgres multi-source suites | Never retire composite identity; retire adapters after all callers are source-aware |
 | C08 research policy/provenance v1 | bookmark policy and extraction | atom writer, synthesis, status, retrieval trace | Only marked sources receive `birdclaw-research-v1`; unmarked behavior stays generic; old marked frontmatter remains readable | Previous fork reads v1; new provenance fields must remain additive | U6 / backward-compatible | `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts`, research health suites | Retire when generic upstream policy can express the same admission and evidence rules |
 | C09 generated knowledge file + projection | U6 FS-first sink | import, chunks, embeddings, retrieval, sync reconciler | Canonical file is commit point; DB projection is idempotent and replayable; existing DB-only/custom chunks remain readable without new dual writes | Before normal writes, reselect code and replay canonical files; after writes, roll forward unless a tested lossless replay exists | U6 / roll-forward after writes | generated output, import, sync recovery, repeat-run suites | Retire custom indexer after exactly-once parity; adapter may remain non-writing only |
-| C10 facts-absorb payload v1 | facts enqueue sites | Minion handler and facts writer | Missing v1 fields normalize to explicit defaults; source ID and content hash fence writes; future versions reject | Current v1 remains readable by previous fork; any later payload version must drain/quarantine before rollback | U7 / backward-compatible now | `test/handlers.test.ts`, facts backstop suites | Retire legacy omission defaults after all accepted v1 jobs have drained and an envelope migration exists |
+| C10 facts-absorb payload v1 | facts enqueue sites | Minion handler and facts writer | Missing v1 fields normalize to explicit defaults; source ID and content hash fence writes; future versions reject | Current v1 remains readable by previous fork; any later payload version must drain/quarantine before rollback | U7 / backward-compatible now | `test/facts-durable-job-compat.test.ts`, `test/facts-durable-minion.test.ts`, `test/handlers.test.ts`, facts backstop suites | Retire legacy omission defaults after all accepted v1 jobs have drained and an envelope migration exists |
 | C11 Minion lifecycle/job rows | queue, worker, supervisor | all durable handlers, status/doctor | Preserve accepted jobs, retry reset, source backpressure, refreshed route snapshot, reconnect, and explicit child outcome | Stop candidate workers; drain compatible jobs and quarantine new envelopes before previous worker starts | U7 / quarantine-required | Minion, handler, worker reconnect, E2E resilience suites | Retire fork lifecycle patches when upstream behavior and old/new payload fixtures pass |
 | C12 migration chain v122→v123→v124 | upstream migrator for both engines | schema bootstrap, all persisted contracts | Fork/schema base is v122; candidate head is v124; v123/v124 must be reordered or guarded so oversized content cannot strand migration | Binary-only rollback allowed only if previous compiled reader passes migrated clone; otherwise restore tested v122 backup or roll forward | U2 / restore-required until proven | migration chain, v120/CJK, dual-engine failure-injection suites | Never retire migration history; retire temporary guard after all supported upgrade origins are safe |
 | C13 import checkpoint v1 | upstream import staging | import retry and sync | Canonical target identity and staged completion remain idempotent; old imports without checkpoint still run | Previous code may ignore additive checkpoints but must not mistake staged work for committed output | U5/U6 / backward-compatible with replay | import checkpoint, sync recovery suites | Retire only through versioned checkpoint migration |
@@ -216,6 +216,38 @@ directions of compatibility, owner, proof, and retirement condition.
   retrieval fixtures are required. Real-Postgres coverage remains an explicit
   `DATABASE_URL`-gated predeployment gate.
 | C16 maintenance config/report | upstream maintain command + fork durable maintenance job | CLI, scheduler, Minion queue, operator | Pack-aware actions and orphan exclusions remain config-owned and non-destructive by default | Stop scheduling; previous fork can ignore additive report fields; queued new action types require quarantine | U7 / quarantine-required | maintain parser/report/job suites | Retire fork wrapper when upstream maintenance is durable and pack-aware end to end |
+
+## U7 Minions and durable-job disposition
+
+- Status: implementation complete; no deployment, live queue, configuration,
+  source, or database mutation.
+- Queue ownership: `facts-absorb` now has one built-in registration. The
+  versioned handler is no longer overwritten by the legacy registration and
+  enters through the same queued gateway-refresh wrapper as other AI-backed
+  jobs.
+- Payload compatibility: pre-version rows normalize to v1 defaults; v1 rows
+  contain every field consumed by the previous handler, whose JSON reader
+  ignores the additive version and content-hash fields. Candidate-to-previous
+  rollback therefore needs no v1 drain. Any future schema version remains a
+  fail-closed, drain-or-quarantine boundary.
+- Durable facts: all durable and short-lived-CLI submissions share one
+  content-addressed enqueue helper, timeout policy, retry reset, source
+  attribution, content-revision check, and idempotency key. Gateway and parse
+  failures remain retryable; a changed source revision produces no stale fact.
+- Upstream lifecycle retained: source-scoped backpressure, full operator retry
+  reset, delayed-job/claim/lock reconnect behavior, explicit terminal child
+  outcomes, bounded handler deadlines, and source-aware maintenance remain the
+  selected implementation.
+- Maintenance: the safe command remains dry-run by default, runs stale
+  extraction plus source-scoped Dream maintenance, and inherits current
+  schema-pack and config-owned orphan policy. U7 adds no maintenance payload
+  shape that an older worker could misinterpret.
+- Verification: isolated focused suites pass for payload compatibility,
+  durable provider-interruption retry, exactly-once fact output, route refresh,
+  source fairness, retry freshness, reconnect, timeouts, terminal child
+  outcomes, subagent gateway/resume behavior, and maintenance parsing. The
+  real-Postgres Minion resilience file remains skipped without
+  `DATABASE_URL`; it is an explicit U8 predeployment gate, not a claimed pass.
 
 ### Clean auto-merge interaction map
 
