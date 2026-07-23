@@ -14,13 +14,9 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { runPhaseExtractAtoms, parseAtomsResponse } from '../../src/core/cycle/extract-atoms.ts';
-import {
-  runPhaseSynthesizeConcepts,
-  type SynthesizeConceptsOpts,
-} from '../../src/core/cycle/synthesize-concepts.ts';
+import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
-import { putGeneratedSearchablePage } from '../../src/core/generated-page-indexer.ts';
 
 let engine: PGLiteEngine;
 
@@ -105,94 +101,9 @@ describe('v0.41 T5: parseAtomsResponse', () => {
     expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":-5}]`)[0].virality_score).toBeUndefined();
     expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":75}]`)[0].virality_score).toBe(75);
   });
-
-  test('normalizes, deduplicates, and caps concept references', () => {
-    const raw = JSON.stringify([{
-      title: 'Conceptful atom', atom_type: 'insight', body: 'body',
-      concepts: [' Agent Workflows ', 'agent workflows', 'iOS Development!', '', 'AI',
-        'Enterprise Architecture', 'Knowledge Graphs', 'Local Models', 'ignored sixth'],
-    }]);
-    expect(parseAtomsResponse(raw, 'json', true)[0].concepts).toEqual([
-      'agent-workflows',
-      'ios-development',
-      'enterprise-architecture',
-      'knowledge-graphs',
-      'local-models',
-    ]);
-  });
-
-  test('ignores malformed concepts without rejecting a valid atom', () => {
-    const atom = parseAtomsResponse(
-      `[{"title":"T","atom_type":"insight","body":"b","concepts":"not-an-array"}]`,
-      'json',
-      true,
-    )[0];
-    expect(atom).toBeDefined();
-    expect(atom.concepts).toBeUndefined();
-  });
-
-  test('parses OpenCode-compatible labeled atom records', () => {
-    const atoms = parseAtomsResponse(`TITLE: Declarative state simplifies UI updates
-TYPE: insight
-BODY: SwiftUI derives views from state and refreshes them automatically.
-SOURCE_QUOTE: State drives the view.
-LESSON: Prefer state-driven rendering.
-VIRALITY_SCORE: 72
-EMOTIONAL_REGISTER: practical
-CONCEPTS: SwiftUI; Declarative UI; State-driven rendering
----
-TITLE: A second durable idea
-TYPE: framework
-BODY: Separate domain state from view composition.`);
-    expect(atoms).toHaveLength(2);
-    expect(atoms[0]).toMatchObject({
-      title: 'Declarative state simplifies UI updates',
-      atom_type: 'insight',
-      virality_score: 72,
-      concepts: ['swiftui', 'declarative-ui', 'state-driven-rendering'],
-    });
-    expect(atoms[1].atom_type).toBe('framework');
-  });
 });
 
 describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
-  test('routes extraction through models.dream.extract_atoms', async () => {
-    await engine.setConfig('models.dream.extract_atoms', 'vllm:local-qwen');
-    let receivedModel: string | undefined;
-    await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/fake/routed.txt', content: 'content', contentHash: 'routed-hash' }],
-      _pages: [],
-      _chat: async (opts) => {
-        receivedModel = opts.model;
-        return stubChat('[{"title":"Routed","atom_type":"insight","body":"body"}]')(opts);
-      },
-    });
-    expect(receivedModel).toBe('vllm:local-qwen');
-  });
-
-  test('does not consume the phase USD budget for zero-cost local model usage', async () => {
-    await engine.setConfig('models.dream.extract_atoms', 'vllm:local-qwen');
-    const localChat = async (opts: ChatOpts): Promise<ChatResult> => ({
-      ...(await stubChat('[{"title":"Local","atom_type":"insight","body":"body"}]', {
-        input_tokens: 1_000_000,
-        output_tokens: 1_000_000,
-      })(opts)),
-      model: 'vllm:local-qwen',
-      providerId: 'vllm',
-    });
-    const result = await runPhaseExtractAtoms(engine, {
-      _transcripts: [
-        { filePath: '/fake/one.txt', content: 'one', contentHash: 'local-one' },
-        { filePath: '/fake/two.txt', content: 'two', contentHash: 'local-two' },
-      ],
-      _pages: [],
-      _chat: localChat,
-    });
-    expect(result.details?.transcripts_processed).toBe(2);
-    expect(result.details?.transcripts_skipped_budget).toBe(0);
-    expect(result.details?.estimated_spend_usd).toBe(0);
-  });
-
   test('no-op when no transcripts AND no pages provided', async () => {
     // v0.41.2.1: _pages:[] suppresses page-discovery so this matches the
     // pre-v0.41.2.1 "transcript-only no-op" path. Reason changed from
@@ -221,88 +132,6 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       `SELECT slug, type FROM pages WHERE type = 'atom'`,
     );
     expect(rows.length).toBe(2);
-    const indexed = await engine.executeRaw<{ count: number | string }>(
-      `SELECT COUNT(DISTINCT p.id)::int AS count
-         FROM pages p JOIN content_chunks cc ON cc.page_id = p.id
-        WHERE p.type = 'atom'`,
-    );
-    expect(Number(indexed[0].count)).toBe(2);
-  });
-
-  test('persists normalized concepts in atom frontmatter', async () => {
-    const chat = stubChat(`[{"title":"Native bookmark concepts","atom_type":"insight","body":"body","concepts":["Agent Workflows","iOS Development"]}]`);
-    await runPhaseExtractAtoms(engine, {
-      _transcripts: [],
-      _pages: [{
-        slug: 'media/x/bookmark',
-        content: 'source',
-        contentHash: 'bookmark-hash',
-        researchPolicy: 'birdclaw-research-v1',
-      }],
-      _model: 'anthropic:claude-haiku-4-5',
-      _chat: chat,
-    });
-    const rows = await engine.executeRaw<{ frontmatter: { concepts?: string[] } }>(
-      `SELECT frontmatter FROM pages WHERE type = 'atom'`,
-    );
-    expect(rows[0].frontmatter.concepts).toEqual(['agent-workflows', 'ios-development']);
-  });
-
-  test('keeps default JSON extraction for unrelated pages and stamps only eligible research atoms', async () => {
-    const calls: ChatOpts[] = [];
-    const chat = async (opts: ChatOpts): Promise<ChatResult> => {
-      calls.push(opts);
-      return stubChat('[{"title":"Scoped","atom_type":"insight","body":"body","concepts":["iOS Development"]}]')(opts);
-    };
-    await runPhaseExtractAtoms(engine, {
-      _model: 'opencode-server:gpt-5.5',
-      _transcripts: [],
-      _pages: [
-        { slug: 'articles/default', content: 'default body', contentHash: 'default-hash' },
-        {
-          slug: 'media/x/bookmark',
-          content: 'bookmark body',
-          contentHash: 'bookmark-hash',
-          researchPolicy: 'birdclaw-research-v1',
-        },
-      ],
-      _chat: chat,
-    });
-
-    expect(calls[0]?.system).toContain('JSON array');
-    expect(calls[0]?.system).not.toContain('TITLE:');
-    expect(calls[0]?.system).not.toContain('concepts (1-5');
-    expect(calls[1]?.system).toContain('TITLE:');
-    const rows = await engine.executeRaw<{ frontmatter: Record<string, unknown> }>(
-      `SELECT frontmatter FROM pages WHERE type = 'atom' ORDER BY frontmatter->>'source_hash'`,
-    );
-    const policies = rows.map((row) => row.frontmatter.research_policy).filter(Boolean);
-    expect(policies).toEqual(['birdclaw-research-v1']);
-    const ordinary = rows.find((row) => row.frontmatter.source_slug === 'articles/default');
-    const research = rows.find((row) => row.frontmatter.source_slug === 'media/x/bookmark');
-    expect(ordinary?.frontmatter.concepts).toBeUndefined();
-    expect(research?.frontmatter.concepts).toEqual(['ios-development']);
-  });
-
-  test('same model title from different sources creates distinct atoms', async () => {
-    const chat = stubChat(`[{"title":"Shared title","atom_type":"insight","body":"body","concepts":["Shared Topic"]}]`);
-    await runPhaseExtractAtoms(engine, {
-      _transcripts: [],
-      _pages: [
-        { slug: 'media/x/one', content: 'one', contentHash: 'hash-source-one' },
-        { slug: 'media/x/two', content: 'two', contentHash: 'hash-source-two' },
-      ],
-      _chat: chat,
-    });
-    const rows = await engine.executeRaw<{ slug: string; frontmatter: { source_slug: string } }>(
-      `SELECT slug, frontmatter FROM pages WHERE type = 'atom' ORDER BY slug`,
-    );
-    expect(rows).toHaveLength(2);
-    expect(new Set(rows.map((row) => row.slug)).size).toBe(2);
-    expect(rows.map((row) => row.frontmatter.source_slug).sort()).toEqual([
-      'media/x/one',
-      'media/x/two',
-    ]);
   });
 
   test('dry-run counts but does NOT write', async () => {
@@ -379,54 +208,6 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
 });
 
 describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
-  test('routes synthesis through models.dream.synthesize_concepts', async () => {
-    await engine.setConfig('models.dream.synthesize_concepts', 'vllm:local-qwen');
-    const atoms = Array.from({ length: 5 }, (_, i) => ({
-      slug: `atoms/routed-${i}`,
-      title: `Routed ${i}`,
-      body: `body ${i}`,
-      concept_refs: ['routed-concept'],
-    }));
-    let receivedModel: string | undefined;
-    await runPhaseSynthesizeConcepts(engine, {
-      _atoms: atoms,
-      _chat: async (opts) => {
-        receivedModel = opts.model;
-        return stubChat('Routed summary.')(opts);
-      },
-    });
-    expect(receivedModel).toBe('vllm:local-qwen');
-  });
-
-  test('does not consume the phase USD budget for zero-cost local synthesis', async () => {
-    await engine.setConfig('models.dream.synthesize_concepts', 'vllm:local-qwen');
-    const atoms = ['one', 'two'].flatMap(concept =>
-      Array.from({ length: 5 }, (_, i) => ({
-        slug: `atoms/${concept}-${i}`,
-        title: `${concept} ${i}`,
-        body: `body ${i}`,
-        concept_refs: [`${concept}-concept`],
-      })),
-    );
-    let calls = 0;
-    const result = await runPhaseSynthesizeConcepts(engine, {
-      _atoms: atoms,
-      _chat: async (opts) => {
-        calls++;
-        return {
-          ...(await stubChat('Local summary.', {
-            input_tokens: 1_000_000,
-            output_tokens: 1_000_000,
-          })(opts)),
-          model: 'vllm:local-qwen',
-          providerId: 'vllm',
-        };
-      },
-    });
-    expect(calls).toBe(2);
-    expect(result.details?.estimated_spend_usd).toBe(0);
-  });
-
   test('no-op when no atoms have concept refs', async () => {
     const result = await runPhaseSynthesizeConcepts(engine, { _atoms: [] });
     expect(result.status).toBe('skipped');
@@ -468,12 +249,6 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(tiers.T1).toBe(1); // ai-agents (12)
     expect(tiers.T2).toBe(1); // founder-psychology (6)
     expect(tiers.T3).toBe(1); // hardware-renaissance (3)
-    const indexed = await engine.executeRaw<{ count: number | string }>(
-      `SELECT COUNT(DISTINCT p.id)::int AS count
-         FROM pages p JOIN content_chunks cc ON cc.page_id = p.id
-        WHERE p.type = 'concept'`,
-    );
-    expect(Number(indexed[0].count)).toBe(3);
   });
 
   test('atoms with no concept refs are filtered out', async () => {
@@ -542,259 +317,31 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(rows[0].compiled_truth).toContain('Custom synthesized narrative');
   });
 
-  test('marked research concepts require two distinct original sources', async () => {
-    const oneSource = [1, 2, 3].map((i) => ({
-      slug: `atoms/a${i}`,
-      title: `A${i}`,
-      body: `body ${i}`,
-      concept_refs: ['ios-development'],
-      source_id: 'birdclaw',
-      source_slug: 'bookmarks/post-1',
-      research_policy: 'birdclaw-research-v1',
+  // #2163: concept pages must enter the retrieval surface. The write routes
+  // through importFromContent (the same parse→chunk pipeline put_page uses),
+  // so content_chunks rows exist and source-boost's 1.3× 'concepts/' weight
+  // has something to boost. (Embeddings are skipped in this env — no
+  // provider — but chunks + search_vector land regardless.)
+  test('concept pages are chunked (#2163)', async () => {
+    const atoms = Array.from({ length: 12 }, (_, i) => ({
+      slug: `c${i}`,
+      title: `Chunk atom ${i}`,
+      body: `Chunky body ${i}.`,
+      concept_refs: ['chunked-concept'],
     }));
-    const result = await runPhaseSynthesizeConcepts(engine, { _atoms: oneSource });
-    expect(result.status).toBe('skipped');
-  });
-
-  test('writes bounded source-aware evidence for research concepts', async () => {
-    const atoms = Array.from({ length: 25 }, (_, i) => ({
-      slug: `atoms/a${i}`,
-      title: `A${i}`,
-      body: `body ${i}`,
-      concept_refs: ['ios-development'],
-      source_id: i === 0 ? 'other-source' : 'birdclaw',
-      source_slug: `bookmarks/post-${i}`,
-      source_hash: `hash-${i}`,
-      research_policy: 'birdclaw-research-v1',
-    })).reverse();
-    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: stubChat('Native summary.') });
-    const rows = await engine.executeRaw<{
-      compiled_truth: string;
-      frontmatter: {
-        support_count: number;
-        supporting_atoms: Array<{ source_id: string; slug: string; source_hash?: string }>;
-        supporting_sources: Array<{ source_id: string; slug: string; source_hash?: string }>;
-        synthesized_at?: string;
-      };
-    }>(`SELECT compiled_truth, frontmatter FROM pages WHERE slug = 'concepts/ios-development'`);
-    expect(rows[0].frontmatter.support_count).toBe(25);
-    expect(rows[0].frontmatter.supporting_atoms).toHaveLength(20);
-    expect(rows[0].frontmatter.supporting_sources).toHaveLength(20);
-    expect(rows[0].frontmatter.supporting_sources[0]).toEqual({
-      source_id: 'birdclaw',
-      slug: 'bookmarks/post-1',
-      source_hash: 'hash-1',
-    });
-    expect(rows[0].compiled_truth).toContain('## Supporting research');
-    expect(rows[0].compiled_truth).toContain('[[birdclaw:bookmarks/post-1]]');
-    expect(rows[0].frontmatter.supporting_atoms[0]).toEqual({
-      source_id: 'birdclaw',
-      slug: 'atoms/a1',
-      source_hash: 'hash-1',
-    });
-    expect(rows[0].frontmatter.synthesized_at).toBeUndefined();
-  });
-
-  test('same source slug in different source ids counts as distinct evidence', async () => {
-    const atoms = ['source-a', 'source-b'].map((source_id) => ({
-      slug: `atoms/${source_id}`,
-      title: source_id,
-      body: source_id,
-      concept_refs: ['shared-topic'],
-      source_id,
-      source_slug: 'bookmarks/same-slug',
-      research_policy: 'birdclaw-research-v1',
-    }));
-    const result = await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
-    expect(result.details?.concepts_written).toBe(1);
-  });
-
-  test('mixed marked and unmarked groups use upstream count behavior without research marker inheritance', async () => {
-    const atoms = Array.from({ length: 9 }, (_, i) => ({
-      slug: `atoms/legacy-${i}`,
-      title: `Legacy ${i}`,
-      body: `legacy ${i}`,
-      concept_refs: ['established-topic'],
-    }));
-    atoms.push({
-      slug: 'atoms/bookmark',
-      title: 'Bookmark',
-      body: 'bookmark',
-      concept_refs: ['established-topic'],
-      source_id: 'birdclaw',
-      source_slug: 'media/x/bookmark',
-      research_policy: 'birdclaw-research-v1',
-    } as (typeof atoms)[number]);
-    const result = await runPhaseSynthesizeConcepts(engine, {
-      _atoms: atoms,
-      _chat: stubChat('Established summary.'),
-    });
-    expect(result.details?.concepts_written).toBe(1);
-    expect((result.details?.tier_counts as Record<string, number>).T1).toBe(1);
-    const page = await engine.getPage('concepts/established-topic');
-    expect(page?.frontmatter.research_policy).toBeUndefined();
-    expect(page?.frontmatter.supporting_sources).toBeUndefined();
-    expect(page?.compiled_truth).not.toContain('## Supporting research');
-  });
-
-  test('unmarked concepts retain upstream count tiering and rendering', async () => {
-    const atoms = Array.from({ length: 5 }, (_, i) => ({
-      slug: `atoms/default-${i}`,
-      title: `Default ${i}`,
-      body: `default ${i}`,
-      concept_refs: ['default-topic'],
-      source_id: 'default',
-      source_slug: `articles/source-${i}`,
-    }));
-    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: stubChat('Default summary.') });
-    const page = await engine.getPage('concepts/default-topic');
-    expect(page?.frontmatter.tier).toBe('T2');
-    expect(page?.frontmatter.composite_score).toBe(5);
-    expect(page?.frontmatter.supporting_sources).toBeUndefined();
-    expect(page?.compiled_truth).toBe('Default summary.');
-  });
-
-  test('unchanged deterministic synthesis does not rewrite the concept page', async () => {
-    const atoms = [
-      { slug: 'atoms/one', title: 'One', body: 'one', concept_refs: ['stable-topic'] },
-      { slug: 'atoms/two', title: 'Two', body: 'two', concept_refs: ['stable-topic'] },
-    ];
-    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
-    const before = await engine.executeRaw<{ updated_at: string; content_hash: string }>(
-      `SELECT updated_at::text, content_hash FROM pages WHERE slug = 'concepts/stable-topic'`,
-    );
-    const receiptsBefore = await engine.executeRaw<{ count: number }>(
-      `SELECT COUNT(*)::int AS count FROM pages WHERE type = 'extract_receipt'`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await runPhaseSynthesizeConcepts(engine, { _atoms: [...atoms].reverse() });
-    const after = await engine.executeRaw<{ updated_at: string; content_hash: string }>(
-      `SELECT updated_at::text, content_hash FROM pages WHERE slug = 'concepts/stable-topic'`,
-    );
-    expect(after[0]).toEqual(before[0]);
-    const receiptsAfter = await engine.executeRaw<{ count: number }>(
-      `SELECT COUNT(*)::int AS count FROM pages WHERE type = 'extract_receipt'`,
-    );
-    expect(receiptsAfter[0].count).toBe(receiptsBefore[0].count);
-    const page = await engine.getPage('concepts/stable-topic');
-    expect(page?.compiled_truth).not.toContain('## Supporting atoms');
-  });
-
-  test('unchanged T1/T2 synthesis skips the LLM before generating a narrative', async () => {
-    const atoms = Array.from({ length: 5 }, (_, i) => ({
-      slug: `atoms/llm-${i}`,
-      title: `LLM ${i}`,
-      body: `body ${i}`,
-      concept_refs: ['stable-llm-topic'],
-    }));
-    let calls = 0;
-    const chat = async (...args: Parameters<NonNullable<SynthesizeConceptsOpts['_chat']>>) => {
-      calls++;
-      return stubChat('Stable generated summary.')(...args);
-    };
-
+    const chat = stubChat('A concept narrative long enough to produce at least one chunk.');
     await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: chat });
-    const second = await runPhaseSynthesizeConcepts(engine, {
-      _atoms: [...atoms].reverse(),
-      _chat: chat,
-    });
-
-    expect(calls).toBe(1);
-    expect(second.details?.concepts_written).toBe(0);
-    expect(second.details?.concepts_unchanged).toBe(1);
-  });
-
-  test('a failed T1/T2 synthesis is retried and replaced after the gateway recovers', async () => {
-    const atoms = Array.from({ length: 5 }, (_, i) => ({
-      slug: `atoms/retry-${i}`,
-      title: `Retry ${i}`,
-      body: `retry body ${i}`,
-      concept_refs: ['retry-topic'],
-    }));
-    let calls = 0;
-    const first = await runPhaseSynthesizeConcepts(engine, {
-      _atoms: atoms,
-      _chat: async () => {
-        calls++;
-        throw new Error('temporary gateway failure');
-      },
-    });
-    expect(first.status).toBe('warn');
-    expect((await engine.getPage('concepts/retry-topic'))?.frontmatter.synthesis_status)
-      .toBe('fallback_error');
-
-    const second = await runPhaseSynthesizeConcepts(engine, {
-      _atoms: atoms,
-      _chat: async (opts) => {
-        calls++;
-        return stubChat('Recovered generated summary.')(opts);
-      },
-    });
-
-    expect(calls).toBe(2);
-    expect(second.details?.concepts_written).toBe(1);
-    const recovered = await engine.getPage('concepts/retry-topic');
-    expect(recovered?.compiled_truth).toBe('Recovered generated summary.');
-    expect(recovered?.frontmatter.synthesis_status).toBe('generated');
-  });
-
-  test('legacy synthesized page newer than its atoms skips one-time LLM regeneration', async () => {
-    const atoms = Array.from({ length: 5 }, (_, i) => ({
-      slug: `atoms/legacy-llm-${i}`,
-      title: `Legacy LLM ${i}`,
-      body: `legacy body ${i}`,
-      concept_refs: ['legacy-llm-topic'],
-      updated_at: new Date('2020-01-01T00:00:00Z'),
-    }));
-    await putGeneratedSearchablePage(engine, 'concepts/legacy-llm-topic', {
-      title: 'legacy llm topic',
-      type: 'concept',
-      compiled_truth: 'A previously synthesized legacy summary.',
-      timeline: '',
-      frontmatter: {
-        type: 'concept',
-        tier: 'T2',
-        mention_count: 5,
-        composite_score: 5,
-        synthesized_by: 'synthesize_concepts-v0.41',
-      },
-    });
-    let calls = 0;
-    const result = await runPhaseSynthesizeConcepts(engine, {
-      _atoms: atoms,
-      _chat: async (opts) => {
-        calls++;
-        return stubChat('Should not run.')(opts);
-      },
-    });
-    expect(calls).toBe(0);
-    expect(result.details?.concepts_unchanged).toBe(1);
-  });
-
-  test('otherwise unchanged legacy concept is rewritten when searchable chunks are missing', async () => {
-    const atoms = [
-      { slug: 'atoms/one', title: 'One', body: 'one', concept_refs: ['legacy-topic'] },
-      { slug: 'atoms/two', title: 'Two', body: 'two', concept_refs: ['legacy-topic'] },
-    ];
-    const compiledTruth = 'T3 concept. 2 atoms reference this. Top mentions:\n  - One\n  - Two';
-    await engine.putPage('concepts/legacy-topic', {
-      title: 'legacy topic',
-      type: 'concept',
-      compiled_truth: compiledTruth,
-      frontmatter: {
-        type: 'concept',
-        tier: 'T3',
-        mention_count: 2,
-        composite_score: 2,
-        synthesized_by: 'synthesize_concepts-v0.41',
-      },
-      timeline: '',
-    });
-    expect(await engine.getChunks('concepts/legacy-topic')).toHaveLength(0);
-
-    const result = await runPhaseSynthesizeConcepts(engine, { _atoms: atoms });
-
-    expect(result.details?.concepts_written).toBe(1);
-    expect((await engine.getChunks('concepts/legacy-topic')).length).toBeGreaterThan(0);
+    const rows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n
+         FROM content_chunks c JOIN pages p ON p.id = c.page_id
+        WHERE p.slug = 'concepts/chunked-concept'`,
+    );
+    expect(Number(rows[0].n)).toBeGreaterThan(0);
+    // Page metadata survives the importFromContent round-trip.
+    const page = await engine.executeRaw<{ type: string; fm: Record<string, unknown> }>(
+      `SELECT type, frontmatter AS fm FROM pages WHERE slug = 'concepts/chunked-concept'`,
+    );
+    expect(page[0].type).toBe('concept');
+    expect((page[0].fm as Record<string, unknown>).tier).toBe('T1');
   });
 });

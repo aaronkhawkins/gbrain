@@ -9,24 +9,27 @@
 //   4. Write each atom via engine.putPage(slug, page, {sourceId})
 //      with sourceId threaded so federated brains route correctly.
 //
-// Idempotency (D1 from /plan-eng-review):
-//   Each atom carries frontmatter.source_hash (16-char sha256 prefix).
-//   Before processing a transcript/page, query "any atom with this
-//   source_hash exists in this source?". If yes, skip. Closes both:
-//     - PR #1414's primary concern (page-side re-extraction)
-//     - Pre-existing v0.41.2.0 transcript-side date-stamp duplicate bug
-//       (atom slugs are `atoms/YYYY-MM-DD/<title>`, so re-discovered
-//       transcripts on day N+1 used to write second atoms; now skipped).
+// Idempotency (per-atom, via deterministic slug):
+//   Each atom's slug is `atoms/<source-date>/<stem>-<title-hash>` — built from
+//   the SOURCE date (the transcript's own date / the page slug), NOT the run
+//   date, plus a 6-char hash of the title. Re-extracting the same atom resolves
+//   to the SAME slug, so engine.putPage upserts in place instead of minting a
+//   duplicate. This closes three bugs in one scheme:
+//     - PR #1414's page-side re-extraction.
+//     - The cross-day transcript duplicate: append-only transcripts grow daily,
+//       so a run-date prefix (`atoms/<today>/…`) used to re-mint the same atom
+//       under a new date every day. A source-date prefix is stable, so it now
+//       upserts.
+//     - The "trailing-dash twin": the stem routes through slugifySegment (the
+//       FS-import normalizer) and re-strips a trailing dash after the 60-char
+//       truncation, so the two write paths can no longer disagree on `…would`
+//       vs `…would-` and persist the same atom twice.
 //
-// Known limitation (D9 #2 — documented, not blocking):
-//   If extraction writes atom 1 of 3 then atom 2 throws, source_hash
-//   filter sees atom 1 exists and skips on next discovery. Atoms 2+3
-//   stay missing until content_hash changes. Acceptable for v0.41.2.1:
-//     - Haiku call failure is rare; network/budget failures rarer.
-//     - Content edits trigger natural re-extract via new content_hash.
-//     - The original incident (duplicate atoms) is fully closed.
-//   Per-atom idempotency via deterministic slug is v0.42+ TODO
-//   (see TODOS.md).
+//   The source_hash batch check (atomsExistingForHashes) is retained ONLY as a
+//   cost fast-path — it skips re-running Haiku on a transcript whose whole-file
+//   hash is unchanged. On append-only sources that hash changes daily so the
+//   fast-path won't skip, but the deterministic slug makes the re-run upsert
+//   rather than duplicate, so correctness no longer depends on it.
 //
 // Config:
 //   Reads dream.synthesize.session_corpus_dir + meeting_transcripts_dir
@@ -48,20 +51,11 @@ import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult } from '../cycle.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { ProgressReporter } from '../progress.ts';
-import { chat as gatewayChat, getChatModel } from '../ai/gateway.ts';
-import { resolveModel } from '../model-config.ts';
-import { estimateChatCostUsd } from '../ai/chat-pricing.ts';
+import { chat as gatewayChat } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
-import { createHash } from 'node:crypto';
-import {
-  EXTRACTABLE_PAGE_TYPES,
-  extractionAdmissionSql,
-  extractionResponsePolicy,
-  type ExtractionResponsePolicy,
-} from './bookmark-extraction-policy.ts';
-import { BIRDCLAW_RESEARCH_POLICY } from './research-provenance.ts';
-import { putGeneratedSearchablePage } from '../generated-page-indexer.ts';
+import { createHash } from 'crypto';
+import { slugifySegment } from '../sync.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 
@@ -72,17 +66,55 @@ const ATOM_TYPES = [
   'critique', 'collection',
 ] as const;
 
-// v0.41.2.1 (D2): brain-page discovery constants. Hardcoded for now;
-// future pack-aware refactor is a one-line change to pull from the
-// active pack manifest (symmetric with the existing
-// src/core/facts/eligibility.ts:49 TODO).
-const EXTRACTION_ADMISSION_PREDICATE = extractionAdmissionSql('p');
+// v0.41.2.1 (D2): brain-page discovery constants.
+//
+// Legacy floor: the pre-pack hardcoded atom-extraction types. Retained as a
+// back-compat union member so a gbrain-base brain never loses an extraction
+// target when we begin honoring the pack manifest's `extractable` flags.
+const LEGACY_EXTRACTABLE_TYPES = [
+  'meeting', 'source', 'article', 'video', 'book', 'original',
+] as const;
+
+// Synthesis outputs are never extraction inputs: extracting atoms from atoms or
+// concepts would loop (concepts are synthesized FROM atoms). Mirrors
+// facts/eligibility.ts, which likewise excludes `concept` despite its
+// extractable:true flag being a documented forward-compat marker.
+const SYNTHESIS_OUTPUT_TYPES = new Set<string>(['atom', 'concept']);
+
 const PAGE_DISCOVERY_BUDGET = 50;
 const MIN_PAGE_CHARS_FOR_EXTRACTION = 500;
-const MAX_CONCEPT_REFS = 5;
-const GENERIC_CONCEPT_REFS = new Set([
-  'ai', 'artificial-intelligence', 'technology', 'software', 'innovation',
-]);
+
+/**
+ * Pure allowlist policy: the legacy floor UNION the pack's `extractable: true`
+ * types, MINUS synthesis outputs. Exported for unit tests; keep I/O-free.
+ */
+export function unionExtractableTypes(packExtractable: Iterable<string>): string[] {
+  const types = new Set<string>(LEGACY_EXTRACTABLE_TYPES);
+  for (const t of packExtractable) types.add(t);
+  for (const t of SYNTHESIS_OUTPUT_TYPES) types.delete(t);
+  return [...types];
+}
+
+/**
+ * Resolve the atom-extraction type allowlist from the active schema pack.
+ * Closes the D2 TODO of honoring the pack manifest (so a type declared
+ * extractable — e.g. `note` — actually extracts) while preserving behavior for
+ * gbrain-base via the legacy-floor union. Fail-soft: any pack-load error falls
+ * back to the legacy floor.
+ */
+async function resolveExtractableTypes(): Promise<string[]> {
+  let packExtractable: Iterable<string> = [];
+  try {
+    const { loadConfig } = await import('../config.ts');
+    const { loadActivePack } = await import('../schema-pack/load-active.ts');
+    const { extractableTypesFromPack } = await import('../schema-pack/extractable.ts');
+    const resolved = await loadActivePack({ cfg: loadConfig(), remote: false });
+    packExtractable = extractableTypesFromPack(resolved.manifest);
+  } catch {
+    // Pack unavailable (test seams, bootstrap) — legacy floor only.
+  }
+  return unionExtractableTypes(packExtractable);
+}
 
 export interface ExtractAtomsOpts {
   brainDir?: string;
@@ -103,14 +135,7 @@ export interface ExtractAtomsOpts {
    * Mirrors _transcripts shape. `undefined` triggers discovery; `[]`
    * explicitly suppresses page discovery (for transcript-only tests).
    */
-  _pages?: Array<{
-    slug: string;
-    content: string;
-    contentHash: string;
-    researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
-  }>;
-  /** Test/explicit-policy seam. Production uses the configured gateway model. */
-  _model?: string;
+  _pages?: Array<{ slug: string; content: string; contentHash: string }>;
   /**
    * v0.41.19.0 (T3): cooperative yield hook fired from inside the work
    * loop on a 30s throttle AND immediately after every `await chat()`
@@ -140,10 +165,9 @@ interface ExtractedAtom {
   lesson?: string;
   virality_score?: number;
   emotional_register?: string;
-  concepts?: string[];
 }
 
-const DEFAULT_EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
+const EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
 
 An atom is a single-source, self-contained idea that could become a tweet,
 quote, or short essay angle. Each atom must:
@@ -151,7 +175,7 @@ quote, or short essay angle. Each atom must:
   - Have a clear point (not just descriptive)
   - Be specific (not a generic platitude)
 
-Output a JSON array of atoms (1-3 per source, never more than 3).
+Output a JSON array of atoms (1-3 per transcript, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
 source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
 (0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
@@ -161,52 +185,10 @@ atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
 
 Output ONLY the JSON array, no prose.`;
 
-const RESEARCH_JSON_EXTRACT_PROMPT = `You extract atomic content nuggets from a research source.
-
-An atom is a single-source, self-contained idea that could become a tweet,
-quote, or short essay angle. Each atom must:
-  - Stand alone (no "as discussed above")
-  - Have a clear point (not just descriptive)
-  - Be specific (not a generic platitude)
-
-Output a JSON array of atoms (1-3 per source, never more than 3).
-Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
-source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
-(0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
-practical, controversial), concepts (1-5 specific durable topic names)}.
-
-atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
-
-Output ONLY the JSON array, no prose.`;
-
-const RESEARCH_EXTRACT_PROMPT = `You extract atomic content nuggets from a research source.
-
-An atom is a single-source, self-contained idea that could become a tweet,
-quote, or short essay angle. Each atom must:
-  - Stand alone (no "as discussed above")
-  - Have a clear point (not just descriptive)
-  - Be specific (not a generic platitude)
-
-Output 1-3 labeled records, never more than 3. Separate records with a line
-containing only --- and use exactly these labels, one value per line:
-TITLE: ≤80 chars
-TYPE: one allowed atom type
-BODY: 2-4 sentences
-SOURCE_QUOTE: optional verbatim quote ≤200 chars
-LESSON: optional one sentence
-VIRALITY_SCORE: optional integer 0-100
-EMOTIONAL_REGISTER: optional shocking, inspiring, funny, sobering, practical, or controversial
-CONCEPTS: 1-5 specific durable topic names separated by semicolons
-
-atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
-
-Output ONLY the labeled records, with no preamble or closing prose.`;
-
 interface DiscoveredPage {
   slug: string;
   content: string;
   contentHash: string;
-  researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
 }
 
 /**
@@ -235,12 +217,10 @@ export async function discoverExtractablePages(
   const sql = `
     SELECT p.slug,
            p.compiled_truth,
-           p.content_hash,
-           CASE WHEN p.type = 'media' THEN '${BIRDCLAW_RESEARCH_POLICY}' END AS research_policy
+           p.content_hash
     FROM pages p
     WHERE p.source_id = $1
       AND p.type = ANY($2::text[])
-      AND ${EXTRACTION_ADMISSION_PREDICATE}
       AND p.deleted_at IS NULL
       AND p.content_hash IS NOT NULL
       AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -260,7 +240,7 @@ export async function discoverExtractablePages(
   `;
   const params: unknown[] = [
     sourceId,
-    EXTRACTABLE_PAGE_TYPES as unknown as string[],
+    await resolveExtractableTypes(),
     MIN_PAGE_CHARS_FOR_EXTRACTION,
     PAGE_DISCOVERY_BUDGET,
   ];
@@ -271,13 +251,11 @@ export async function discoverExtractablePages(
       slug: string;
       compiled_truth: string;
       content_hash: string;
-      research_policy?: typeof BIRDCLAW_RESEARCH_POLICY;
     }>(sql, params);
     return rows.map((r) => ({
       slug: r.slug,
       content: r.compiled_truth,
       contentHash: r.content_hash,
-      ...(r.research_policy && { researchPolicy: r.research_policy }),
     }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -315,7 +293,6 @@ export async function countExtractAtomsBacklog(
       ? `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.source_id = $1
            AND p.type = ANY($2::text[])
-           AND ${EXTRACTION_ADMISSION_PREDICATE}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -329,7 +306,6 @@ export async function countExtractAtomsBacklog(
            )`
       : `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.type = ANY($1::text[])
-           AND ${EXTRACTION_ADMISSION_PREDICATE}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -341,9 +317,10 @@ export async function countExtractAtomsBacklog(
                AND atom.frontmatter->>'source_hash' = substring(p.content_hash from 1 for 16)
                AND atom.deleted_at IS NULL
            )`;
+    const extractableTypes = await resolveExtractableTypes();
     const params = scoped
-      ? [sourceId, EXTRACTABLE_PAGE_TYPES as unknown as string[], MIN_PAGE_CHARS_FOR_EXTRACTION]
-      : [EXTRACTABLE_PAGE_TYPES as unknown as string[], MIN_PAGE_CHARS_FOR_EXTRACTION];
+      ? [sourceId, extractableTypes, MIN_PAGE_CHARS_FOR_EXTRACTION]
+      : [extractableTypes, MIN_PAGE_CHARS_FOR_EXTRACTION];
     const rows = await engine.executeRaw<{ cnt: string | number }>(sql, params);
     return Number(rows[0]?.cnt ?? 0);
   } catch (err) {
@@ -444,7 +421,7 @@ export async function runPhaseExtractAtoms(
   // 1b. Get pages (test seam OR production discovery).
   //     _pages === undefined triggers discovery; _pages: [] suppresses it
   //     deliberately (transcript-only regression tests).
-  let pages: Array<{ slug: string; content: string; contentHash: string; researchPolicy?: string }>;
+  let pages: Array<{ slug: string; content: string; contentHash: string }>;
   if (opts._pages !== undefined) {
     pages = opts._pages;
   } else {
@@ -475,7 +452,7 @@ export async function runPhaseExtractAtoms(
   //    as a brain page).
   type WorkItem =
     | { kind: 'transcript'; filePath: string; content: string; contentHash: string }
-    | { kind: 'page'; slug: string; content: string; contentHash: string; researchPolicy?: string };
+    | { kind: 'page'; slug: string; content: string; contentHash: string };
 
   const seenHashes = new Set<string>();
   const work: WorkItem[] = [];
@@ -524,16 +501,6 @@ export async function runPhaseExtractAtoms(
   const failures: Array<{ source: string; error: string }> = [];
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
-  let configuredModel = opts._model;
-  if (!configuredModel) {
-    let fallback = 'anthropic:claude-haiku-4-5-20251001';
-    try { fallback = getChatModel(); } catch { /* gateway may not be configured in tests */ }
-    configuredModel = await resolveModel(engine, {
-      configKey: 'models.dream.extract_atoms',
-      tier: 'utility',
-      fallback,
-    });
-  }
 
   // v0.41.19.0 (T3): throttled yield helper. Fires `opts.yieldDuringPhase`
   // every 30s. Cycle.ts threads `buildYieldDuringPhase(lock, outer)` so
@@ -567,15 +534,9 @@ export async function runPhaseExtractAtoms(
     }
 
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
-    const researchPolicy = item.kind === 'page' ? item.researchPolicy : undefined;
-    const responsePolicy = extractionResponsePolicy(researchPolicy, configuredModel ?? '');
-    const researchCandidate = researchPolicy === BIRDCLAW_RESEARCH_POLICY;
     try {
       const result = await chat({
-        model: configuredModel || undefined,
-        system: researchCandidate
-          ? (responsePolicy === 'labeled' ? RESEARCH_EXTRACT_PROMPT : RESEARCH_JSON_EXTRACT_PROMPT)
-          : DEFAULT_EXTRACT_PROMPT,
+        system: EXTRACT_PROMPT,
         messages: [
           {
             role: 'user',
@@ -589,13 +550,11 @@ export async function runPhaseExtractAtoms(
       // actual refresh rate so this is cheap when calls are fast.
       await maybeYield();
 
-      estimatedSpendUsd += estimateChatCostUsd(
-        result.model || configuredModel,
-        result.usage.input_tokens,
-        result.usage.output_tokens,
-      );
+      // Rough cost estimate — Haiku at ~$0.80/M input + $4/M output
+      estimatedSpendUsd +=
+        (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
 
-      const atoms = parseAtomsResponse(result.text, responsePolicy, researchCandidate);
+      const atoms = parseAtomsResponse(result.text);
       if (atoms.length === 0) {
         if (item.kind === 'transcript') transcriptsProcessed++;
         else pagesProcessed++;
@@ -603,14 +562,9 @@ export async function runPhaseExtractAtoms(
       }
 
       if (!opts.dryRun) {
-        for (const [atomIndex, atom] of atoms.entries()) {
-          // Model titles are not identities: unrelated sources commonly
-          // produce the same short title. Source hash + response position
-          // keeps writes deterministic without allowing one atom to replace
-          // another in the same source.
-          const sourceIdentity = createHash('sha256').update(item.contentHash).digest('hex').slice(0, 12);
-          const identitySuffix = `${sourceIdentity}-${atomIndex + 1}`;
-          const slug = `atoms/${todayDate()}/${slugify(atom.title)}-${identitySuffix}`;
+        for (const atom of atoms) {
+          const srcRef = item.kind === 'transcript' ? item.filePath : item.slug;
+          const slug = atomSlug(atom.title, srcRef);
           const originFrontmatter =
             item.kind === 'transcript'
               ? { source_path: item.filePath }
@@ -618,8 +572,7 @@ export async function runPhaseExtractAtoms(
           // v0.41.2.1 D9 #1 — thread sourceId through every putPage so
           // atoms land in the source we discovered them from. Pre-fix
           // the third arg was missing and atoms always wrote to 'default'.
-          await putGeneratedSearchablePage(
-            engine,
+          await engine.putPage(
             slug,
             {
               title: atom.title,
@@ -634,8 +587,6 @@ export async function runPhaseExtractAtoms(
                 ...(atom.lesson && { lesson: atom.lesson }),
                 ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
                 ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
-                ...(atom.concepts && { concepts: atom.concepts }),
-                ...(researchPolicy === BIRDCLAW_RESEARCH_POLICY && { research_policy: researchPolicy }),
                 extracted_at: new Date().toISOString(),
                 extracted_by: 'extract_atoms-v0.41.2.1',
               },
@@ -728,11 +679,7 @@ export async function runPhaseExtractAtoms(
  * common LLM mistakes: extra prose around the JSON, missing fields,
  * invalid atom_type values. Rejects (returns empty) on hard parse fail.
  */
-export function parseAtomsResponse(
-  raw: string,
-  policy: ExtractionResponsePolicy | 'auto' = 'auto',
-  includeConcepts = false,
-): ExtractedAtom[] {
+export function parseAtomsResponse(raw: string): ExtractedAtom[] {
   // Strip markdown code fences if the LLM wrapped JSON in them.
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -740,7 +687,7 @@ export function parseAtomsResponse(
 
   // Find the first JSON array bracket.
   const arrayStart = cleaned.indexOf('[');
-  if (arrayStart === -1) return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
+  if (arrayStart === -1) return [];
   cleaned = cleaned.slice(arrayStart);
 
   let parsed: unknown;
@@ -749,15 +696,15 @@ export function parseAtomsResponse(
   } catch {
     // Try trimming back from the end to recover from trailing prose.
     const arrayEnd = cleaned.lastIndexOf(']');
-    if (arrayEnd === -1) return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
+    if (arrayEnd === -1) return [];
     try {
       parsed = JSON.parse(cleaned.slice(0, arrayEnd + 1));
     } catch {
-      return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
+      return [];
     }
   }
 
-  if (!Array.isArray(parsed)) return policy === 'json' ? [] : parseLabeledAtomsResponse(raw);
+  if (!Array.isArray(parsed)) return [];
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {
@@ -782,70 +729,49 @@ export function parseAtomsResponse(
           : undefined,
       emotional_register:
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
-      ...(includeConcepts && { concepts: normalizeConceptRefs(obj.concepts) }),
     });
   }
   return atoms;
-}
-
-function parseLabeledAtomsResponse(raw: string): ExtractedAtom[] {
-  const records = raw
-    .trim()
-    .split(/^---\s*$/m)
-    .map((record) => record.trim())
-    .filter(Boolean)
-    .slice(0, 3);
-  const atoms: ExtractedAtom[] = [];
-  for (const record of records) {
-    const fields = new Map<string, string>();
-    for (const line of record.split('\n')) {
-      const match = line.match(/^([A-Z_]+):\s*(.*)$/);
-      if (match) fields.set(match[1]!, match[2]!.trim());
-    }
-    const title = fields.get('TITLE');
-    const atomType = fields.get('TYPE');
-    const body = fields.get('BODY');
-    if (!title || !body || !atomType || !ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) continue;
-    const score = Number(fields.get('VIRALITY_SCORE'));
-    atoms.push({
-      title: title.slice(0, 80),
-      atom_type: atomType as typeof ATOM_TYPES[number],
-      body,
-      ...(fields.get('SOURCE_QUOTE') && { source_quote: fields.get('SOURCE_QUOTE')!.slice(0, 200) }),
-      ...(fields.get('LESSON') && { lesson: fields.get('LESSON')! }),
-      ...(Number.isFinite(score) && score >= 0 && score <= 100 && { virality_score: score }),
-      ...(fields.get('EMOTIONAL_REGISTER') && { emotional_register: fields.get('EMOTIONAL_REGISTER')! }),
-      concepts: normalizeConceptRefs(fields.get('CONCEPTS')?.split(';')),
-    });
-  }
-  return atoms;
-}
-
-function normalizeConceptRefs(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const concepts: string[] = [];
-  const seen = new Set<string>();
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const slug = slugify(item);
-    if (!slug || GENERIC_CONCEPT_REFS.has(slug) || seen.has(slug)) continue;
-    seen.add(slug);
-    concepts.push(slug);
-    if (concepts.length === MAX_CONCEPT_REFS) break;
-  }
-  return concepts.length > 0 ? concepts : undefined;
 }
 
 function todayDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 60);
+/**
+ * Canonical slug stem for an atom title. Routes through slugifySegment (the
+ * same normalizer the FS-import path uses) and RE-STRIPS a trailing dash after
+ * the 60-char truncation — the cut can land on a hyphen and re-introduce one.
+ * Two writers disagreeing on that trailing dash (`…would` vs `…would-`) was the
+ * "trailing-dash twin" duplicate bug.
+ */
+function atomSlugStem(title: string): string {
+  return slugifySegment(title).slice(0, 60).replace(/-+$/g, '') || 'untitled';
+}
+
+/**
+ * Pull a YYYY-MM-DD date from a source reference — a transcript file path like
+ * `…/2026-06-11-telegram.md`, or a dated page slug. Checks the basename first
+ * to avoid matching a date in a parent directory. Falls back to the run date
+ * only when the source carries no date, so dated sources are fully deterministic.
+ */
+function sourceDate(ref: string): string {
+  const base = ref.split('/').pop() ?? ref;
+  const m = base.match(/(\d{4}-\d{2}-\d{2})/) ?? ref.match(/(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : todayDate();
+}
+
+/**
+ * Deterministic per-atom slug: `atoms/<source-date>/<stem>-<title-hash>`.
+ * - Date comes from the SOURCE, not the run date, so re-extracting an
+ *   append-only transcript on a later day yields the SAME slug → putPage
+ *   upserts instead of minting a cross-day duplicate.
+ * - The 6-char title hash keeps two distinct atoms whose titles share the
+ *   first 60 chars on separate slugs, so a deterministic slug never silently
+ *   clobbers a *different* atom. Hash is over the title only (not body) so an
+ *   LLM rewording the body on re-extraction still upserts rather than dupes.
+ */
+function atomSlug(title: string, srcRef: string): string {
+  const hash = createHash('sha256').update(title).digest('hex').slice(0, 6);
+  return `atoms/${sourceDate(srcRef)}/${atomSlugStem(title)}-${hash}`;
 }

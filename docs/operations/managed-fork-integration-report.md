@@ -251,3 +251,44 @@ green. Known blockers/stop conditions:
 5. If a later upstream commit is proposed, first reproduce a Phase 0
    acceptance gap and add its object, dependencies, contract row, and proving
    test here.
+
+## U2 baseline merge receipt
+
+- Status: resolved and locally verified; merge commit pending finalization.
+- First parent: `37749f135d0e33392b6c7acf83e01d01898314b1`.
+- Second parent: `bb5a66942d7a7b0992f94fc59b4710c8e30b1830`.
+- Later upstream objects included: none.
+- Conflict count: 18 paths, matching the U1 stage-1/2/3 inventory.
+- Resolution rule: all 18 conflict paths selected the pinned upstream side.
+  `src/commands/schema.ts` retains upstream's shared
+  `BUNDLED_PACK_NAMES`-driven activation, and
+  `docs/architecture/KEY_FILES.md` was updated to current merged behavior.
+- Mechanical buildability closure: the models command exposes its existing
+  report and subcommand parser as test seams; characterization-only fork tests
+  use type refinements compatible with the upstream-first types. These changes
+  do not restore the U3-U7 routing, provider, embedding, source, Dream, or
+  Minion policies.
+- Schema resolution: the upstream v123 handler now installs the final
+  oversized-safe page trigger before any non-English page backfill. Migration
+  v124 remains the idempotent repair for databases already stamped v123.
+  Fresh schema mirrors and the reindex consumer already carry the same safe
+  function body.
+- Resumability proof: failure injection after each of v123's four handler
+  operations leaves the version marker unchanged and a complete retry
+  reinstalls both functions and both backfills. A real PGLite v122 fixture with
+  oversized non-English content reaches v124 and retains a search vector.
+- Postgres fixture: added for v122 oversized upgrade and v123 repair, but not
+  executed locally because no test database configuration was present and the
+  Docker daemon was unavailable. No external or live database was used.
+- Version audit: `VERSION`, `package.json`, and the top `CHANGELOG.md` entry
+  agree on `0.42.64.0`; this is the pinned upstream baseline metadata, not a U8
+  release allocation.
+
+The merge commit is the exact resolution patch. After finalization, reproduce
+its parent-relative forms with:
+
+```sh
+git show --cc --stat <u2-merge-commit>
+git diff 37749f135d0e33392b6c7acf83e01d01898314b1 <u2-merge-commit>
+git diff bb5a66942d7a7b0992f94fc59b4710c8e30b1830 <u2-merge-commit>
+```

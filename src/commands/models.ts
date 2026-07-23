@@ -39,8 +39,6 @@ const TIERS: ModelTier[] = ['utility', 'reasoning', 'deep', 'subagent'];
 
 const PER_TASK_KEYS: Array<{ key: string; tier: ModelTier; description: string }> = [
   { key: 'models.dream.synthesize',         tier: 'reasoning', description: 'Dream synthesis (conversation → brain pages)' },
-  { key: 'models.dream.extract_atoms',      tier: 'utility',   description: 'Native atom extraction from transcripts and pages' },
-  { key: 'models.dream.synthesize_concepts', tier: 'reasoning', description: 'Native concept synthesis from extracted atoms' },
   { key: 'models.dream.synthesize_verdict', tier: 'utility',   description: 'Dream synthesis verdict (Haiku judge)' },
   { key: 'models.dream.patterns',           tier: 'reasoning', description: 'Pattern discovery (cross-take themes)' },
   { key: 'models.drift',                    tier: 'reasoning', description: 'Drift LLM judge (v0.29 scaffold)' },
@@ -68,31 +66,14 @@ interface ModelsReport {
   aliases: { defaults: Record<string, string>; user: Record<string, string> };
 }
 
-async function resolveModelSource(
-  engine: BrainEngine,
-  opts: { configKey?: string; tier?: ModelTier; envVar?: string; fallback: string },
-): Promise<string> {
-  // Keep this in the same order as resolveModel. Report entries do not have a
-  // CLI flag or deprecated config key, so their first possible source is the
-  // task key followed by the shared routing layers.
-  if (opts.configKey) {
-    const taskValue = await engine.getConfig(opts.configKey);
-    if (taskValue?.trim()) return `config: ${opts.configKey}`;
-  }
-
-  const globalDefault = await engine.getConfig('models.default');
-  if (globalDefault?.trim()) return 'config: models.default';
-
-  if (opts.tier) {
-    const tierValue = await engine.getConfig(`models.tier.${opts.tier}`);
-    if (tierValue?.trim()) return `config: models.tier.${opts.tier}`;
-  }
-
-  const envVar = opts.envVar ?? 'GBRAIN_MODEL';
-  if (process.env[envVar]?.trim()) return `env: ${envVar}`;
-
-  if (opts.tier && TIER_DEFAULTS[opts.tier]) return `default: tier.${opts.tier}`;
-  return `fallback: ${opts.fallback}`;
+async function probeSource(engine: BrainEngine, configKey: string, envVar: string): Promise<string | null> {
+  // For per-task probes, return the source the resolver USED (config / env /
+  // tier default / hardcoded). The resolver itself is the source of truth;
+  // we re-walk a subset of its precedence here to attribute the value.
+  const configVal = await engine.getConfig(configKey);
+  if (configVal && configVal.trim()) return `config: ${configKey}`;
+  if (process.env[envVar] && process.env[envVar]!.trim()) return `env: ${envVar}`;
+  return null;
 }
 
 export async function buildModelsReport(engine: BrainEngine): Promise<ModelsReport> {
@@ -100,15 +81,25 @@ export async function buildModelsReport(engine: BrainEngine): Promise<ModelsRepo
 
   const tiers = {} as Record<ModelTier, ModelEntry>;
   for (const t of TIERS) {
+    const tierOverride = await engine.getConfig(`models.tier.${t}`);
+    // What models.default beats tier — re-walk the chain to attribute properly.
+    let source: string;
+    if (globalDefault && globalDefault.trim()) {
+      source = 'config: models.default';
+    } else if (tierOverride && tierOverride.trim()) {
+      source = `config: models.tier.${t}`;
+    } else {
+      source = 'default';
+    }
     const resolved = await resolveModel(engine, { tier: t, fallback: TIER_DEFAULTS[t] });
-    const source = await resolveModelSource(engine, { tier: t, fallback: TIER_DEFAULTS[t] });
     tiers[t] = { tier: t, resolved, source };
   }
 
   const per_task: ModelsReport['per_task'] = [];
   for (const { key, tier, description } of PER_TASK_KEYS) {
     const resolved = await resolveModel(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
-    const source = await resolveModelSource(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
+    const explicit = await probeSource(engine, key, 'GBRAIN_MODEL');
+    const source = explicit ?? `tier.${tier}`;
     per_task.push({ key, tier, resolved, source, description });
   }
 
@@ -127,6 +118,18 @@ export async function buildModelsReport(engine: BrainEngine): Promise<ModelsRepo
     per_task,
     aliases: { defaults: { ...DEFAULT_ALIASES }, user: userAliases },
   };
+}
+
+export function parseModelsSubcommand(args: string[]): 'help' | 'doctor' | 'read' {
+  const commandArgs = args[0] === 'models' ? args.slice(1) : args;
+  if (
+    commandArgs.includes('--help') ||
+    commandArgs.includes('-h') ||
+    commandArgs[0] === 'help'
+  ) {
+    return 'help';
+  }
+  return commandArgs[0] === 'doctor' ? 'doctor' : 'read';
 }
 
 function formatText(report: ModelsReport): string {
@@ -516,14 +519,9 @@ async function probeModel(modelStr: string, touchpoint: 'chat' | 'expansion'): P
   const start = Date.now();
   try {
     const { chat } = await import('../core/ai/gateway.ts');
-    // OpenCode includes local session setup plus subscription-backed inference;
-    // five seconds is routinely too short even when both sides are healthy.
-    const timeoutMs = modelStr.startsWith('opencode-server:') ? 20_000 : 5_000;
+    // Use AbortController so the 5s timeout doesn't hang on a stuck network.
     const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(new Error(`probe timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
+    const timeoutId = setTimeout(() => controller.abort(new Error('probe timed out after 5s')), 5000);
     try {
       await chat({
         model: modelStr,
@@ -548,20 +546,20 @@ function shouldSkipProvider(modelStr: string, skip: string[]): boolean {
   return skip.includes(provider);
 }
 
-export function parseModelsSubcommand(args: string[]): 'doctor' | 'help' | 'read' {
-  // CLI dispatch passes subcommand-only argv on current Bun entrypoints, while
-  // older direct callers include the leading `models` token. Accept both.
-  const positional = args.filter(arg => !arg.startsWith('-'));
-  const requestedSubcommand = positional[0] === 'models' ? positional[1] : positional[0];
-  return requestedSubcommand === 'doctor'
-    ? 'doctor'
-    : requestedSubcommand === 'help' || args.includes('--help') || args.includes('-h')
-      ? 'help'
-      : 'read';
-}
-
 export async function runModels(engine: BrainEngine, args: string[]): Promise<void> {
   const json = args.includes('--json');
+  // args is `subArgs` from cli.ts `handleCliOnly` — the leading 'models'
+  // token has already been stripped. The subcommand is at args[0], NOT
+  // args[1]. Pre-fix this check was `args[1]`, so `gbrain models doctor`
+  // silently fell through to the read view. The doctor probe path was
+  // unreachable from the CLI.
+  //
+  // --help honored FIRST so `gbrain models doctor --help` shows usage
+  // instead of running network probes (which would spend tokens or
+  // exit nonzero when the user only asked for help). Pre-fix the
+  // args[1] ternary happened to dodge this by always falling through
+  // to the args.includes('--help') branch; the args[0] rewrite needs
+  // explicit ordering to preserve that behavior.
   const sub = parseModelsSubcommand(args);
 
   if (sub === 'help') {

@@ -41,12 +41,13 @@ export interface GBrainConfig {
    * merge → buildGatewayConfig env dict → recipe reads ZEROENTROPY_API_KEY.
    */
   zeroentropy_api_key?: string;
-  /** Persistent local OpenCode server used for subscription-backed chat. */
-  opencode_server_url?: string;
-  opencode_server_username?: string;
-  opencode_server_password?: string;
-  opencode_server_provider_id?: string;
-  opencode_server_agent?: string;
+  /**
+   * OpenRouter API key. File-plane slot so `gbrain config set
+   * openrouter_api_key X` (or config.json) reaches the openrouter recipe:
+   * file plane → loadConfig env merge → buildGatewayConfig env dict → recipe
+   * reads OPENROUTER_API_KEY.
+   */
+  openrouter_api_key?: string;
   /** AI gateway config (v0.14+). v0.36+ default: "zeroentropyai:zembed-1" / 1280 / "anthropic:claude-haiku-4-5-20251001". */
   embedding_model?: string;
   embedding_dimensions?: number;
@@ -73,6 +74,8 @@ export interface GBrainConfig {
   chat_fallback_chain?: string[];
   /** Optional base URL overrides for openai-compatible providers (keyed by recipe id). */
   provider_base_urls?: Record<string, string>;
+  /** Optional chat request providerOptions overrides keyed by recipe id or "recipe:modelId". */
+  provider_chat_options?: Record<string, Record<string, unknown>>;
   /**
    * Optional storage backend config (S3/Supabase/local). Shape matches
    * `StorageConfig` in `./storage.ts`. Typed as `unknown` here to avoid
@@ -268,6 +271,8 @@ export interface GBrainConfig {
       verdict_model?: string;
       max_prompt_tokens?: number;
       max_chunks_per_transcript?: number;
+      subagent_timeout_ms?: number;
+      subagent_wait_timeout_ms?: number;
     };
     patterns?: {
       lookback_days?: number;
@@ -532,6 +537,7 @@ export function loadConfig(): GBrainConfig | null {
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
     ...(process.env.ANTHROPIC_API_KEY ? { anthropic_api_key: process.env.ANTHROPIC_API_KEY } : {}),
     ...(process.env.ZEROENTROPY_API_KEY ? { zeroentropy_api_key: process.env.ZEROENTROPY_API_KEY } : {}),
+    ...(process.env.OPENROUTER_API_KEY ? { openrouter_api_key: process.env.OPENROUTER_API_KEY } : {}),
     ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
     ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: parseInt(process.env.GBRAIN_EMBEDDING_DIMENSIONS, 10) } : {}),
     ...(process.env.GBRAIN_EXPANSION_MODEL ? { expansion_model: process.env.GBRAIN_EXPANSION_MODEL } : {}),
@@ -614,7 +620,10 @@ export function loadConfig(): GBrainConfig | null {
  * size the schema and must be stable across engine connect.
  */
 export async function loadConfigWithEngine(
-  engine: { getConfig(key: string): Promise<string | null | undefined> },
+  engine: {
+    getConfig(key: string): Promise<string | null | undefined>;
+    listConfigKeys?(prefix: string): Promise<string[]>;
+  },
   base?: GBrainConfig | null,
 ): Promise<GBrainConfig | null> {
   // Codex /ship finding #3: when there's no file config AND no env DB URL,
@@ -651,18 +660,37 @@ export async function loadConfigWithEngine(
       return undefined;
     }
   }
+  async function dbPrefixMap(prefix: string): Promise<Record<string, string> | undefined> {
+    if (typeof engine.listConfigKeys !== 'function') return undefined;
+    let keys: string[];
+    try {
+      keys = await engine.listConfigKeys(prefix);
+    } catch {
+      return undefined;
+    }
+
+    const out: Record<string, string> = {};
+    for (const key of keys.sort()) {
+      if (!key.startsWith(prefix)) continue;
+      const leaf = key.slice(prefix.length);
+      if (!leaf) continue;
+      const value = await dbStr(key);
+      if (value !== undefined) out[leaf] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
 
   const dbMultimodal = await dbBool('embedding_multimodal');
   const dbMultimodalModel = await dbStr('embedding_multimodal_model');
   const dbOcr = await dbBool('embedding_image_ocr');
   const dbOcrModel = await dbStr('embedding_image_ocr_model');
+  const dbProviderBaseUrls = await dbPrefixMap('provider_base_urls.');
   // v0.36 (D7) — embedding-column registry merge. Stored as JSON string in
   // the config table. Parse + shape-check here; full registry validation
   // (regex on keys, type/dim/provider field shapes) runs in the resolver at
   // first use so a malformed DB row doesn't kill engine connect.
   const dbEmbeddingColumns = await dbStr('embedding_columns');
   const dbSearchEmbeddingColumn = await dbStr('search_embedding_column');
-  const dbVllmBaseUrl = await dbStr('provider_base_urls.vllm');
 
   // DB applies only when env did NOT win. Env presence is detected by the
   // sync loadConfig() already setting the field. For each flag, prefer the
@@ -680,6 +708,15 @@ export async function loadConfigWithEngine(
   if (merged.embedding_image_ocr_model === undefined && dbOcrModel !== undefined) {
     merged.embedding_image_ocr_model = dbOcrModel;
   }
+  if (dbProviderBaseUrls !== undefined) {
+    const next = { ...(merged.provider_base_urls ?? {}) };
+    for (const [providerId, baseUrl] of Object.entries(dbProviderBaseUrls)) {
+      if (next[providerId] === undefined) next[providerId] = baseUrl;
+    }
+    if (Object.keys(next).length > 0) {
+      merged.provider_base_urls = next;
+    }
+  }
   if (merged.embedding_columns === undefined && dbEmbeddingColumns !== undefined) {
     try {
       const parsed = JSON.parse(dbEmbeddingColumns);
@@ -695,12 +732,6 @@ export async function loadConfigWithEngine(
   if (merged.search_embedding_column === undefined && dbSearchEmbeddingColumn !== undefined) {
     merged.search_embedding_column = dbSearchEmbeddingColumn;
   }
-  if (dbVllmBaseUrl !== undefined && merged.provider_base_urls?.vllm === undefined) {
-    merged.provider_base_urls = {
-      ...(merged.provider_base_urls ?? {}),
-      vllm: dbVllmBaseUrl,
-    };
-  }
 
   // v0.41 content-sanity DB-plane merge (D1: lint lifts to read these
   // when reachable). Per-key sparse-merge: env/file wins per individual
@@ -712,6 +743,12 @@ export async function loadConfigWithEngine(
     if (v === undefined) return undefined;
     const n = parseInt(v, 10);
     return Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+  async function dbNum(key: string): Promise<number | undefined> {
+    const v = await dbStr(key);
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    return Number.isNaN(n) ? undefined : n;
   }
   const dbWarnBytes = await dbInt('content_sanity.bytes_warn');
   const dbBlockBytes = await dbInt('content_sanity.bytes_block');
@@ -762,6 +799,8 @@ export async function loadConfigWithEngine(
   const dbVerdictModel = await dbStr('dream.synthesize.verdict_model');
   const dbMaxPromptTokens = await dbInt('dream.synthesize.max_prompt_tokens');
   const dbMaxChunksPerTranscript = await dbInt('dream.synthesize.max_chunks_per_transcript');
+  const dbSubagentTimeoutMs = await dbNum('dream.synthesize.subagent_timeout_ms');
+  const dbSubagentWaitTimeoutMs = await dbNum('dream.synthesize.subagent_wait_timeout_ms');
   const dbLookbackDays = await dbInt('dream.patterns.lookback_days');
   const dbMinEvidence = await dbInt('dream.patterns.min_evidence');
 
@@ -785,6 +824,12 @@ export async function loadConfigWithEngine(
   }
   if (mergedSynth.max_chunks_per_transcript === undefined && dbMaxChunksPerTranscript !== undefined) {
     mergedSynth.max_chunks_per_transcript = dbMaxChunksPerTranscript;
+  }
+  if (mergedSynth.subagent_timeout_ms === undefined && dbSubagentTimeoutMs !== undefined) {
+    mergedSynth.subagent_timeout_ms = dbSubagentTimeoutMs;
+  }
+  if (mergedSynth.subagent_wait_timeout_ms === undefined && dbSubagentWaitTimeoutMs !== undefined) {
+    mergedSynth.subagent_wait_timeout_ms = dbSubagentWaitTimeoutMs;
   }
   if (mergedPatterns.lookback_days === undefined && dbLookbackDays !== undefined) {
     mergedPatterns.lookback_days = dbLookbackDays;
@@ -828,6 +873,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'database_path',
   'openai_api_key',
   'anthropic_api_key',
+  'zeroentropy_api_key',
+  'openrouter_api_key',
   'embedding_model',
   'embedding_dimensions',
   'embedding_disabled',
@@ -835,6 +882,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'chat_model',
   'chat_fallback_chain',
   'provider_base_urls',
+  'provider_chat_options',
   'storage',
   'eval',
   'eval.capture',
@@ -849,6 +897,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'sync',
   'sync.repo_path',
   'sync.last_commit',
+  // Gateway-native subagent loop toggle (routes subagent jobs through the
+  // provider-agnostic gateway.toolLoop for non-Anthropic providers). The
+  // subagent handler's error message tells users to `config set` this, so it
+  // must be a known key or `config set` rejects it without --force.
+  'agent.use_gateway_loop',
+  // #2778: per-turn output-token cap for the subagent loop (default 8192).
+  'agent.max_output_tokens',
   // DB-plane (v0.32.3 search modes + related)
   'search.mode',
   'search.cache.enabled',
@@ -873,8 +928,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.tier.subagent',
   'models.aliases',
   'models.dream.synthesize',
-  'models.dream.extract_atoms',
-  'models.dream.synthesize_concepts',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
   'models.drift',
@@ -885,8 +938,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.chat',
   'models.eval.longmemeval',
   'facts.extraction_model',
-  // Required for non-Anthropic subagent models.
-  'agent.use_gateway_loop',
+  // #2113: output-token cap for the per-turn facts extractor (default 4000).
+  'facts.extraction_max_tokens',
   // Dream cycle config
   'dream.synthesize.session_corpus_dir',
   'dream.synthesize.meeting_transcripts_dir',
@@ -894,8 +947,16 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'dream.synthesize.verdict_model',
   'dream.synthesize.max_prompt_tokens',
   'dream.synthesize.max_chunks_per_transcript',
+  // #2415: top-level namespace for synthesize/patterns output (default 'wiki').
+  'dream.synthesize.output_root',
+  'dream.synthesize.subagent_timeout_ms',
+  'dream.synthesize.subagent_wait_timeout_ms',
   'dream.patterns.lookback_days',
   'dream.patterns.min_evidence',
+  // #2782-family: patterns-phase subagent timeouts (mirror of the
+  // dream.synthesize.* pair from #1594).
+  'dream.patterns.subagent_timeout_ms',
+  'dream.patterns.subagent_wait_timeout_ms',
   // Emotional weight (v0.29)
   'emotional_weight.high_tags',
   'emotional_weight.user_holder',
@@ -938,6 +999,20 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // operator had to discover these by reading source. Registered so `config
   // set` accepts them directly. See docs/operations/spend-controls.md.
   'spend.posture',
+  // Life Chronicle (v0.42.56.0, #2390). The release notes' enable command is
+  // `gbrain config set auto_chronicle true`, but the key was never registered
+  // — so the documented command failed with "Unknown config key" and the
+  // operator had to discover --force by reading source. Same class as the
+  // spend-controls registration above.
+  'auto_chronicle',
+  // #2606: chronicle judge output-token cap (default 4000). Event-dense
+  // pages overflowed the old hardcoded 1500 and were misrecorded as
+  // no_events; the cap is now configurable and truncation is surfaced.
+  'chronicle.judge_max_tokens',
+  // Takes bootstrap (v0.41.18.0, A12). The onboard remediation's two-gate
+  // consent reads this key, and enabling it is the documented path to
+  // `gbrain takes extract --from-pages` — same unregistered-key class.
+  'takes.bootstrap_enabled',
   'sync.cost_gate_min_usd',
   'sync.federated_v2',
   'embed.backfill_cooldown_min',
@@ -957,9 +1032,11 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   'cycle.',            // cycle.<phase>.*
   'embedding_columns.', // per-column overrides
   'provider_base_urls.', // per-provider base URL overrides
+  'provider_chat_options.', // per-provider / per-model chat providerOptions
   'content_sanity.',    // v0.41 content-sanity tunables
   'mcp.',               // mcp.publish_skills, mcp.skills_dir (PR1 skill catalog)
   'autopilot.',         // autopilot.nightly_quality_probe.*, autopilot.auto_drain.* (#1685)
+  'chronicle.',         // chronicle.tz + future Life Chronicle knobs (#2390)
   'self_upgrade.',      // v0.42 self-upgrade (mode, quiet_hours, state)
 ];
 

@@ -43,7 +43,6 @@ import { createHash } from 'crypto';
 import * as fs from 'node:fs';
 import { embedBatch } from './embedding.ts';
 import { resolveContextualRetrievalMode } from './contextual-retrieval-resolver.ts';
-import { getChatModel } from './ai/gateway.ts';
 import {
   buildContextualPrefix,
   extractFirstTwoSentences,
@@ -55,6 +54,7 @@ import {
 import {
   generatePerChunkSynopsis,
   SYNOPSIS_PROMPT_VERSION,
+  SYNOPSIS_DOC_MAX_CHARS,
   type GeneratePerChunkSynopsisResult,
 } from './page-summary.ts';
 import {
@@ -104,8 +104,17 @@ function getEmbeddingModelTag(): string {
 export function computeCorpusGeneration(args: {
   crMode: CRMode;
   haikuModel: string;
+  /**
+   * Resolved `SYNOPSIS_DOC_MAX_CHARS` for per_chunk_synopsis runs. When
+   * present, folded into the hash so changes to
+   * `GBRAIN_SYNOPSIS_DOC_MAX_CHARS` invalidate the prior cache cleanly.
+   * Omit for `crMode !== 'per_chunk_synopsis'` — title / none modes
+   * don't consult the cap and the field stays out of the hash for
+   * back-compat with pre-cap embeddings.
+   */
+  synopsisDocMaxChars?: number;
 }): string {
-  return createHash('sha256')
+  const h = createHash('sha256')
     .update(args.crMode)
     .update('|')
     .update(String(SYNOPSIS_PROMPT_VERSION))
@@ -114,9 +123,11 @@ export function computeCorpusGeneration(args: {
     .update('|')
     .update(String(TITLE_WRAPPER_VERSION))
     .update('|')
-    .update(getEmbeddingModelTag())
-    .digest('hex')
-    .slice(0, 16);
+    .update(getEmbeddingModelTag());
+  if (args.synopsisDocMaxChars !== undefined) {
+    h.update('|doc_cap=').update(String(args.synopsisDocMaxChars));
+  }
+  return h.digest('hex').slice(0, 16);
 }
 
 /**
@@ -201,6 +212,8 @@ export interface ReembedPageArgs {
   releaseSynopsisLease?: () => Promise<void>;
 }
 
+const DEFAULT_HAIKU_MODEL = 'anthropic:claude-haiku-4-5-20251001';
+
 /**
  * Re-embed one page through the active CR mode. Implements the D26 P0-2
  * two-phase build pattern.
@@ -244,7 +257,6 @@ export async function reembedPageWithContextualRetrieval(
     return { kind: 'skipped', reason: 'mode_none' };
   }
 
-  const synopsisModel = args.haikuModel ?? getChatModel();
   const chunks = await args.engine.getChunks(args.pageSlug, { sourceId: args.sourceId });
   if (chunks.length === 0) {
     // No chunks but page exists (frontmatter-only or empty). Stamp the
@@ -253,7 +265,11 @@ export async function reembedPageWithContextualRetrieval(
       args.pageSlug,
       args.sourceId,
       resolution.mode,
-      computeCorpusGeneration({ crMode: resolution.mode, haikuModel: synopsisModel }),
+      computeCorpusGeneration({
+        crMode: resolution.mode,
+        haikuModel: args.haikuModel ?? DEFAULT_HAIKU_MODEL,
+        synopsisDocMaxChars: resolution.mode === 'per_chunk_synopsis' ? SYNOPSIS_DOC_MAX_CHARS : undefined,
+      }),
     );
     return { kind: 'skipped', reason: 'no_chunks' };
   }
@@ -264,7 +280,7 @@ export async function reembedPageWithContextualRetrieval(
   // fall-back path is the D14 page-level consistency guarantee: a
   // single bad chunk demotes the whole page to title-only so all
   // chunks on the page share the same wrapper shape.
-  const haikuModel = synopsisModel;
+  const haikuModel = args.haikuModel ?? DEFAULT_HAIKU_MODEL;
   let attemptMode: CRMode = resolution.mode;
   let fallbackReason: SynopsisFailureKind | null = null;
 
@@ -282,6 +298,7 @@ export async function reembedPageWithContextualRetrieval(
       const corpus_generation = computeCorpusGeneration({
         crMode: attemptMode,
         haikuModel,
+        synopsisDocMaxChars: attemptMode === 'per_chunk_synopsis' ? SYNOPSIS_DOC_MAX_CHARS : undefined,
       });
 
       // ── PHASE 2: single DB transaction ───────────────────────────

@@ -34,11 +34,10 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   // plane field now exists (GBrainConfig type) and gets mapped here, so
   // setting it via `~/.gbrain/config.json` propagates into the gateway.
   if (c.zeroentropy_api_key) envFromConfig.ZEROENTROPY_API_KEY = c.zeroentropy_api_key;
-  if (c.opencode_server_url) envFromConfig.GBRAIN_OPENCODE_SERVER_URL = c.opencode_server_url;
-  if (c.opencode_server_username) envFromConfig.GBRAIN_OPENCODE_SERVER_USERNAME = c.opencode_server_username;
-  if (c.opencode_server_password) envFromConfig.GBRAIN_OPENCODE_SERVER_PASSWORD = c.opencode_server_password;
-  if (c.opencode_server_provider_id) envFromConfig.GBRAIN_OPENCODE_PROVIDER_ID = c.opencode_server_provider_id;
-  if (c.opencode_server_agent) envFromConfig.GBRAIN_OPENCODE_AGENT = c.opencode_server_agent;
+  // Same seam for OpenRouter: `gbrain config set openrouter_api_key X` (or
+  // config.json) must reach the openrouter recipe's OPENROUTER_API_KEY.
+  // process.env still wins via the later spread.
+  if (c.openrouter_api_key) envFromConfig.OPENROUTER_API_KEY = c.openrouter_api_key;
 
   // v0.32 codex finding #4+#5 fix: thread local-server _BASE_URL env vars
   // into base_urls so the gateway hits the user's configured port. Without
@@ -57,8 +56,6 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   if (process.env.LMSTUDIO_BASE_URL) envBaseUrls['lmstudio'] = process.env.LMSTUDIO_BASE_URL;
   if (process.env.LITELLM_BASE_URL) envBaseUrls['litellm'] = process.env.LITELLM_BASE_URL;
   if (process.env.OPENROUTER_BASE_URL) envBaseUrls['openrouter'] = process.env.OPENROUTER_BASE_URL;
-  if (process.env.NVIDIA_NIM_BASE_URL) envBaseUrls['nvidia-nim'] = process.env.NVIDIA_NIM_BASE_URL;
-  if (process.env.VLLM_BASE_URL) envBaseUrls.vllm = process.env.VLLM_BASE_URL;
 
   return {
     embedding_model: c.embedding_model,
@@ -68,6 +65,7 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
     chat_model: c.chat_model,
     chat_fallback_chain: c.chat_fallback_chain,
     base_urls: { ...envBaseUrls, ...(c.provider_base_urls ?? {}) }, // config wins over env
+    provider_chat_options: c.provider_chat_options,
     // #1249: process.env still wins over the config-plane fallback, BUT only for
     // keys that carry a real value. Claude Code (and some launchers) inject
     // ANTHROPIC_API_KEY='' to neuter subprocess LLM calls; an unconditional
