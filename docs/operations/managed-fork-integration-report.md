@@ -176,7 +176,7 @@ directions of compatibility, owner, proof, and retirement condition.
 | C04 local NVIDIA NIM identity | `nvidia-nim` recipe and embedding helpers | embed, stale detection, vector index, status | ID stays `nvidia-nim`; local endpoint/auth/model/dims are never aliased to hosted `nvidia` | Previous fork reads local config and vectors; preserve recipe and provenance | U4 / backward-compatible | `test/ai/recipe-nvidia-nim.test.ts`, embedding suites | Retire only if upstream supports a distinct local recipe with full identity parity |
 | C05 hosted NVIDIA identity | upstream `nvidia` recipe | gateway, providers/models diagnostics, embedding | New additive ID; must coexist with C04 and carry its own base URL, auth, models, dimensions, cost, and privacy contract | Previous fork cannot interpret hosted-only config/jobs; quarantine them before rollback | U4 / quarantine-required | upstream NVIDIA recipe/dim suites plus distinct-ID fixture | Retire no earlier than upstream removal; never alias to C04 |
 | C06 embedding identity | config + embed writer | pages/chunks, stale detection, hybrid retrieval, status | Provider, exact model, dimensions, active column, preprocessing signature, and stored provenance must agree; same width alone is incompatible | Previous reader allowed only for a cohort it can prove; otherwise lexical/fail-closed or restore | U4 / quarantine-or-restore | embedding identity, dim, index lifecycle, hybrid suites | Retire fork gate when canonical engine enforces the same complete identity |
-| C07 source/page identity | source resolver and canonical operations | import, Dream, facts, takes, search, both engines | `(source_id, slug)` is identity; opaque source context survives all calls; old default-source rows remain readable | Candidate-created non-default rows require a source-aware previous reader or roll-forward | U5 / compatibility-gated | source resolver, operations, engine parity, E2E source suites | Never retire composite identity; retire adapters after all callers are source-aware |
+| C07 source/page identity | source resolver and canonical operations | import, Dream, facts, takes, search, both engines | `(source_id, slug)` is identity; opaque source context survives all calls; malformed identities and remote overrides outside scalar/federated grants fail closed; old default-source rows remain readable | Candidate-created non-default rows require a source-aware previous reader or roll-forward | U5 / compatibility-gated | `test/source-scope-resolver.test.ts`, source resolver, ingestion roundtrip, extraction, engine parity, and real-Postgres multi-source suites | Never retire composite identity; retire adapters after all callers are source-aware |
 | C08 research policy/provenance v1 | bookmark policy and extraction | atom writer, synthesis, status, retrieval trace | Only marked sources receive `birdclaw-research-v1`; unmarked behavior stays generic; old marked frontmatter remains readable | Previous fork reads v1; new provenance fields must remain additive | U6 / backward-compatible | `test/cycle/extract-atoms-synthesize-concepts.test.ts`, research health suites | Retire when generic upstream policy can express the same admission and evidence rules |
 | C09 generated knowledge file + projection | U6 FS-first sink | import, chunks, embeddings, retrieval, sync reconciler | Canonical file is commit point; DB projection is idempotent and replayable; existing DB-only/custom chunks remain readable without new dual writes | Before normal writes, reselect code and replay canonical files; after writes, roll forward unless a tested lossless replay exists | U6 / roll-forward after writes | generated output, import, sync recovery, repeat-run suites | Retire custom indexer after exactly-once parity; adapter may remain non-writing only |
 | C10 facts-absorb payload v1 | facts enqueue sites | Minion handler and facts writer | Missing v1 fields normalize to explicit defaults; source ID and content hash fence writes; future versions reject | Current v1 remains readable by previous fork; any later payload version must drain/quarantine before rollback | U7 / backward-compatible now | `test/handlers.test.ts`, facts backstop suites | Retire legacy omission defaults after all accepted v1 jobs have drained and an envelope migration exists |
@@ -367,3 +367,89 @@ release selection.
   provenance, HNSW, and PGLite tests passed; TypeScript and all 31 repository
   verification checks passed. The 30 real-Postgres engine-parity cases skipped
   because no `DATABASE_URL` test fixture was configured and remain a U8 gate.
+
+## U5 source routing and engine receipt
+
+- Status: resolved and locally verified; no source, queue, configuration,
+  database, or deployment mutation.
+- Composite identity: upstream's source-aware page, chunk, link, timeline,
+  extraction, sync, and engine paths retain `(source_id, slug)` as page
+  identity. A PGLite ingestion fixture now imports the same slug into two
+  registered sources and proves independent page bodies and chunks.
+- Capture provenance: `ingest_capture` resolves a trusted emitter ID only
+  when it names a registered brain source, passes that source through the
+  canonical importer, and reports the effective source in its durable result.
+  Untrusted or unregistered emitter IDs retain default-source routing rather
+  than acquiring write authority.
+- Remote trust: the canonical per-call resolver now confines a remote scalar
+  binding to its bound source when no federated allow-list exists. Federated
+  grants still take precedence, and trusted local callers retain explicit
+  cross-source selection. Malformed explicit, scalar-context, and federated
+  source IDs fail closed before an engine query.
+- Engine behavior: Postgres optional RLS scope binding validates every source
+  ID before creating its transaction-local scope and continues to bind the
+  validated CSV as a parameter. PGLite keeps equivalent application-layer
+  source filters but does not claim server-RLS enforcement. The reconciled
+  Postgres build-then-swap reconnect, module-pool recovery, PGLite file-backed
+  reconnect, and raw-object/`executeRawJsonb` batch behavior remain intact.
+- Verification: 138 source, trust, ingestion, extraction, JSONB, reconnect,
+  and engine-focused tests passed locally. The 64 `DATABASE_URL`-gated
+  real-Postgres multi-source and engine-parity cases were unavailable and
+  remain mandatory U8 gates.
+
+### Content-free source inventory for U8
+
+Run these queries only against the explicit private deployment descriptor.
+Record aggregate counts and deltas, never source IDs, slugs, job payloads, or
+page content in this public report.
+
+```sql
+-- Per-source projection counts. Keep the result in the private receipt.
+SELECT p.source_id,
+       count(DISTINCT p.id) AS pages,
+       count(DISTINCT cc.id) AS chunks,
+       count(DISTINCT te.id) AS timeline_entries,
+       count(DISTINCT f.id) AS facts
+FROM pages p
+LEFT JOIN content_chunks cc ON cc.page_id = p.id
+LEFT JOIN timeline_entries te ON te.page_id = p.id
+LEFT JOIN facts f ON f.source_id = p.source_id
+GROUP BY p.source_id;
+
+-- Composite identity and orphan checks: every returned count must be zero.
+SELECT count(*) FROM (
+  SELECT source_id, slug FROM pages
+  GROUP BY source_id, slug HAVING count(*) > 1
+) duplicate_page_identities;
+SELECT count(*) FROM content_chunks cc
+LEFT JOIN pages p ON p.id = cc.page_id WHERE p.id IS NULL;
+SELECT count(*) FROM links l
+LEFT JOIN pages fp ON fp.id = l.from_page_id
+LEFT JOIN pages tp ON tp.id = l.to_page_id
+WHERE fp.id IS NULL OR tp.id IS NULL;
+SELECT count(*) FROM timeline_entries te
+LEFT JOIN pages p ON p.id = te.page_id WHERE p.id IS NULL;
+
+-- Source lineage checks. Investigate every non-zero result before cutover.
+SELECT count(*) FROM pages WHERE source_id IS NULL OR source_id = '';
+SELECT count(*) FROM facts WHERE source_id IS NULL OR source_id = '';
+SELECT count(*) FROM minion_jobs
+WHERE data ? 'source_id'
+  AND (data->>'source_id' IS NULL OR data->>'source_id' = '');
+SELECT count(*) FROM minion_jobs child
+JOIN minion_jobs parent ON parent.id = child.parent_job_id
+WHERE child.data ? 'source_id'
+  AND parent.data ? 'source_id'
+  AND child.data->>'source_id' <> parent.data->>'source_id';
+
+-- Link topology by source without exposing identities in the public receipt.
+SELECT count(*) FILTER (WHERE fp.source_id = tp.source_id) AS same_source,
+       count(*) FILTER (WHERE fp.source_id <> tp.source_id) AS cross_source
+FROM links l
+JOIN pages fp ON fp.id = l.from_page_id
+JOIN pages tp ON tp.id = l.to_page_id;
+```
+
+The private pre/post receipt must also group jobs by effective source and
+status, pages by `page_kind`, and generated outputs by originating source.
+Any unexplained delta in a protected neighboring source is a stop condition.

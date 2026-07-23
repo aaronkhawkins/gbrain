@@ -28,6 +28,7 @@ import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import * as db from './db.ts';
 import { VERSION } from '../version.ts';
+import { isValidSourceId } from './source-id.ts';
 import {
   GET_RECENT_SALIENCE_DESCRIPTION,
   FIND_ANOMALIES_DESCRIPTION,
@@ -453,8 +454,26 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   // op-handler defers to scalar `ctx.sourceId` below. An attacker-controlled
   // value of `[]` MUST NOT widen scope to "all sources" by being interpreted
   // as "no filter."
-  if (allowed && allowed.length > 0) return { sourceIds: allowed };
-  if (ctx.sourceId) return { sourceId: ctx.sourceId };
+  if (allowed && allowed.length > 0) {
+    if (allowed.some((sourceId) => !isValidSourceId(sourceId))) {
+      throw new OperationError(
+        'invalid_params',
+        'The caller source grant contains an invalid source_id.',
+        'Repair the OAuth source grant before retrying.',
+      );
+    }
+    return { sourceIds: allowed };
+  }
+  if (ctx.sourceId) {
+    if (!isValidSourceId(ctx.sourceId)) {
+      throw new OperationError(
+        'invalid_params',
+        'The resolved caller source_id is invalid.',
+        'Select a registered source whose id matches [a-z0-9-]{1,32}.',
+      );
+    }
+    return { sourceId: ctx.sourceId };
+  }
   return {};
 }
 
@@ -526,12 +545,34 @@ export function resolveRequestedScope(
     return ctx.remote === false ? {} : sourceScopeOpts(ctx);
   }
   if (sourceIdParam !== undefined) {
+    if (!isValidSourceId(sourceIdParam)) {
+      throw new OperationError(
+        'invalid_params',
+        'The requested source_id is invalid.',
+        'Use a registered source id matching [a-z0-9-]{1,32}.',
+      );
+    }
     const allowed = ctx.auth?.allowedSources;
     if (ctx.remote !== false && allowed && allowed.length > 0 && !allowed.includes(sourceIdParam)) {
       throw new OperationError(
         'permission_denied',
         `source '${sourceIdParam}' is outside your granted sources`,
         'Request access to this source, or omit source_id to search within your grant.',
+      );
+    }
+    // A legacy/scalar remote binding is still a binding. Without a federated
+    // allow-list, permitting an arbitrary per-call source_id would let the
+    // caller escape ctx.sourceId. Trusted local callers retain the explicit
+    // override used by owner-operated cross-source commands.
+    if (
+      ctx.remote !== false
+      && (!allowed || allowed.length === 0)
+      && (!ctx.sourceId || sourceIdParam !== ctx.sourceId)
+    ) {
+      throw new OperationError(
+        'permission_denied',
+        `source '${sourceIdParam}' is outside your bound source`,
+        'Use the bound source, or request a federated source grant.',
       );
     }
     return { sourceId: sourceIdParam };

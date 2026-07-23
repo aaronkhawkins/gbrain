@@ -165,17 +165,26 @@ describe('withScopedReadTransaction / flag on', () => {
     });
   });
 
-  test('the scopes CSV is a BOUND PARAMETER, never interpolated into SQL text', async () => {
+  test('malformed source IDs fail closed before an RLS scope is bound', async () => {
     await withEnv({ GBRAIN_RLS_SCOPE_BINDING: '1' }, async () => {
       const fake = makeFakeSql();
       const engine = makeEngine(fake);
       const hostile = "x','y'); DROP TABLE pages; --";
-      await engine.withScopedReadTransaction(undefined, hostile, async () => null);
+      await expect(engine.withScopedReadTransaction(undefined, hostile, async () => null))
+        .rejects.toThrow(/Invalid source_id/);
+      expect(setConfigQueries(fake.queries)).toHaveLength(0);
+    });
+  });
+
+  test('valid scopes remain bound parameters, never interpolated into SQL text', async () => {
+    await withEnv({ GBRAIN_RLS_SCOPE_BINDING: '1' }, async () => {
+      const fake = makeFakeSql();
+      const engine = makeEngine(fake);
+      await engine.withScopedReadTransaction(undefined, 'source-a', async () => null);
       const sc = setConfigQueries(fake.queries)[0];
-      // Exact literal-segment shape: the value slot is the tagged-template hole.
       expect(sc.text).toBe("SELECT set_config('app.scopes', ${}, true)");
-      expect(sc.params).toEqual([hostile]);
-      expect(sc.text).not.toContain(hostile);
+      expect(sc.params).toEqual(['source-a']);
+      expect(sc.text).not.toContain('source-a');
     });
   });
 });

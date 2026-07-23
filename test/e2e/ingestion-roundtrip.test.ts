@@ -237,6 +237,45 @@ describe('ingestion roundtrip — inbox-folder → daemon → ingest_capture →
 });
 
 describe('ingestion roundtrip — multi-source coordination', () => {
+  test('registered sources preserve identical slug identity through handler, page, and chunks', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ($1, $2), ($3, $4)`,
+      ['source-a', 'Source A', 'source-b', 'Source B'],
+    );
+    const handler = makeIngestCaptureHandler(engine);
+    const eventFor = (sourceId: string, content: string, hashChar: string): IngestionEvent => ({
+      source_id: sourceId,
+      source_kind: 'inbox-folder',
+      source_uri: `synthetic://${sourceId}`,
+      received_at: '2026-07-22T00:00:00.000Z',
+      content_type: 'text/markdown',
+      content,
+      content_hash: hashChar.repeat(64),
+      untrusted_payload: false,
+      metadata: { slug: 'inbox/shared-slug' },
+    });
+
+    const resultA = await handler(makeFakeJobCtx({
+      event: eventFor('source-a', '# Alpha\n\nalpha-only body', 'a'),
+    }));
+    const resultB = await handler(makeFakeJobCtx({
+      event: eventFor('source-b', '# Beta\n\nbeta-only body', 'b'),
+    }));
+
+    expect(resultA.source_id).toBe('source-a');
+    expect(resultB.source_id).toBe('source-b');
+    const pageA = await engine.getPage('inbox/shared-slug', { sourceId: 'source-a' });
+    const pageB = await engine.getPage('inbox/shared-slug', { sourceId: 'source-b' });
+    expect(pageA?.compiled_truth).toContain('alpha-only body');
+    expect(pageB?.compiled_truth).toContain('beta-only body');
+    expect((await engine.getChunks('inbox/shared-slug', { sourceId: 'source-a' }))
+      .every((chunk) => chunk.chunk_text.includes('alpha-only body') || chunk.chunk_text.includes('Alpha')))
+      .toBe(true);
+    expect((await engine.getChunks('inbox/shared-slug', { sourceId: 'source-b' }))
+      .every((chunk) => chunk.chunk_text.includes('beta-only body') || chunk.chunk_text.includes('Beta')))
+      .toBe(true);
+  });
+
   test('two sources see different content; daemon ingests both', async () => {
     const { logger } = captureLogger();
     const handler = makeIngestCaptureHandler(engine);

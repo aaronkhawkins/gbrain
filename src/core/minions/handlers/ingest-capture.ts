@@ -37,6 +37,8 @@ import { importFromContent } from '../../import-file.ts';
 
 export interface IngestCaptureResult {
   slug: string;
+  /** Effective registered brain source that owns the imported page. */
+  source_id: string;
   status: 'imported' | 'skipped' | 'error';
   chunks: number;
   untrusted_payload: boolean;
@@ -146,6 +148,7 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
 
     return {
       slug,
+      source_id: sourceId ?? 'default',
       status: result.status,
       chunks: result.chunks,
       untrusted_payload: untrustedPayload,

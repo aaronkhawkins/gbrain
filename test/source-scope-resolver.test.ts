@@ -91,12 +91,27 @@ describe('resolveRequestedScope — explicit source_id', () => {
     expect(resolveRequestedScope(ctxOf({ remote: false }), 'anything')).toEqual({ sourceId: 'anything' });
   });
 
-  test('remote with no federated grant array can pass an explicit source_id (scalar-floor model)', () => {
-    // allowedSources undefined → no federated restriction to enforce; the scalar
-    // sourceId path governs. (Empty [] is treated the same as undefined.)
-    expect(resolveRequestedScope(ctxOf({ remote: true }), 'z')).toEqual({ sourceId: 'z' });
+  test('remote with no federated grant is confined to its scalar source binding', () => {
+    expect(resolveRequestedScope(ctxOf({ remote: true, sourceId: 'default' }), 'default')).toEqual({ sourceId: 'default' });
+    expect(() => resolveRequestedScope(ctxOf({ remote: true, sourceId: 'default' }), 'z')).toThrow(OperationError);
     const emptyGrant = ctxOf({ remote: true, auth: { token: 't', clientId: 'c', scopes: [], allowedSources: [] } as any });
-    expect(resolveRequestedScope(emptyGrant, 'z')).toEqual({ sourceId: 'z' });
+    try {
+      resolveRequestedScope(emptyGrant, 'z');
+    } catch (e) {
+      expect((e as OperationError).code).toBe('permission_denied');
+    }
+  });
+
+  test('malformed explicit source_id fails closed for remote and trusted callers', () => {
+    for (const remote of [true, false]) {
+      try {
+        resolveRequestedScope(ctxOf({ remote }), '../other');
+        throw new Error('expected invalid source_id rejection');
+      } catch (e) {
+        expect(e).toBeInstanceOf(OperationError);
+        expect((e as OperationError).code).toBe('invalid_params');
+      }
+    }
   });
 });
 
@@ -108,6 +123,12 @@ describe('resolveRequestedScope — default (no param)', () => {
 
   test('falls back to scalar sourceId when no federated grant', () => {
     expect(resolveRequestedScope(ctxOf({ remote: true, sourceId: 'a' }), undefined)).toEqual({ sourceId: 'a' });
+  });
+
+  test('malformed scalar or federated context fails closed', () => {
+    expect(() => resolveRequestedScope(ctxOf({ sourceId: '../a' }), undefined)).toThrow(OperationError);
+    const badGrant = ctxOf({ auth: { allowedSources: ['a', 'bad/source'] } as OperationContext['auth'] });
+    expect(() => resolveRequestedScope(badGrant, undefined)).toThrow(OperationError);
   });
 });
 

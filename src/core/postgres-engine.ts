@@ -69,6 +69,7 @@ import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defa
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
+import { assertValidSourceId } from './source-id.ts';
 
 function escapeSqlStringLiteral(value: string): string {
   return value.replace(/'/g, "''");
@@ -219,8 +220,10 @@ export class PostgresEngine implements BrainEngine {
     // app.scopes = '*'` default, or on no policy being installed).
     let scopesValue = '*';
     if (sourceIds && sourceIds.length > 0) {
+      for (const id of sourceIds) assertValidSourceId(id);
       scopesValue = sourceIds.join(',');
     } else if (sourceId) {
+      assertValidSourceId(sourceId);
       scopesValue = sourceId;
     }
     // Note on nesting: a postgres.js transaction handle exposes
