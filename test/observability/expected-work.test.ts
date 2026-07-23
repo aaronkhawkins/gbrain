@@ -9,6 +9,7 @@ import {
   resolveEnabledDreamPhases,
   sourceWorkKey,
   dreamPhaseWorkKey,
+  minionWorkKey,
 } from '../../src/core/observability/expected-work.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../../src/core/observability/types.ts';
 
@@ -29,7 +30,7 @@ function entry(partial: Partial<ExpectedWorkEntry> & Pick<ExpectedWorkEntry, 'ke
 }
 
 describe('buildExpectedWorkRegistry', () => {
-  test('discovers sources, dream phases, minions, and infrastructure', () => {
+  test('discovers source-scoped Dream/Minion work and global phases from scheduler registrations', () => {
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['wiki', 'notes'],
       enabledDreamPhases: ['sync', 'extract_atoms', 'embed'],
@@ -37,11 +38,57 @@ describe('buildExpectedWorkRegistry', () => {
     const keys = reg.map((e) => e.key);
     expect(keys).toContain(sourceWorkKey('wiki'));
     expect(keys).toContain(sourceWorkKey('notes'));
-    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms'));
-    expect(keys).toContain('minion.autopilot-cycle');
+    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms', 'wiki'));
+    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms', 'notes'));
+    expect(keys).toContain(dreamPhaseWorkKey('embed'));
+    expect(keys).toContain(minionWorkKey('autopilot-cycle', 'wiki'));
+    expect(keys).toContain(minionWorkKey('autopilot-cycle', 'notes'));
+    expect(keys).toContain(minionWorkKey('autopilot-global-maintenance'));
+    expect(keys).not.toContain(minionWorkKey('embed-backfill'));
     expect(keys).toContain('embedding.coverage');
     expect(keys).toContain('retrieval.identity');
     expect(keys).toContain('runtime.supervisor');
+  });
+
+  test('adds generic fact/link evidence for each source', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: ['wiki'],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    });
+    expect(reg).toContainEqual(expect.objectContaining({
+      key: 'facts.pending.wiki',
+      evidence_adapter: 'facts',
+      selector: 'wiki',
+    }));
+    expect(reg).toContainEqual(expect.objectContaining({
+      key: 'links.extraction.wiki',
+      evidence_adapter: 'links',
+      selector: 'wiki',
+    }));
+  });
+
+  test('discovery failures remain visible as partial unknown axes', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: [],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+      discoveryFailures: ['sources'],
+    });
+    const discovery = reg.find((e) => e.key === 'discovery.sources');
+    expect(discovery).toBeDefined();
+    expect(discovery!.evidence_adapter).toBe('discovery');
+    const obs = evaluateWorkItem(discovery!, {
+      last_attempt_at: null,
+      last_success_at: null,
+      backlog_items: null,
+      oldest_pending_age_seconds: null,
+      recent_failures: null,
+      force_state: 'unknown',
+      force_reason: 'evidence_unavailable',
+    }, NOW);
+    expect(obs.state).toBe('unknown');
+    expect(obs.reason).toBe('evidence_unavailable');
   });
 
   test('external_work without adapter is instrumentation_missing path', () => {
@@ -59,6 +106,24 @@ describe('buildExpectedWorkRegistry', () => {
     const obs = evaluateWorkItem(ext!, null, NOW);
     expect(obs.state).toBe('unknown');
     expect(obs.reason).toBe('instrumentation_missing');
+  });
+
+  test('external processor reuses an existing durable Minion registration', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: [],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+      observability: {
+        external_work: [{
+          key: 'transcript_processor',
+          required: true,
+          evidence: { adapter: 'minion_job', selector: 'process-transcript' },
+        }],
+      },
+    });
+    const ext = reg.find((e) => e.key.includes('transcript'))!;
+    expect(ext.evidence_adapter).toBe('minion_job');
+    expect(ext.selector).toBe('process-transcript');
   });
 
   test('policy override can disable a required item', () => {

@@ -12,6 +12,10 @@ import { collectDreamPhaseEvidence } from './dream-phase.ts';
 import { collectEmbeddingEvidence } from './embedding.ts';
 import { collectRetrievalEvidence } from './retrieval.ts';
 import { collectLocalRuntimeEvidence } from './local-runtime.ts';
+import { collectFactEvidence } from './facts.ts';
+import { collectLinkEvidence } from './links.ts';
+import { collectExtractRollupEvidence } from './extract-rollup.ts';
+import { collectDiscoveryEvidence } from './discovery.ts';
 
 export interface CollectAllOpts {
   engine: BrainEngine | null;
@@ -40,6 +44,10 @@ const ADAPTERS: Record<string, AdapterFn> = {
   embedding: collectEmbeddingEvidence,
   retrieval: collectRetrievalEvidence,
   local_runtime: collectLocalRuntimeEvidence,
+  facts: collectFactEvidence,
+  links: collectLinkEvidence,
+  extract_rollup: collectExtractRollupEvidence,
+  discovery: collectDiscoveryEvidence,
 };
 
 export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectAllResult> {
