@@ -21,6 +21,7 @@ import {
   checkSourceRoutingHealth,
   checkOauthConfidentialHealth,
   checkAutopilotLockScope,
+  isGbrainAutopilotCommand,
 } from '../src/commands/doctor.ts';
 import { withEnv } from './helpers/with-env.ts';
 
@@ -125,21 +126,76 @@ describe('checkAutopilotLockScope (#1226)', () => {
     rmSync(sandbox, { recursive: true, force: true });
   });
 
-  test('stale lock outside GBRAIN_HOME → warn with PID-safe hint', async () => {
+  test('dead lock outside GBRAIN_HOME → warn with stale-lock removal hint', async () => {
     const home = mkdtempSync(join(tmpdir(), 'doctor-lock-home-'));
     const gbrainHome = mkdtempSync(join(tmpdir(), 'doctor-lock-gbrain-'));
     mkdirSync(join(home, '.gbrain'), { recursive: true });
     writeFileSync(join(home, '.gbrain', 'autopilot.lock'), '99999');
 
     await withEnv({ HOME: home, GBRAIN_HOME: gbrainHome }, async () => {
-      const r = checkAutopilotLockScope();
+      const r = checkAutopilotLockScope({
+        isProcessRunning: pid => {
+          expect(pid).toBe(99999);
+          return false;
+        },
+      });
       expect(r.status).toBe('warn');
-      expect(r.message).toMatch(/Stale lockfile/);
+      expect(r.message).toMatch(/Stale or ambiguous lockfile/);
       expect(r.message).toMatch(/99999/);
-      expect(r.message).toMatch(/ps -p 99999/);
+      expect(r.message).toMatch(/rm /);
     });
 
     rmSync(home, { recursive: true, force: true });
     rmSync(gbrainHome, { recursive: true, force: true });
+  });
+
+  test('live neighboring GBrain autopilot lock → ok and never suggests deletion', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'doctor-lock-home-'));
+    const gbrainHome = mkdtempSync(join(tmpdir(), 'doctor-lock-gbrain-'));
+    mkdirSync(join(home, '.gbrain'), { recursive: true });
+    writeFileSync(join(home, '.gbrain', 'autopilot.lock'), '4242');
+
+    await withEnv({ HOME: home, GBRAIN_HOME: gbrainHome }, async () => {
+      const r = checkAutopilotLockScope({
+        isProcessRunning: pid => pid === 4242,
+        readProcessCommand: pid =>
+          `/opt/homebrew/bin/bun /Users/example/.bun/bin/gbrain autopilot --repo /Users/example/brain --pid ${pid}`,
+      });
+      expect(r.status).toBe('ok');
+      expect(r.message).toMatch(/Active autopilot for another brain/);
+      expect(r.message).toMatch(/4242/);
+      expect(r.message).not.toMatch(/\brm\b|delet|remov/i);
+    });
+
+    rmSync(home, { recursive: true, force: true });
+    rmSync(gbrainHome, { recursive: true, force: true });
+  });
+
+  test('live process with ambiguous command → warn but never suggests deletion', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'doctor-lock-home-'));
+    const gbrainHome = mkdtempSync(join(tmpdir(), 'doctor-lock-gbrain-'));
+    mkdirSync(join(home, '.gbrain'), { recursive: true });
+    writeFileSync(join(home, '.gbrain', 'autopilot.lock'), '4343');
+
+    await withEnv({ HOME: home, GBRAIN_HOME: gbrainHome }, async () => {
+      const r = checkAutopilotLockScope({
+        isProcessRunning: () => true,
+        readProcessCommand: () => '/usr/bin/node unrelated-service.js',
+      });
+      expect(r.status).toBe('warn');
+      expect(r.message).toMatch(/live but unverified owner/);
+      expect(r.message).toMatch(/Do not delete/);
+      expect(r.message).not.toMatch(/\brm\b|remove the/i);
+    });
+
+    rmSync(home, { recursive: true, force: true });
+    rmSync(gbrainHome, { recursive: true, force: true });
+  });
+
+  test('GBrain autopilot command classifier accepts wrapper and compiled forms', () => {
+    expect(isGbrainAutopilotCommand('/usr/bin/bun /tmp/gbrain autopilot --interval 900')).toBe(true);
+    expect(isGbrainAutopilotCommand('"/Applications/GBrain/gbrain" autopilot --repo /tmp/brain')).toBe(true);
+    expect(isGbrainAutopilotCommand('/usr/bin/node autopilot-worker.js')).toBe(false);
+    expect(isGbrainAutopilotCommand('/tmp/gbrain doctor')).toBe(false);
   });
 });

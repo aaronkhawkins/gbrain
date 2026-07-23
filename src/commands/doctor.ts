@@ -32,6 +32,8 @@ import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { isProcessRunning } from '../core/autopilot-status.ts';
 import {
   extractEntityRefs,
   isGlobalBasenameEnabled,
@@ -2462,11 +2464,27 @@ export async function checkOauthConfidentialHealth(engine: BrainEngine): Promise
  * Detects stale autopilot lockfiles. When `GBRAIN_HOME` is set, the
  * canonical lock path lives under `gbrainPath('autopilot.lock')`.
  * If a hardcoded `~/.gbrain/autopilot.lock` ALSO exists outside the
- * current `GBRAIN_HOME`, that's a pre-v0.37.7.0 leftover or a
- * different brain's lock. Hint includes PID + a `ps -p` check so
- * the user verifies before deleting.
+ * current `GBRAIN_HOME`, it may be a pre-v0.37.7.0 leftover or a
+ * different brain's active lock. A verified live GBrain autopilot is
+ * healthy and must never be presented as stale or removable.
  */
-export function checkAutopilotLockScope(): Check {
+export interface AutopilotLockScopeDeps {
+  isProcessRunning?: (pid: number) => boolean;
+  readProcessCommand?: (pid: number) => string;
+}
+
+function readProcessCommand(pid: number): string {
+  return execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+
+export function isGbrainAutopilotCommand(command: string): boolean {
+  return /(?:^|[\\/"'\s])gbrain(?:\.exe)?(?=["'\s]|$)[\s\S]*?(?:^|\s)autopilot(?=\s|$)/i.test(command);
+}
+
+export function checkAutopilotLockScope(deps: AutopilotLockScopeDeps = {}): Check {
   try {
     const canonical = gbrainPath('autopilot.lock');
     const home = process.env.HOME || '';
@@ -2475,19 +2493,53 @@ export function checkAutopilotLockScope(): Check {
     if (canonical === legacy || !legacy || !existsSync(legacy)) {
       return { name: 'autopilot_lock_scope', status: 'ok', message: `Lock path: ${canonical}` };
     }
-    // legacy lock exists outside GBRAIN_HOME. Read its PID for a safe hint.
-    let owningPid: string = 'unknown';
+    // A lock outside the current brain may legitimately belong to a neighboring
+    // brain. Classify it before suggesting any operator action.
+    let owningPid: number | null = null;
     try {
       const raw = readFileSync(legacy, 'utf8').trim();
-      if (/^\d+$/.test(raw)) owningPid = raw;
-    } catch { /* unreadable → leave 'unknown' */ }
+      if (/^\d+$/.test(raw)) {
+        const parsed = Number.parseInt(raw, 10);
+        if (Number.isSafeInteger(parsed) && parsed > 0) owningPid = parsed;
+      }
+    } catch { /* unreadable → leave null */ }
+
+    const probe = deps.isProcessRunning ?? isProcessRunning;
+    const commandProbe = deps.readProcessCommand ?? readProcessCommand;
+    if (owningPid !== null && probe(owningPid)) {
+      let command = '';
+      try {
+        command = commandProbe(owningPid);
+      } catch { /* unavailable process metadata stays ambiguous */ }
+
+      if (isGbrainAutopilotCommand(command)) {
+        return {
+          name: 'autopilot_lock_scope',
+          status: 'ok',
+          message:
+            `Active autopilot for another brain uses ${legacy} (PID ${owningPid}); ` +
+            `current brain lock path: ${canonical}.`,
+        };
+      }
+
+      return {
+        name: 'autopilot_lock_scope',
+        status: 'warn',
+        message:
+          `Lockfile outside GBRAIN_HOME has a live but unverified owner: ${legacy} (PID ${owningPid}). ` +
+          `Do not delete it while the process is alive; identify it with \`ps -fp ${owningPid}\`.`,
+      };
+    }
+
+    const pidLabel = owningPid ?? 'unknown';
     return {
       name: 'autopilot_lock_scope',
       status: 'warn',
       message:
-        `Stale lockfile outside GBRAIN_HOME: ${legacy} (owning PID: ${owningPid}). ` +
-        `Verify with \`ps -p ${owningPid}\` — if the process is dead, \`rm ${legacy}\`. ` +
-        `If alive, identify it (\`ps -fp ${owningPid}\`) and stop before deleting.`,
+        `Stale or ambiguous lockfile outside GBRAIN_HOME: ${legacy} (owning PID: ${pidLabel}). ` +
+        (owningPid === null
+          ? `Verify that no autopilot owns it before removing the lockfile.`
+          : `PID ${owningPid} is not running; remove the stale lockfile with \`rm ${legacy}\`.`),
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
