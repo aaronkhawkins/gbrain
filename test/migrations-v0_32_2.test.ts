@@ -12,6 +12,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -116,6 +117,22 @@ describe('phaseBFenceFacts — dry-run reporting', () => {
 });
 
 describe('phaseBFenceFacts — happy path backfill', () => {
+  test('does not reject unrelated dirty work when there are no legacy facts to write', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.name', 'GBrain Test'], { cwd: brainDir });
+    writeFileSync(join(brainDir, 'existing.md'), 'baseline\n', 'utf-8');
+    execFileSync('git', ['add', 'existing.md'], { cwd: brainDir });
+    execFileSync('git', ['commit', '-q', '-m', 'baseline'], { cwd: brainDir });
+    writeFileSync(join(brainDir, 'existing.md'), 'unrelated user edit\n', 'utf-8');
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('scanned=0');
+    expect(readFileSync(join(brainDir, 'existing.md'), 'utf-8')).toBe('unrelated user edit\n');
+  });
+
   test('fences legacy DB rows into entity pages + updates row_num', async () => {
     const id1 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme in 2017' });
     const id2 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Prefers async over meetings' });

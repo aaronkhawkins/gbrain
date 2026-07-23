@@ -54,6 +54,15 @@ describe('autopilot.ts ↔ dispatchPerSource wiring', () => {
     expect(AUTOPILOT_SRC).toMatch(/lastFullCycleAt\s*=\s*Date\.now\(\)/);
   });
 
+  test('the 60-minute floor cannot be suppressed by a persistent targeted plan', () => {
+    expect(AUTOPILOT_SRC).toMatch(
+      /const shouldFullCycle\s*=\s*\n?\s*minutesSinceLastFull >= AUTOPILOT_SOURCE_FLOOR_MINUTES \|\|/,
+    );
+    expect(AUTOPILOT_SRC).not.toMatch(
+      /plan\.length === 0 && minutesSinceLastFull >= AUTOPILOT_SOURCE_FLOOR_MINUTES/,
+    );
+  });
+
   test('does NOT regress to the single-job dispatch on the full-cycle path', () => {
     // Pre-PR: the shouldFullCycle branch did:
     //   const job = await queue.add('autopilot-cycle', { repoPath }, {

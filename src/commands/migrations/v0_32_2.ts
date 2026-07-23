@@ -186,17 +186,6 @@ async function phaseBFenceFacts(
     const localPathById = new Map<string, string | null>();
     for (const s of sources) localPathById.set(s.id, s.local_path);
 
-    // Dirty-tree refusal: check every source's local_path before writing.
-    for (const [id, localPath] of localPathById) {
-      if (localPath && isLocalPathDirty(localPath)) {
-        return {
-          name: 'fence_facts',
-          status: 'failed',
-          detail: `source "${id}" has uncommitted changes in ${localPath}. Commit or stash, then re-run.`,
-        };
-      }
-    }
-
     // Walk legacy rows in (source_id, entity_slug) groups for per-page
     // atomic writes.
     const legacy = await engine.executeRaw<LegacyFactRow>(
@@ -206,6 +195,26 @@ async function phaseBFenceFacts(
         WHERE row_num IS NULL
         ORDER BY source_id, entity_slug, id`,
     );
+
+    // Refuse dirty repositories only when this migration will actually write
+    // a fact fence into them. A brain with no legacy rows has nothing to
+    // mutate and must be allowed to complete even if unrelated user-authored
+    // pages are currently uncommitted.
+    const writableSourceIds = new Set(
+      legacy
+        .filter((row) => row.entity_slug !== null && localPathById.get(row.source_id))
+        .map((row) => row.source_id),
+    );
+    for (const id of writableSourceIds) {
+      const localPath = localPathById.get(id);
+      if (localPath && isLocalPathDirty(localPath)) {
+        return {
+          name: 'fence_facts',
+          status: 'failed',
+          detail: `source "${id}" has uncommitted changes in ${localPath}. Commit or stash, then re-run.`,
+        };
+      }
+    }
 
     const outcome: PhaseBOutcome = {
       scanned: legacy.length,

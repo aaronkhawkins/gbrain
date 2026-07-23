@@ -909,7 +909,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
         const minutesSinceLastFull = (Date.now() - lastFullCycleAt) / 60000;
 
         const shouldFullCycle =
-          (score >= 95 && plan.length === 0 && minutesSinceLastFull >= AUTOPILOT_SOURCE_FLOOR_MINUTES) ||
+          minutesSinceLastFull >= AUTOPILOT_SOURCE_FLOOR_MINUTES ||
           plan.length > 3 ||
           estTotal >= 300 ||
           score < 70;
