@@ -149,12 +149,27 @@ export interface ProposeTakesOpts extends BasePhaseOpts {
 
 export interface ProposeTakesResult {
   pages_scanned: number;
+  derived_pages_skipped: number;
   cache_hits: number;
   cache_misses: number;
   proposals_inserted: number;
   budget_exhausted: boolean;
   warnings: string[];
 }
+
+/**
+ * These page types are products of intake/enrichment, not authored judgment.
+ * Feeding them back into propose_takes creates an expensive recursive loop:
+ * bookmarks become media/entities, atoms become concepts, then each generated
+ * page is sent through another LLM pass looking for the user's opinions.
+ */
+const DERIVED_PAGE_TYPES = new Set([
+  'atom',
+  'concept',
+  'extract_receipt',
+  'media',
+  'source',
+]);
 
 /**
  * Compute the content_hash key for the idempotency cache. SHA-256 of the
@@ -311,6 +326,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
 
     const result: ProposeTakesResult = {
       pages_scanned: 0,
+      derived_pages_skipped: 0,
       cache_hits: 0,
       cache_misses: 0,
       proposals_inserted: 0,
@@ -335,6 +351,11 @@ class ProposeTakesPhase extends BaseCyclePhase {
     for (const page of pages) {
       result.pages_scanned += 1;
       this.tick(opts);
+
+      if (DERIVED_PAGE_TYPES.has(page.type)) {
+        result.derived_pages_skipped += 1;
+        continue;
+      }
 
       // Skip pages that have NO prose body (e.g. metadata-only entity stubs).
       const body = page.compiled_truth ?? '';
@@ -448,7 +469,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
     });
 
     return {
-      summary: `propose_takes: scanned ${result.pages_scanned} pages, ${result.cache_hits} cached, ${result.proposals_inserted} new proposals (run ${proposalRunId})`,
+      summary: `propose_takes: scanned ${result.pages_scanned} pages, ${result.derived_pages_skipped} derived skipped, ${result.cache_hits} cached, ${result.proposals_inserted} new proposals (run ${proposalRunId})`,
       details: { ...result, proposal_run_id: proposalRunId, prompt_version: promptVersion },
       status: result.budget_exhausted ? 'warn' : 'ok',
     };

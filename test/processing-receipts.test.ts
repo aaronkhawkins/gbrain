@@ -156,6 +156,46 @@ describe('generic processing receipts', () => {
     }));
   }, 30_000);
 
+  test('partial completion satisfies cadence while remaining degraded', async () => {
+    const partialIdentity = {
+      processorKey: 'fixture.partial',
+      processorVersion: '1',
+      scopeId: 'default',
+      inputFingerprint: 'd'.repeat(64),
+    };
+    await registerProcessor(engine, {
+      key: partialIdentity.processorKey,
+      version: partialIdentity.processorVersion,
+      cadenceSeconds: 3600,
+      runbook: 'missed-work',
+    });
+    const started = await startProcessingReceipt(engine, partialIdentity);
+    await finishProcessingReceipt(engine, {
+      ...partialIdentity,
+      attemptToken: started.attempt_token,
+      outcome: 'partial',
+      reasonCode: 'recoverable_items',
+    });
+
+    const evidence = await collectProcessingReceiptEvidence([{
+      key: 'processor.fixture.partial',
+      kind: 'content_processor',
+      enabled: true,
+      required: false,
+      criticality: 'optional',
+      cadence_seconds: 3600,
+      grace_seconds: 300,
+      evidence_adapter: 'processing_receipt',
+      selector: partialIdentity.processorKey,
+    }], engine, { now: new Date() });
+
+    expect(evidence.get('processor.fixture.partial')).toEqual(expect.objectContaining({
+      force_state: 'degraded',
+      force_reason: 'recent_failures',
+    }));
+    expect(evidence.get('processor.fixture.partial')?.last_success_at).not.toBeNull();
+  }, 30_000);
+
   test('does not attribute prior-version success to a newly registered version', async () => {
     await registerProcessor(engine, {
       key: identity.processorKey,

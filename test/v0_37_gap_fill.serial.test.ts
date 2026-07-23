@@ -30,11 +30,10 @@ import { configureGateway, resetGateway, __setEmbedTransportForTests } from '../
 import { withEnv } from './helpers/with-env.ts';
 
 // ─────────────────────────────────────────────────────────────────────
-// Lane A.7 — Chunk-row INSERT model default tracks defaults.ts constant
-// (not stale OpenAI literal). Pre-fix `chunk.model || 'text-embedding-3-large'`
-// in both engines; post-fix `chunk.model || DEFAULT_EMBEDDING_MODEL`.
+// Lane A.7 — Chunk-row INSERT model default tracks the active gateway model
+// (not a stale compile-time provider).
 // ─────────────────────────────────────────────────────────────────────
-describe('Lane A.7 — chunk-row INSERT default tracks ai/defaults.ts constant', () => {
+describe('Lane A.7 — chunk-row INSERT default tracks active embedding model', () => {
   let engine: PGLiteEngine;
 
   beforeAll(async () => {
@@ -47,8 +46,9 @@ describe('Lane A.7 — chunk-row INSERT default tracks ai/defaults.ts constant',
     await engine.disconnect();
   });
 
-  test('upsertChunks without explicit model: row stores DEFAULT_EMBEDDING_MODEL', async () => {
-    const { DEFAULT_EMBEDDING_MODEL } = await import('../src/core/ai/defaults.ts');
+  test('upsertChunks without explicit model stores the active gateway model', async () => {
+    const { getEmbeddingModel } = await import('../src/core/ai/gateway.ts');
+    const activeModel = getEmbeddingModel();
     await engine.putPage('test/a7', { type: 'note', title: 'A.7', compiled_truth: 'hello' });
     await engine.upsertChunks('test/a7', [
       { chunk_index: 0, chunk_text: 'hello', chunk_source: 'compiled_truth' },
@@ -57,10 +57,42 @@ describe('Lane A.7 — chunk-row INSERT default tracks ai/defaults.ts constant',
     const rows = await engine.executeRaw<{ model: string }>(
       `SELECT model FROM content_chunks WHERE chunk_index = 0 LIMIT 1`,
     );
-    expect(rows[0]?.model).toBe(DEFAULT_EMBEDDING_MODEL);
+    expect(rows[0]?.model).toBe(activeModel);
     // CDX2-4 regression: would have been 'text-embedding-3-large'
     // (a literal pre-fix; production write site that was never tested).
     expect(rows[0]?.model).not.toBe('text-embedding-3-large');
+  });
+
+  test('metadata-only upsert preserves existing model provenance', async () => {
+    await engine.putPage('test/a7-provenance', {
+      type: 'note',
+      title: 'A.7 provenance',
+      compiled_truth: 'hello',
+    });
+    await engine.upsertChunks('test/a7-provenance', [{
+      chunk_index: 0,
+      chunk_text: 'hello',
+      chunk_source: 'compiled_truth',
+    }]);
+    await engine.executeRaw(
+      `UPDATE content_chunks
+       SET model = $1
+       WHERE page_id = (SELECT id FROM pages WHERE slug = 'test/a7-provenance')`,
+      ['nvidia-nim:nvidia/nemotron-3-embed-1b'],
+    );
+
+    await engine.upsertChunks('test/a7-provenance', [{
+      chunk_index: 0,
+      chunk_text: 'hello',
+      chunk_source: 'compiled_truth',
+    }]);
+
+    const rows = await engine.executeRaw<{ model: string }>(
+      `SELECT model FROM content_chunks
+       WHERE page_id = (SELECT id FROM pages WHERE slug = 'test/a7-provenance')
+         AND chunk_index = 0`,
+    );
+    expect(rows[0]?.model).toBe('nvidia-nim:nvidia/nemotron-3-embed-1b');
   });
 });
 

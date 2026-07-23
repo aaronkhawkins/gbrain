@@ -67,11 +67,11 @@ function buildMockEngine(opts: {
   return { engine, captured };
 }
 
-function buildPage(opts: { slug: string; body: string; sourceId?: string }): Page {
+function buildPage(opts: { slug: string; body: string; sourceId?: string; type?: string }): Page {
   return {
     id: 1,
     slug: opts.slug,
-    type: 'analysis',
+    type: opts.type ?? 'analysis',
     title: opts.slug,
     compiled_truth: opts.body,
     timeline: '',
@@ -348,6 +348,25 @@ New prose appended here.`;
     };
     await runPhaseProposeTakes(buildCtx(engine), { extractor });
     expect(extractorCalls).toBe(1);
+  });
+
+  test('derived enrichment pages are not fed back through take extraction', async () => {
+    const pages = [
+      buildPage({ slug: 'atoms/a', body: 'generated atom', type: 'atom' }),
+      buildPage({ slug: 'concepts/a', body: 'generated concept', type: 'concept' }),
+      buildPage({ slug: 'notes/authored', body: 'I think this will work.', type: 'note' }),
+    ];
+    const { engine } = buildMockEngine({ pages });
+    let extractorCalls = 0;
+    const extractor: ProposeTakesExtractor = async () => {
+      extractorCalls++;
+      return [];
+    };
+
+    const result = await runPhaseProposeTakes(buildCtx(engine), { extractor });
+
+    expect(extractorCalls).toBe(1);
+    expect(result.details.derived_pages_skipped).toBe(2);
   });
 
   test('skipPagesWithFence:true bypasses pages that already have a complete fence', async () => {

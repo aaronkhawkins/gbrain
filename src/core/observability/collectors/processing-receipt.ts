@@ -6,6 +6,7 @@ import { unavailableEvidence, unavailableEvidenceMap } from './helpers.ts';
 interface ReceiptEvidenceRow {
   processor_key: string;
   last_attempt_at: string | null;
+  latest_finished_at: string | null;
   last_success_at: string | null;
   latest_outcome: ProcessingOutcome | null;
   backlog_items: number | null;
@@ -25,13 +26,14 @@ export async function collectProcessingReceiptEvidence(
   const rows = await engine.executeRaw<ReceiptEvidenceRow>(
     `SELECT r.processor_key,
             latest.started_at::text AS last_attempt_at,
+            latest.finished_at::text AS latest_finished_at,
             success.finished_at::text AS last_success_at,
             latest.outcome AS latest_outcome,
             latest.backlog_count AS backlog_items,
             COALESCE(failures.recent_failures, 0)::int AS recent_failures
        FROM processing_registrations r
        LEFT JOIN LATERAL (
-         SELECT p2.started_at, p2.outcome, p2.backlog_count
+         SELECT p2.started_at, p2.finished_at, p2.outcome, p2.backlog_count
           FROM processing_receipts p2
           WHERE p2.processor_key = r.processor_key
             AND p2.processor_version = r.processor_version
@@ -82,7 +84,14 @@ export async function collectProcessingReceiptEvidence(
     }
     const evidence: WorkEvidence = {
       last_attempt_at: row.last_attempt_at,
-      last_success_at: row.last_success_at,
+      // Partial means the scheduled processor ran and produced useful output,
+      // but not all items succeeded. Anchor cadence to that completion and use
+      // force_state below to keep the item degraded. Otherwise a recurring
+      // recoverable partial is misreported as "missed cadence" even though it
+      // is running on time.
+      last_success_at: row.latest_outcome === 'partial'
+        ? row.latest_finished_at ?? row.last_success_at
+        : row.last_success_at,
       backlog_items: row.backlog_items,
       oldest_pending_age_seconds: row.latest_outcome === 'running'
         ? Math.max(0, Math.floor((opts.now.getTime() - new Date(row.last_attempt_at).getTime()) / 1000))

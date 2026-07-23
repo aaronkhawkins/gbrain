@@ -2259,6 +2259,11 @@ export class PGLiteEngine implements BrainEngine {
 
   private async _upsertChunksOnce(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void> {
     const sourceId = opts?.sourceId ?? 'default';
+    let defaultChunkModel = DEFAULT_EMBEDDING_MODEL;
+    try {
+      const gateway = await import('./ai/gateway.ts');
+      defaultChunkModel = gateway.getEmbeddingModel() || defaultChunkModel;
+    } catch { /* gateway not configured — use canonical default */ }
 
     // Source-scope the page-id lookup so duplicate slugs in different sources
     // do not return multiple rows or target the wrong page.
@@ -2330,7 +2335,7 @@ export class PGLiteEngine implements BrainEngine {
       if (embeddingImageStr) params.push(embeddingImageStr);
       params.push(
         pageId, chunk.chunk_index, chunk.chunk_text, chunk.chunk_source,
-        chunk.model || DEFAULT_EMBEDDING_MODEL, chunk.token_count || null,
+        chunk.model || defaultChunkModel, chunk.token_count || null,
         chunk.language || null, chunk.symbol_name || null, chunk.symbol_type || null,
         chunk.start_line ?? null, chunk.end_line ?? null,
         parentPath, chunk.doc_comment || null, chunk.symbol_name_qualified || null,
@@ -2362,7 +2367,10 @@ export class PGLiteEngine implements BrainEngine {
                 THEN EXCLUDED.embedding
            ELSE content_chunks.embedding
          END,
-         model = COALESCE(EXCLUDED.model, content_chunks.model),
+         model = CASE
+           WHEN EXCLUDED.embedding IS NOT NULL THEN EXCLUDED.model
+           ELSE content_chunks.model
+         END,
          token_count = EXCLUDED.token_count,
          embedded_at = CASE
            WHEN EXCLUDED.chunk_text != content_chunks.chunk_text AND EXCLUDED.embedding IS NULL THEN NULL
