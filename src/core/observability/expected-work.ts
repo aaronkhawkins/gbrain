@@ -23,9 +23,14 @@ import type {
 } from './types.ts';
 import {
   OBSERVABILITY_WARNING_CODES,
+  OPERATIONAL_STATES,
   WORK_KINDS,
 } from './types.ts';
-import { defaultRunbookForReason, type ReasonCode } from './reason-codes.ts';
+import {
+  defaultRunbookForReason,
+  REASON_CODES,
+  type ReasonCode,
+} from './reason-codes.ts';
 import type { CyclePhase } from '../cycle.ts';
 import { ALL_PHASES, PHASE_SCOPE } from '../cycle.ts';
 import {
@@ -588,8 +593,8 @@ function computeNextDue(
 }
 
 /**
- * Reject private / prohibited fields from a snapshot before export.
- * Returns the cleaned snapshot or throws on unregistered identifiers.
+ * Reject private/prohibited fields and unregistered identifiers before export.
+ * Validation is side-effect free: successful validation returns void.
  */
 export function assertExportableSnapshot(snapshot: {
   brain: string;
@@ -638,10 +643,5 @@ export function assertExportableSnapshot(snapshot: {
   }
 }
 
-const STATE_SET_LOCAL = new Set(['healthy', 'degraded', 'failed', 'unknown', 'disabled']);
-const REASON_SET_LOCAL = new Set([
-  'ok', 'within_grace', 'missed_cadence', 'recent_failures', 'backlog_warn', 'backlog_fail',
-  'stalled', 'dead', 'embedding_mismatch', 'embedding_disabled', 'schema_incompatible',
-  'evidence_unavailable', 'evidence_stale', 'instrumentation_missing', 'collector_timeout',
-  'db_unreachable', 'disabled', 'not_due',
-]);
+const STATE_SET_LOCAL: ReadonlySet<string> = new Set(OPERATIONAL_STATES);
+const REASON_SET_LOCAL: ReadonlySet<string> = new Set(REASON_CODES);

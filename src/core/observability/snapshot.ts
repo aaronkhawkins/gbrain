@@ -21,7 +21,6 @@ import {
 import { rollupBrainState } from './rollup.ts';
 import type {
   ExpectedWorkEntry,
-  ObservabilityConfig,
   ObservabilityWarningCode,
   OperationalSnapshot,
   WorkEvidence,
@@ -68,14 +67,14 @@ export function resolveBrainId(
   config?: GBrainConfig | null,
   override?: string,
 ): string {
-  const obs = (config as { observability?: ObservabilityConfig } | null | undefined)?.observability;
+  const obs = config?.observability;
   const candidate = override ?? obs?.brain_id;
   if (candidate && /^[A-Za-z0-9._-]{1,64}$/.test(candidate)) return candidate;
   return currentBrainId();
 }
 
-function readObservability(config?: GBrainConfig | null): ObservabilityConfig {
-  const raw = (config as { observability?: ObservabilityConfig } | null | undefined)?.observability;
+function readObservability(config?: GBrainConfig | null): NonNullable<GBrainConfig['observability']> {
+  const raw = config?.observability;
   return raw && typeof raw === 'object' ? raw : {};
 }
 

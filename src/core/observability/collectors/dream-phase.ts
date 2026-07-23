@@ -10,6 +10,12 @@ import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
 import { PHASE_SCOPE, type CyclePhase } from '../../cycle.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import {
+  newestIso,
+  parseJsonRecord,
+  toIsoTimestamp,
+  unavailableEvidence,
+} from './helpers.ts';
 
 interface CycleJobRow {
   finished_at: string | Date | null;
@@ -49,39 +55,20 @@ const DEFERRED_SKIP_REASONS = new Set([
   'dry_run',
 ]);
 
-function iso(value: string | Date | null | undefined): string | null {
-  if (!value) return null;
-  const parsed = value instanceof Date ? value : new Date(value);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value) return null;
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
-    } catch {
-      return null;
-    }
-  }
-  return typeof value === 'object' ? value as Record<string, unknown> : null;
-}
-
 function nestedReason(record: Record<string, unknown>): string | null {
   if (typeof record.reason === 'string') return record.reason;
-  const details = asRecord(record.details);
+  const details = parseJsonRecord(record.details);
   return typeof details?.reason === 'string' ? details.reason : null;
 }
 
 function phaseOutcomes(result: unknown): Map<string, PhaseOutcome> {
   const out = new Map<string, PhaseOutcome>();
-  const root = asRecord(result);
+  const root = parseJsonRecord(result);
   if (!root) return out;
-  const report = asRecord(root.report) ?? root;
+  const report = parseJsonRecord(root.report) ?? root;
   if (!Array.isArray(report.phases)) return out;
   for (const value of report.phases) {
-    const record = asRecord(value);
+    const record = parseJsonRecord(value);
     if (!record) continue;
     const name = typeof record.phase === 'string'
       ? record.phase
@@ -99,16 +86,16 @@ function phaseOutcomes(result: unknown): Map<string, PhaseOutcome> {
 }
 
 function jobLevelSkipReason(result: unknown): string | null {
-  const root = asRecord(result);
+  const root = parseJsonRecord(result);
   if (!root) return null;
-  const report = asRecord(root.report);
+  const report = parseJsonRecord(root.report);
   if (root.status === 'skipped') return nestedReason(report ?? root);
   if (report?.status === 'skipped') return nestedReason(report);
   return null;
 }
 
 function jobSourceId(data: unknown): string | null {
-  const record = asRecord(data);
+  const record = parseJsonRecord(data);
   const source = record?.source_id ?? record?.sourceId;
   return typeof source === 'string' ? source : null;
 }
@@ -142,7 +129,7 @@ export async function collectDreamPhaseEvidence(
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
-    for (const entry of entries) out.set(entry.key, unknownEvidence('db_unreachable'));
+    for (const entry of entries) out.set(entry.key, unavailableEvidence('db_unreachable'));
     return out;
   }
 
@@ -157,7 +144,7 @@ export async function collectDreamPhaseEvidence(
        LIMIT 100`,
     );
   } catch {
-    for (const entry of entries) out.set(entry.key, unknownEvidence('evidence_unavailable'));
+    for (const entry of entries) out.set(entry.key, unavailableEvidence('evidence_unavailable'));
     return out;
   }
 
@@ -169,7 +156,7 @@ export async function collectDreamPhaseEvidence(
 
     for (const row of rows) {
       if (!rowMatchesEntry(row, entry)) continue;
-      const timestamp = iso(row.finished_at) ?? iso(row.started_at);
+      const timestamp = toIsoTimestamp(row.finished_at) ?? toIsoTimestamp(row.started_at);
       if (!timestamp) continue;
 
       const outcomes = phaseOutcomes(row.result);
@@ -208,8 +195,8 @@ export async function collectDreamPhaseEvidence(
       }
     }
 
-    const lastAttempt = newest(attempts);
-    const lastSuccess = newest(successes);
+    const lastAttempt = newestIso(attempts);
+    const lastSuccess = newestIso(successes);
     const successMs = lastSuccess ? new Date(lastSuccess).getTime() : Number.NEGATIVE_INFINITY;
     const recentCutoff = opts.now.getTime() - 24 * 60 * 60 * 1000;
     const unsupersededFailures = failures.filter((timestamp) => {
@@ -218,7 +205,7 @@ export async function collectDreamPhaseEvidence(
     });
 
     if (!lastAttempt && !lastSuccess) {
-      out.set(entry.key, unknownEvidence('evidence_unavailable'));
+      out.set(entry.key, unavailableEvidence('evidence_unavailable'));
       continue;
     }
 
@@ -239,26 +226,4 @@ export async function collectDreamPhaseEvidence(
   }
 
   return out;
-}
-
-function newest(values: string[]): string | null {
-  let value: string | null = null;
-  for (const candidate of values) {
-    if (!value || candidate > value) value = candidate;
-  }
-  return value;
-}
-
-function unknownEvidence(
-  reason: 'db_unreachable' | 'evidence_unavailable',
-): WorkEvidence {
-  return {
-    last_attempt_at: null,
-    last_success_at: null,
-    backlog_items: null,
-    oldest_pending_age_seconds: null,
-    recent_failures: null,
-    force_state: 'unknown',
-    force_reason: reason,
-  };
 }

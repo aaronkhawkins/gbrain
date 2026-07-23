@@ -7,6 +7,7 @@ import type { GBrainConfig } from '../../config.ts';
 import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import { unavailableEvidence } from './helpers.ts';
 
 export async function collectEmbeddingEvidence(
   entries: ExpectedWorkEntry[],
@@ -31,17 +32,7 @@ export async function collectEmbeddingEvidence(
   }
 
   if (!engine) {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'db_unreachable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('db_unreachable'));
     return out;
   }
 
@@ -74,17 +65,7 @@ export async function collectEmbeddingEvidence(
       });
     }
   } catch {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'evidence_unavailable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('evidence_unavailable'));
   }
 
   return out;

@@ -231,9 +231,6 @@ export async function startObserverServer(opts: ObserverServerOptions): Promise<
         res.end('# no snapshot yet\n');
         return;
       }
-      const ageMs = Date.now() - Date.parse(cached.generated_at);
-      // Re-stamp observer age in JSON path only; metrics timestamp is generation time.
-      void ageMs;
       res.writeHead(200, {
         'content-type': 'application/openmetrics-text; version=1.0.0; charset=utf-8',
         'cache-control': 'no-store',

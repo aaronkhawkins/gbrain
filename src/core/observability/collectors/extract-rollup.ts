@@ -8,6 +8,11 @@
 import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import {
+  finiteNumber,
+  toIsoTimestampStrict,
+  unavailableEvidence,
+} from './helpers.ts';
 
 interface ExtractRollupRow {
   kind: string;
@@ -24,7 +29,7 @@ export async function collectExtractRollupEvidence(
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
-    for (const entry of entries) out.set(entry.key, unknownEvidence('db_unreachable'));
+    for (const entry of entries) out.set(entry.key, unavailableEvidence('db_unreachable'));
     return out;
   }
 
@@ -48,13 +53,13 @@ export async function collectExtractRollupEvidence(
         candidate.kind === entry.selector &&
         (entry.scope?.type !== 'source' || candidate.source_id === entry.scope.source_id));
       if (!row) {
-        out.set(entry.key, unknownEvidence('evidence_unavailable'));
+        out.set(entry.key, unavailableEvidence('evidence_unavailable'));
         continue;
       }
       const failures = finiteNumber(row.failures);
       out.set(entry.key, {
-        last_attempt_at: iso(row.last_attempt),
-        last_success_at: iso(row.last_success),
+        last_attempt_at: toIsoTimestampStrict(row.last_attempt),
+        last_success_at: toIsoTimestampStrict(row.last_success),
         backlog_items: null,
         oldest_pending_age_seconds: null,
         recent_failures: failures,
@@ -64,31 +69,7 @@ export async function collectExtractRollupEvidence(
       });
     }
   } catch {
-    for (const entry of entries) out.set(entry.key, unknownEvidence('evidence_unavailable'));
+    for (const entry of entries) out.set(entry.key, unavailableEvidence('evidence_unavailable'));
   }
   return out;
-}
-
-function iso(value: string | Date | null): string | null {
-  if (!value) return null;
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-}
-
-function finiteNumber(value: number | string | null): number {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function unknownEvidence(
-  reason: 'db_unreachable' | 'evidence_unavailable',
-): WorkEvidence {
-  return {
-    last_attempt_at: null,
-    last_success_at: null,
-    backlog_items: null,
-    oldest_pending_age_seconds: null,
-    recent_failures: null,
-    force_state: 'unknown',
-    force_reason: reason,
-  };
 }

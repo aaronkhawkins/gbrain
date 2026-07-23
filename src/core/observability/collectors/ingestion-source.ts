@@ -8,6 +8,7 @@ import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import { sourceWorkKey } from '../expected-work.ts';
+import { toIsoTimestampStrict, unavailableEvidence } from './helpers.ts';
 
 export async function collectIngestionSourceEvidence(
   entries: ExpectedWorkEntry[],
@@ -16,17 +17,7 @@ export async function collectIngestionSourceEvidence(
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'db_unreachable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('db_unreachable'));
     return out;
   }
 
@@ -35,17 +26,7 @@ export async function collectIngestionSourceEvidence(
     const sources = await loadAllSources(engine, { includeArchived: false });
     metrics = await computeAllSourceMetrics(engine, sources, { probeContent: true });
   } catch {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'evidence_unavailable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('evidence_unavailable'));
     return out;
   }
 
@@ -55,21 +36,11 @@ export async function collectIngestionSourceEvidence(
     const m = byId.get(entry.selector);
     const m2 = m ?? [...byId.values()].find((x) => sourceWorkKey(x.source_id) === entry.key);
     if (!m2) {
-      out.set(entry.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'evidence_unavailable',
-      });
+      out.set(entry.key, unavailableEvidence('evidence_unavailable'));
       continue;
     }
 
-    const lastSync = m2.last_sync_at
-      ? (m2.last_sync_at instanceof Date ? m2.last_sync_at.toISOString() : new Date(m2.last_sync_at).toISOString())
-      : null;
+    const lastSync = toIsoTimestampStrict(m2.last_sync_at);
 
     // Quiet caught-up source: lag_seconds === 0 is healthy even without wall-clock freshness.
     const forceHealthyQuiet =

@@ -6,6 +6,7 @@
 import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import { unavailableEvidence } from './helpers.ts';
 
 export async function collectRetrievalEvidence(
   entries: ExpectedWorkEntry[],
@@ -30,32 +31,12 @@ export async function collectRetrievalEvidence(
   }
 
   if (!engine) {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'db_unreachable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('db_unreachable'));
     return out;
   }
 
   if (!opts.config) {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'evidence_unavailable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('evidence_unavailable'));
     return out;
   }
 
@@ -110,17 +91,7 @@ export async function collectRetrievalEvidence(
       }
     }
   } catch {
-    for (const e of entries) {
-      out.set(e.key, {
-        last_attempt_at: null,
-        last_success_at: null,
-        backlog_items: null,
-        oldest_pending_age_seconds: null,
-        recent_failures: null,
-        force_state: 'unknown',
-        force_reason: 'evidence_unavailable',
-      });
-    }
+    for (const e of entries) out.set(e.key, unavailableEvidence('evidence_unavailable'));
   }
 
   return out;
