@@ -34,6 +34,12 @@ function intFlag(args: string[], name: string, fallback?: number): number | unde
   return Number(raw);
 }
 
+function json(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => (
+    typeof item === 'bigint' ? item.toString() : item
+  ));
+}
+
 export async function runProcessing(
   engine: BrainEngine,
   args: string[],
@@ -57,7 +63,7 @@ export async function runProcessing(
         required: rest.includes('--required'),
         enabled: !rest.includes('--disabled'),
       });
-      process.stdout.write(JSON.stringify(row) + '\n');
+      process.stdout.write(json(row) + '\n');
       return { exitCode: 0 };
     }
     if (sub === 'start') {
@@ -67,7 +73,7 @@ export async function runProcessing(
         scopeId: flag(rest, '--scope', true)!,
         inputFingerprint: flag(rest, '--fingerprint', true)!,
       });
-      process.stdout.write(JSON.stringify(row) + '\n');
+      process.stdout.write(json(row) + '\n');
       return { exitCode: 0 };
     }
     if (sub === 'finish') {
@@ -85,11 +91,11 @@ export async function runProcessing(
         lineageKind: flag(rest, '--lineage-kind') ?? null,
         lineageId: flag(rest, '--lineage-id') ?? null,
       });
-      process.stdout.write(JSON.stringify(row) + '\n');
+      process.stdout.write(json(row) + '\n');
       return { exitCode: 0 };
     }
     if (sub === 'list') {
-      process.stdout.write(JSON.stringify(await listProcessingRegistrations(engine)) + '\n');
+      process.stdout.write(json(await listProcessingRegistrations(engine)) + '\n');
       return { exitCode: 0 };
     }
     if (sub === 'repair') {
@@ -131,7 +137,7 @@ export async function runProcessing(
         repair_job: repairJob,
       };
       if (action === 'plan') {
-        process.stdout.write(JSON.stringify(plan) + '\n');
+        process.stdout.write(json(plan) + '\n');
         return { exitCode: 0 };
       }
       throw new Error('repair action must be plan');
