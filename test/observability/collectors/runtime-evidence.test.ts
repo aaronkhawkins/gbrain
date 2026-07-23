@@ -137,6 +137,9 @@ describe('Minion evidence recovery and bounded history', () => {
     expect(evidence.get(entry.key)?.force_state).toBeUndefined();
     expect(capturedSql.join('\n')).toContain('CROSS JOIN LATERAL');
     expect(capturedSql.join('\n')).toContain('LIMIT 100');
+    expect(capturedSql.join('\n')).toContain(
+      'COALESCE(finished_at, started_at, updated_at, created_at) DESC, id DESC',
+    );
   });
 });
 

@@ -35,6 +35,16 @@ interface BacklogRow {
   created_at: string | Date | null;
 }
 
+interface NormalizedAttempt {
+  status: string;
+  event_at: string | null;
+  event_ms: number | null;
+}
+
+interface NormalizedBacklog {
+  created_ms: number | null;
+}
+
 function eventIso(row: JobEvidenceRow): string | null {
   return toIsoTimestamp(row.finished_at) ??
     toIsoTimestamp(row.started_at) ??
@@ -48,14 +58,15 @@ function jobSourceId(data: unknown): string | null {
   return typeof source === 'string' ? source : null;
 }
 
-function matchesEntry(
-  row: Pick<JobEvidenceRow, 'name' | 'data'>,
-  entry: ExpectedWorkEntry,
-): boolean {
-  if (row.name !== entry.selector) return false;
-  if (entry.scope?.type === 'source') return jobSourceId(row.data) === entry.scope.source_id;
-  // Explicit global registrations must not inherit a source-scoped success.
-  return jobSourceId(row.data) === null;
+function scopeKey(name: string, sourceId: string | null): string {
+  return `${name}\0${sourceId ?? '\0global'}`;
+}
+
+function entryScopeKey(entry: ExpectedWorkEntry): string {
+  return scopeKey(
+    entry.selector,
+    entry.scope?.type === 'source' ? entry.scope.source_id : null,
+  );
 }
 
 export async function collectMinionJobEvidence(
@@ -139,28 +150,52 @@ export async function collectMinionJobEvidence(
     }
   }
 
+  // Normalize JSON and timestamps exactly once per database row. Several
+  // expected-work entries can share a Minion name, so parsing inside each
+  // entry loop turns a bounded history into repeated CPU work.
+  const attemptsByScope = new Map<string, NormalizedAttempt[]>();
+  for (const row of attempts) {
+    const eventAt = eventIso(row);
+    const key = scopeKey(row.name, jobSourceId(row.data));
+    const list = attemptsByScope.get(key) ?? [];
+    list.push({
+      status: row.status,
+      event_at: eventAt,
+      event_ms: eventAt ? new Date(eventAt).getTime() : null,
+    });
+    attemptsByScope.set(key, list);
+  }
+  const backlogByScope = new Map<string, NormalizedBacklog[]>();
+  for (const row of backlogRows) {
+    if (!['waiting', 'active', 'delayed', 'waiting-children', 'paused'].includes(row.status)) continue;
+    const createdAt = toIsoTimestamp(row.created_at);
+    const key = scopeKey(row.name, jobSourceId(row.data));
+    const list = backlogByScope.get(key) ?? [];
+    list.push({
+      created_ms: createdAt ? new Date(createdAt).getTime() : null,
+    });
+    backlogByScope.set(key, list);
+  }
+
   for (const entry of entries) {
-    const scopedAttempts = attempts.filter((row) => matchesEntry(row, entry));
-    const scopedBacklog = backlogRows.filter((row) =>
-      ['waiting', 'active', 'delayed', 'waiting-children', 'paused'].includes(row.status) &&
-      matchesEntry(row as JobEvidenceRow, entry));
-    const lastAttempt = newestIso(scopedAttempts.map(eventIso));
+    const key = entryScopeKey(entry);
+    const scopedAttempts = attemptsByScope.get(key) ?? [];
+    const scopedBacklog = backlogByScope.get(key) ?? [];
+    const lastAttempt = newestIso(scopedAttempts.map((row) => row.event_at));
     const successful = scopedAttempts.filter((row) => row.status === 'completed');
-    const lastSuccess = newestIso(successful.map(eventIso));
+    const lastSuccess = newestIso(successful.map((row) => row.event_at));
     const successMs = lastSuccess ? new Date(lastSuccess).getTime() : Number.NEGATIVE_INFINITY;
     const failureCutoffMs = opts.now.getTime() - 24 * 60 * 60 * 1000;
     const unsupersededFailures = scopedAttempts.filter((row) => {
       if (!['failed', 'dead'].includes(row.status)) return false;
-      const timestamp = eventIso(row);
-      if (!timestamp) return false;
-      const time = new Date(timestamp).getTime();
+      const time = row.event_ms;
+      if (time === null) return false;
       return time > successMs && time >= failureCutoffMs;
     });
     const unsupersededDead = unsupersededFailures.some((row) => row.status === 'dead');
     const oldestPendingMs = scopedBacklog.reduce<number | null>((oldest, row) => {
-      const timestamp = toIsoTimestamp(row.created_at);
-      if (!timestamp) return oldest;
-      const value = new Date(timestamp).getTime();
+      const value = row.created_ms;
+      if (value === null) return oldest;
       return oldest === null || value < oldest ? value : oldest;
     }, null);
     const oldestPendingAge = oldestPendingMs === null

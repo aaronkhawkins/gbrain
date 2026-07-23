@@ -3,17 +3,17 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
 import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import { sourceWorkKey } from '../expected-work.ts';
+import type { CollectorOpts } from './index.ts';
 import { toIsoTimestampStrict, unavailableEvidence } from './helpers.ts';
 
 export async function collectIngestionSourceEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  _opts: { config?: GBrainConfig | null; now: Date },
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
@@ -23,8 +23,12 @@ export async function collectIngestionSourceEvidence(
 
   let metrics;
   try {
-    const sources = await loadAllSources(engine, { includeArchived: false });
-    metrics = await computeAllSourceMetrics(engine, sources, { probeContent: true });
+    if (opts.context) {
+      metrics = await opts.context.getSourceMetrics();
+    } else {
+      const sources = await loadAllSources(engine, { includeArchived: false });
+      metrics = await computeAllSourceMetrics(engine, sources, { probeContent: true });
+    }
   } catch {
     for (const e of entries) out.set(e.key, unavailableEvidence('evidence_unavailable'));
     return out;
