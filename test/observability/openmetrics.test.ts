@@ -41,6 +41,9 @@ describe('renderOpenMetrics', () => {
     expect(text).toContain('gbrain_brain_state{brain="personal",state="degraded"} 1');
     expect(text).toContain('gbrain_brain_state{brain="personal",state="healthy"} 0');
     expect(text).toContain('gbrain_expected_work_state{brain="personal",work="minion.autopilot-cycle",state="failed"} 1');
+    expect(text).toContain(
+      'gbrain_expected_work_info{brain="personal",work="minion.autopilot-cycle",kind="minion",required="true",enabled="true",runbook="missed-work"} 1',
+    );
     expect(text).toContain('gbrain_expected_work_backlog_items{');
     expect(text).toContain('gbrain_expected_work_reason{');
     expect(text).toContain('# EOF');
@@ -66,6 +69,16 @@ describe('renderOpenMetrics', () => {
         }],
       })),
     ).toThrow(/invalid work/);
+  });
+
+  test('rejects unbounded metadata labels', () => {
+    const invalidKind = snap();
+    invalidKind.items[0]!.kind = 'secret kind' as never;
+    expect(() => renderOpenMetrics(invalidKind)).toThrow(/invalid kind/);
+
+    const invalidRunbook = snap();
+    invalidRunbook.items[0]!.repair_runbook = 'https://internal.example/runbook?token=secret';
+    expect(() => renderOpenMetrics(invalidRunbook)).toThrow(/invalid runbook/);
   });
 
   test('content scan catches database URLs', () => {

@@ -6,7 +6,7 @@
  */
 
 import type { OperationalSnapshot, OperationalState } from './types.ts';
-import { OPERATIONAL_STATES } from './types.ts';
+import { OPERATIONAL_STATES, WORK_KINDS } from './types.ts';
 import { REASON_CODES, type ReasonCode } from './reason-codes.ts';
 
 const STATE_INDEX: Record<OperationalState, number> = {
@@ -90,6 +90,8 @@ export function renderOpenMetrics(snapshot: OperationalSnapshot): string {
 
   lines.push('# HELP gbrain_expected_work_state One-hot expected-work operational state.');
   lines.push('# TYPE gbrain_expected_work_state gauge');
+  lines.push('# HELP gbrain_expected_work_info Bounded expected-work policy metadata.');
+  lines.push('# TYPE gbrain_expected_work_info gauge');
   lines.push('# HELP gbrain_expected_work_last_attempt_timestamp_seconds Last attempt time.');
   lines.push('# TYPE gbrain_expected_work_last_attempt_timestamp_seconds gauge');
   lines.push('# HELP gbrain_expected_work_last_success_timestamp_seconds Last success time.');
@@ -107,6 +109,18 @@ export function renderOpenMetrics(snapshot: OperationalSnapshot): string {
 
   for (const item of snapshot.items) {
     const work = assertLabel('work', item.key, 96);
+    if (!WORK_KINDS.includes(item.kind)) {
+      throw new Error(`openmetrics: invalid kind ${JSON.stringify(item.kind)}`);
+    }
+    const kind = assertLabel('kind', item.kind, 32);
+    const runbook = assertLabel(
+      'runbook',
+      item.repair_runbook ?? 'none',
+      64,
+    );
+    lines.push(
+      `gbrain_expected_work_info{brain="${escapeLabel(brain)}",work="${escapeLabel(work)}",kind="${escapeLabel(kind)}",required="${item.required ? 'true' : 'false'}",enabled="${item.enabled ? 'true' : 'false'}",runbook="${escapeLabel(runbook)}"} 1`,
+    );
     lines.push(...stateGaugeLines('gbrain_expected_work_state', { brain, work }, item.state));
 
     const base = `brain="${escapeLabel(brain)}",work="${escapeLabel(work)}"`;

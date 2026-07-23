@@ -5,7 +5,12 @@
 
 import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
-import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import type {
+  EvidenceAdapterId,
+  ExpectedWorkEntry,
+  ObservabilityWarningCode,
+  WorkEvidence,
+} from '../types.ts';
 import { collectIngestionSourceEvidence } from './ingestion-source.ts';
 import { collectMinionJobEvidence } from './minion-job.ts';
 import { collectDreamPhaseEvidence } from './dream-phase.ts';
@@ -19,15 +24,19 @@ export interface CollectAllOpts {
   config?: GBrainConfig | null;
   now?: Date;
   timeoutMs?: number;
+  /** Test/extension seam; production uses the fixed adapter registry. */
+  adapters?: Partial<Record<EvidenceAdapterId, AdapterFn>>;
+  /** Raw details stay local and never enter snapshots. */
+  onCollectorError?: (adapterId: string, error: unknown) => void;
 }
 
 export interface CollectAllResult {
   evidence: Map<string, WorkEvidence | null>;
-  warnings: string[];
+  warnings: ObservabilityWarningCode[];
   partial: boolean;
 }
 
-type AdapterFn = (
+export type AdapterFn = (
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
   opts: { config?: GBrainConfig | null; now: Date },
@@ -46,8 +55,12 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
   const now = opts.now ?? new Date();
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const evidence = new Map<string, WorkEvidence | null>();
-  const warnings: string[] = [];
+  const warnings: ObservabilityWarningCode[] = [];
   let partial = false;
+
+  const warn = (code: ObservabilityWarningCode): void => {
+    if (!warnings.includes(code)) warnings.push(code);
+  };
 
   // Group by adapter.
   const byAdapter = new Map<string, ExpectedWorkEntry[]>();
@@ -67,7 +80,7 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       partial = true;
-      warnings.push(`collector timeout before ${adapterId}`);
+      warn('collector_timeout');
       for (const e of entries) {
         evidence.set(e.key, {
           last_attempt_at: null,
@@ -82,12 +95,14 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
       continue;
     }
 
-    const adapter = ADAPTERS[adapterId];
+    const adapter =
+      opts.adapters?.[adapterId as EvidenceAdapterId] ??
+      ADAPTERS[adapterId];
     if (!adapter) {
       for (const e of entries) {
         evidence.set(e.key, null);
       }
-      warnings.push(`unknown adapter ${adapterId}`);
+      warn('collector_unknown_adapter');
       continue;
     }
 
@@ -99,7 +114,7 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
       );
       if (result === 'timeout') {
         partial = true;
-        warnings.push(`collector timeout: ${adapterId}`);
+        warn('collector_timeout');
         for (const e of entries) {
           evidence.set(e.key, {
             last_attempt_at: null,
@@ -116,7 +131,8 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
       }
     } catch (err) {
       partial = true;
-      warnings.push(`collector ${adapterId} failed: ${(err as Error).message}`);
+      opts.onCollectorError?.(adapterId, err);
+      warn('collector_failed');
       for (const e of entries) {
         evidence.set(e.key, {
           last_attempt_at: null,

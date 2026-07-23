@@ -63,8 +63,13 @@ In `$GBRAIN_HOME/config.json`:
 ```
 
 - `brain_id` must match `[A-Za-z0-9._-]{1,64}` (opaque metric label).
-- Public/wildcard bind (`0.0.0.0`) is rejected unless `allow_public_bind: true` (tests only).
+- Only numeric loopback and Tailscale addresses (`100.64.0.0/10`,
+  `fd7a:115c:a1e0::/48`) are accepted by default. Any other bind requires the
+  explicit unsafe `allow_public_bind: true` override.
 - `external_work` entries always report `unknown / instrumentation_missing` until Phase 1B receipts.
+- Observer collection runs inside an enforced read-only database boundary.
+  Pending or unreadable schema versions report `unknown / schema_incompatible`
+  for database-backed work; the observer never applies migrations.
 
 ## launchd (macOS host)
 
@@ -82,12 +87,20 @@ Template: `ops/launchd/ai.gbrain.observer.plist.template`
 | `gbrain_observer_info` | Process identity |
 | `gbrain_observer_snapshot_timestamp_seconds` | Snapshot generation time (staleness) |
 | `gbrain_brain_state` | One-hot brain rollup |
+| `gbrain_expected_work_info` | Bounded `kind`, `required`, `enabled`, and repair-runbook metadata |
 | `gbrain_expected_work_state` | One-hot per work item |
 | `gbrain_expected_work_*_timestamp_seconds` | Last attempt / success / next due |
 | `gbrain_expected_work_backlog_items` | Backlog count |
 | `gbrain_expected_work_reason` | One-hot reason code |
 
-Labels are only `brain`, `work`, `state`, `reason`, `build` — never URLs, slugs, payloads, or errors.
+Labels are only bounded `brain`, `work`, `kind`, `required`, `enabled`,
+`runbook`, `state`, `reason`, and `build` values — never URLs, source slugs,
+payloads, or errors.
+
+Operational agents with admin scope can call the input-free
+`get_operational_snapshot` operation. It uses the same read-only builder and
+bounded serializer as `gbrain observe snapshot`; the observer HTTP server
+exposes only `/healthz` and `/metrics`.
 
 ## State semantics
 

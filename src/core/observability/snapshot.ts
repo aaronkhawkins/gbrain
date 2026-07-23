@@ -2,8 +2,8 @@
  * Build a content-free operational snapshot for one brain.
  *
  * Orchestrates registry discovery → collectors → evaluation → rollup.
- * Never mutates state; open DB work is read-only from the caller's perspective
- * (callers should pass a probeOnly engine when serving continuously).
+ * Never mutates state. Exported observer/agent callers enter through
+ * buildReadOnlyOperationalSnapshot, which enforces the database boundary.
  */
 
 import type { BrainEngine } from '../engine.ts';
@@ -22,12 +22,15 @@ import { rollupBrainState } from './rollup.ts';
 import type {
   ExpectedWorkEntry,
   ObservabilityConfig,
+  ObservabilityWarningCode,
   OperationalSnapshot,
   WorkEvidence,
   WorkObservation,
 } from './types.ts';
 import { OPERATIONAL_SNAPSHOT_SCHEMA_VERSION } from './types.ts';
 import { collectAllEvidence } from './collectors/index.ts';
+import { withObserverReadOnlyEngine } from './read-only-engine.ts';
+import { hasPendingMigrations } from '../migrate.ts';
 
 export interface BuildOperationalSnapshotOpts {
   engine: BrainEngine | null;
@@ -46,6 +49,10 @@ export interface BuildOperationalSnapshotOpts {
   brainId?: string;
   /** When true, skip live collectors and use empty evidence (status partial path). */
   skipCollectors?: boolean;
+  /** False means DB-backed work must report unknown/schema_incompatible. */
+  schemaCompatible?: boolean;
+  /** Receives raw collector details for local logging only. */
+  onCollectorError?: (adapterId: string, error: unknown) => void;
 }
 
 /**
@@ -135,7 +142,7 @@ export async function buildOperationalSnapshot(
   const config = opts.config ?? null;
   const observability = readObservability(config);
   const brain = resolveBrainId(config, opts.brainId);
-  const warnings: string[] = [];
+  const warnings: ObservabilityWarningCode[] = [];
   let partial = false;
 
   let registry = opts.registry;
@@ -153,12 +160,14 @@ export async function buildOperationalSnapshot(
         config,
         now,
         timeoutMs: opts.collectTimeoutMs ?? observability.observer?.collect_timeout_ms ?? 15_000,
+        onCollectorError: opts.onCollectorError,
       });
       evidenceByKey = collected.evidence;
       if (collected.warnings.length) warnings.push(...collected.warnings);
       if (collected.partial) partial = true;
     } catch (err) {
-      warnings.push(`collectors failed: ${(err as Error).message}`);
+      opts.onCollectorError?.('collector_fanout', err);
+      warnings.push('collector_failed');
       partial = true;
       evidenceByKey = new Map();
     }
@@ -166,9 +175,20 @@ export async function buildOperationalSnapshot(
   evidenceByKey ??= new Map();
 
   const items: WorkObservation[] = registry.map((entry) => {
-    const evidence = evidenceByKey!.has(entry.key)
+    let evidence = evidenceByKey!.has(entry.key)
       ? evidenceByKey!.get(entry.key)
       : evidenceByKey!.get(entry.selector);
+    if (opts.schemaCompatible === false && isDatabaseBacked(entry)) {
+      evidence = {
+        last_attempt_at: null,
+        last_success_at: null,
+        backlog_items: null,
+        oldest_pending_age_seconds: null,
+        recent_failures: null,
+        force_state: 'unknown',
+        force_reason: 'schema_incompatible',
+      };
+    }
     return evaluateWorkItem(entry, evidence ?? null, now);
   });
 
@@ -189,13 +209,33 @@ export async function buildOperationalSnapshot(
   if (partial) snapshot.partial = true;
   if (warnings.length) snapshot.warnings = warnings;
 
-  assertExportableSnapshot({
-    brain: snapshot.brain,
-    state: snapshot.state,
-    items: snapshot.items.map((i) => ({ key: i.key, state: i.state, reason: i.reason })),
-  });
+  assertExportableSnapshot(snapshot);
 
   return snapshot;
+}
+
+function isDatabaseBacked(entry: ExpectedWorkEntry): boolean {
+  return entry.evidence_adapter !== 'local_runtime' &&
+    entry.evidence_adapter !== 'none';
+}
+
+/**
+ * Authoritative observer builder. Every exported observer/agent surface uses
+ * this wrapper so schema probing and collection share one read-only boundary.
+ */
+export async function buildReadOnlyOperationalSnapshot(
+  opts: Omit<BuildOperationalSnapshotOpts, 'schemaCompatible'>,
+): Promise<OperationalSnapshot> {
+  return withObserverReadOnlyEngine(opts.engine, async (engine) => {
+    const schemaCompatible = engine
+      ? !(await hasPendingMigrations(engine))
+      : undefined;
+    return buildOperationalSnapshot({
+      ...opts,
+      engine,
+      schemaCompatible,
+    });
+  });
 }
 
 /**
@@ -203,6 +243,7 @@ export async function buildOperationalSnapshot(
  * Defense-in-depth for status --json /metrics paths.
  */
 export function serializeOperationalSnapshot(snapshot: OperationalSnapshot): string {
+  assertExportableSnapshot(snapshot);
   // Rebuild from known fields only.
   const clean: OperationalSnapshot = {
     schema_version: 1,
