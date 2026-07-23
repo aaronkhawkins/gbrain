@@ -11,6 +11,7 @@ import { collectFactEvidence } from '../../../src/core/observability/collectors/
 import { collectLinkEvidence } from '../../../src/core/observability/collectors/links.ts';
 import { collectExtractRollupEvidence } from '../../../src/core/observability/collectors/extract-rollup.ts';
 import { classifyDreamSkipReason } from '../../../src/core/observability/collectors/dream-phase.ts';
+import { withObserverReadOnlyEngine } from '../../../src/core/observability/read-only-engine.ts';
 
 const NOW = new Date('2026-07-23T12:00:00.000Z');
 const SOURCE_LABEL_KEY = 'test-brain-source-label-key';
@@ -126,6 +127,41 @@ describe('Dream evidence scope and skip classification', () => {
       recent_failures: 0,
     });
   });
+
+  test('sync lock contention uses the runtime syncStatus shape and remains deferred', async () => {
+    const entry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      enabledDreamPhases: ['sync'],
+      includeInfrastructure: false,
+    }).find((candidate) =>
+      candidate.key === dreamPhaseWorkKey('sync', 'alpha', SOURCE_LABEL_KEY)
+    )!;
+    const evidence = await collectDreamPhaseEvidence([entry], engineWithRows([{
+      name: 'autopilot-cycle',
+      status: 'completed',
+      started_at: '2026-07-23T11:00:00.000Z',
+      finished_at: '2026-07-23T11:05:00.000Z',
+      data: { source_id: 'alpha' },
+      result: {
+        report: {
+          phases: [{
+            phase: 'sync',
+            status: 'skipped',
+            details: { syncStatus: 'lock_busy' },
+          }],
+        },
+      },
+    }]), { now: NOW });
+
+    expect(evidence.get(entry.key)).toMatchObject({
+      last_attempt_at: '2026-07-23T11:05:00.000Z',
+      last_success_at: null,
+      recent_failures: 0,
+      force_state: 'unknown',
+      force_reason: 'evidence_unavailable',
+    });
+  });
 });
 
 describe('Minion evidence recovery and bounded history', () => {
@@ -170,6 +206,55 @@ describe('Minion evidence recovery and bounded history', () => {
     expect(capturedSql.join('\n')).toContain(
       'COALESCE(finished_at, started_at, updated_at, created_at) DESC, id DESC',
     );
+  });
+
+  test('strict read-only facade accepts batched attempts and aggregated backlog rows', async () => {
+    const capturedSql: string[] = [];
+    const entry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    }).find((candidate) =>
+      candidate.key === minionWorkKey('autopilot-cycle', 'alpha', SOURCE_LABEL_KEY)
+    )!;
+    const engine = {
+      kind: 'pglite',
+      getConfig: async () => null,
+      executeRaw: async (sql: string) => {
+        capturedSql.push(sql);
+        if (sql.includes('CROSS JOIN LATERAL')) {
+          return [{
+            name: 'autopilot-cycle',
+            status: 'completed',
+            created_at: '2026-07-23T10:00:00.000Z',
+            started_at: '2026-07-23T10:01:00.000Z',
+            finished_at: '2026-07-23T10:10:00.000Z',
+            updated_at: '2026-07-23T10:10:00.000Z',
+            data: { source_id: 'alpha' },
+          }];
+        }
+        return [{
+          name: 'autopilot-cycle',
+          source_id: 'alpha',
+          backlog_count: '100000',
+          oldest_created_at: '2026-07-23T09:00:00.000Z',
+        }];
+      },
+    } as unknown as BrainEngine;
+
+    const evidence = await withObserverReadOnlyEngine(engine, (readonlyEngine) =>
+      collectMinionJobEvidence([entry], readonlyEngine, { now: NOW }));
+
+    expect(capturedSql).toHaveLength(2);
+    expect(capturedSql.every((sql) => sql.trimStart().startsWith('SELECT'))).toBe(true);
+    expect(capturedSql.some((sql) => /WHERE name = \$1/.test(sql))).toBe(false);
+    expect(capturedSql[1]).toContain('COUNT(*)');
+    expect(capturedSql[1]).not.toContain('SELECT name, data, status');
+    expect(evidence.get(entry.key)).toMatchObject({
+      backlog_items: 100000,
+      oldest_pending_age_seconds: 10800,
+    });
   });
 });
 

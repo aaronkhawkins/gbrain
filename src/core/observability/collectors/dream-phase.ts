@@ -67,7 +67,8 @@ const DEFERRED_SKIP_REASONS = new Set([
 function nestedReason(record: Record<string, unknown>): string | null {
   if (typeof record.reason === 'string') return record.reason;
   const details = parseJsonRecord(record.details);
-  return typeof details?.reason === 'string' ? details.reason : null;
+  if (typeof details?.reason === 'string') return details.reason;
+  return typeof details?.syncStatus === 'string' ? details.syncStatus : null;
 }
 
 function parseCycleResult(result: unknown): {

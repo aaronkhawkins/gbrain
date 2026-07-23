@@ -55,10 +55,75 @@ describe('observer collector query efficiency', () => {
     expect(calls.filter((sql) => sql.includes('FROM content_chunks'))).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('FROM pages'))).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('FROM minion_jobs'))).toHaveLength(1);
+    expect(result.evidence.get('source.alpha')).toMatchObject({
+      oldest_pending_age_seconds: 0,
+    });
     expect(result.evidence.get('embedding.coverage')).toMatchObject({
       backlog_items: 0,
       force_state: 'healthy',
     });
+  });
+
+  test('collector timeout aborts the database query before returning and permits the next refresh', async () => {
+    let activeQueries = 0;
+    let cancelledQueries = 0;
+    let receivedSignal = false;
+    const engine = {
+      executeRaw: async (
+        _sql: string,
+        _params?: unknown[],
+        opts?: { signal?: AbortSignal },
+      ) => {
+        receivedSignal = opts?.signal !== undefined;
+        activeQueries++;
+        return new Promise<never>((_resolve, reject) => {
+          const onAbort = () => {
+            activeQueries--;
+            cancelledQueries++;
+            reject(new DOMException('aborted', 'AbortError'));
+          };
+          opts?.signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+    } as unknown as BrainEngine;
+    const entry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    }).find((candidate) => candidate.evidence_adapter === 'facts')!;
+
+    const timedOut = await collectAllEvidence({
+      engine,
+      registry: [entry],
+      now: NOW,
+      timeoutMs: 10,
+      adapters: {
+        facts: async (entries, adapterEngine, adapterOpts) => {
+          expect(adapterOpts.signal).toBeInstanceOf(AbortSignal);
+          await adapterEngine!.executeRaw('SELECT pg_sleep(60)');
+          return new Map(entries.map((candidate) => [candidate.key, null]));
+        },
+      },
+    });
+
+    expect(timedOut.partial).toBe(true);
+    expect(timedOut.warnings).toContain('collector_timeout');
+    expect(receivedSignal).toBe(true);
+    expect(cancelledQueries).toBe(1);
+    expect(activeQueries).toBe(0);
+
+    const startedAt = performance.now();
+    const next = await collectAllEvidence({
+      engine: null,
+      registry: [entry],
+      now: NOW,
+      timeoutMs: 100,
+      adapters: {
+        facts: async (entries) => new Map(entries.map((candidate) => [candidate.key, null])),
+      },
+    });
+    expect(performance.now() - startedAt).toBeLessThan(50);
+    expect(next.partial).toBe(false);
   });
 
   test('facts aggregate all source counts in one query and fill absent groups with zero', async () => {

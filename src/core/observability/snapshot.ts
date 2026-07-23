@@ -320,6 +320,9 @@ function isDatabaseBacked(entry: ExpectedWorkEntry): boolean {
 export async function buildReadOnlyOperationalSnapshot(
   opts: Omit<BuildOperationalSnapshotOpts, 'schemaCompatible'>,
 ): Promise<OperationalSnapshot> {
+  const collectTimeoutMs = opts.collectTimeoutMs ??
+    readObservability(opts.config ?? null).observer?.collect_timeout_ms ??
+    15_000;
   return withObserverReadOnlyEngine(opts.engine, async (engine) => {
     const schemaCompatible = engine
       ? await observerSchemaCompatible(engine)
@@ -329,7 +332,7 @@ export async function buildReadOnlyOperationalSnapshot(
       engine,
       schemaCompatible,
     });
-  });
+  }, { statementTimeoutMs: collectTimeoutMs });
 }
 
 export async function observerSchemaCompatible(engine: BrainEngine): Promise<boolean> {
