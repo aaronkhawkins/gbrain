@@ -1,42 +1,46 @@
 import type { BrainEngine } from './engine.ts';
 import type { ChunkInput, Page, PageInput } from './types.ts';
-import { chunkText, MARKDOWN_CHUNKER_VERSION } from './chunkers/recursive.ts';
+import { chunkText } from './chunkers/recursive.ts';
+import { serializeMarkdown } from './markdown.ts';
+import {
+  readGeneratedOutputDigest,
+  resolveGeneratedOutputPath,
+  writeGeneratedOutput,
+} from './generated-output-writer.ts';
 
 /**
- * Opt-in writer for pages produced inside dream phases.
- *
- * `putPage` intentionally remains a low-level page primitive. Dream output,
- * however, is user-facing knowledge and must enter the same deterministic
- * markdown chunk lifecycle as imported pages. Embeddings are deliberately
- * omitted: `upsertChunks` preserves an embedding when text is unchanged and
- * clears it when text changes, allowing the existing bounded stale-embedding
- * worker to perform provider egress later.
+ * Compatibility adapter for pre-U6 callers. The authoritative writer is now
+ * generated-output-writer; this module no longer has a DB-writing path.
  */
 export async function putGeneratedSearchablePage(
   engine: BrainEngine,
   slug: string,
   page: PageInput,
-  opts?: { sourceId?: string },
+  opts?: { sourceId?: string; brainDir?: string },
 ): Promise<Page> {
-  const chunks = generatedPageChunks(page);
   const sourceId = opts?.sourceId ?? 'default';
-
-  return engine.transaction(async (tx) => {
-    const written = await tx.putPage(slug, {
-      ...page,
-      page_kind: page.page_kind ?? 'markdown',
-      chunker_version: MARKDOWN_CHUNKER_VERSION,
-    }, { sourceId });
-
-    // upsertChunks([]) removes obsolete chunks. Keeping this in the same
-    // transaction as putPage prevents a rewritten page from exposing stale
-    // search text after a crash.
-    await tx.upsertChunks(slug, chunks, {
-      sourceId,
-      auditSite: 'upsertChunks',
-    });
-    return written;
+  const markdown = serializeMarkdown(
+    page.frontmatter ?? {},
+    page.compiled_truth,
+    page.timeline ?? '',
+    { type: page.type, title: page.title, tags: [] },
+  );
+  const path = await resolveGeneratedOutputPath(engine, slug, {
+    sourceId,
+    brainDir: opts?.brainDir,
   });
+  const result = await writeGeneratedOutput(engine, slug, markdown, {
+    sourceId,
+    brainDir: opts?.brainDir,
+    expectedDigest: readGeneratedOutputDigest(path),
+    noEmbed: true,
+  });
+  if (result.status === 'conflict' || result.status === 'file_only') {
+    throw new Error(result.error ?? `generated output ${result.status}`);
+  }
+  const written = await engine.getPage(slug, { sourceId });
+  if (!written) throw new Error(`generated output projection missing: ${sourceId}/${slug}`);
+  return written;
 }
 
 export function generatedPageChunks(page: Pick<PageInput, 'compiled_truth' | 'timeline'>): ChunkInput[] {

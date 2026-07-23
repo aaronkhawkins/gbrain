@@ -17,8 +17,14 @@ import { runPhaseExtractAtoms, parseAtomsResponse } from '../../src/core/cycle/e
 import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
+let brainDir: string;
+let stateDir: string;
+const priorGbrainHome = process.env.GBRAIN_HOME;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -28,10 +34,20 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  if (brainDir) rmSync(brainDir, { recursive: true, force: true });
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+  if (priorGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = priorGbrainHome;
 });
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  if (brainDir) rmSync(brainDir, { recursive: true, force: true });
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-cycle-output-'));
+  stateDir = mkdtempSync(join(tmpdir(), 'gbrain-cycle-state-'));
+  process.env.GBRAIN_HOME = stateDir;
+  await engine.executeRaw('UPDATE sources SET local_path = $1 WHERE id = $2', [brainDir, 'default']);
 });
 
 function stubChat(text: string, opts: { input_tokens?: number; output_tokens?: number } = {}): (o: ChatOpts) => Promise<ChatResult> {
@@ -343,5 +359,60 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     );
     expect(page[0].type).toBe('concept');
     expect((page[0].fm as Record<string, unknown>).tier).toBe('T1');
+  });
+
+  test('unchanged T1 evidence skips the LLM and file rewrite on repeat', async () => {
+    const atoms = Array.from({ length: 10 }, (_, i) => ({
+      slug: `repeat-${i}`,
+      title: `Repeat ${i}`,
+      body: `Stable body ${i}.`,
+      concept_refs: ['stable-theme'],
+    }));
+    let calls = 0;
+    const chat = async (opts: ChatOpts) => {
+      calls++;
+      return stubChat('Stable synthesized narrative.')(opts);
+    };
+    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: chat });
+    const path = join(brainDir, 'concepts/stable-theme.md');
+    const before = (await import('node:fs')).statSync(path).mtimeMs;
+    await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: chat });
+    expect(calls).toBe(1);
+    expect((await import('node:fs')).statSync(path).mtimeMs).toBe(before);
+  });
+
+  test('marked research needs two distinct original pages before promotion', async () => {
+    const oneOriginal = [
+      {
+        slug: 'atoms/a',
+        title: 'A',
+        body: 'A',
+        concept_refs: ['research-theme'],
+        source_id: 'default',
+        source_slug: 'media/x/one',
+        research_policy: 'birdclaw-research-v1',
+      },
+      {
+        slug: 'atoms/b',
+        title: 'B',
+        body: 'B',
+        concept_refs: ['research-theme'],
+        source_id: 'default',
+        source_slug: 'media/x/one',
+        research_policy: 'birdclaw-research-v1',
+      },
+    ];
+    const skipped = await runPhaseSynthesizeConcepts(engine, { _atoms: oneOriginal });
+    expect(skipped.status).toBe('skipped');
+
+    const promoted = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: [
+        oneOriginal[0],
+        { ...oneOriginal[1], source_slug: 'media/x/two' },
+      ],
+    });
+    expect(promoted.status).toBe('ok');
+    const page = await engine.getPage('concepts/research-theme');
+    expect((page?.frontmatter as Record<string, unknown>).research_policy).toBe('birdclaw-research-v1');
   });
 });

@@ -157,7 +157,7 @@
   "test/cycle-synthesize-md-discovery.test.ts": 6,
   "test/cycle-synthesize-slug-collection.test.ts": 3140,
   "test/cycle-synthesize.test.ts": 17,
-  "test/cycle/extract-atoms-synthesize-concepts.test.ts": 60181,
+  "test/cycle/extract-atoms-synthesize-concepts.serial.test.ts": 60181,
   "test/cycle/nightly-probe-adapters.test.ts": 6,
   "test/data-research.test.ts": 17,
   "test/db-lock-election.test.ts": 23346,

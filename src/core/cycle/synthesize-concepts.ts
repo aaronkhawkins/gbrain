@@ -28,8 +28,13 @@ import { chat as gatewayChat, isAvailable } from '../ai/gateway.ts';
 // parse→chunk→embed pipeline put_page uses) instead of a bare engine.putPage,
 // so they land in the retrieval surface (content_chunks + embeddings) where
 // source-boost's 1.3× 'concepts/' weighting can actually reach them.
-import { importFromContent } from '../import-file.ts';
 import { serializeMarkdown } from '../markdown.ts';
+import { createHash } from 'node:crypto';
+import {
+  readGeneratedOutputDigest,
+  resolveGeneratedOutputPath,
+  writeGeneratedOutput,
+} from '../generated-output-writer.ts';
 
 const DEFAULT_BUDGET_USD = 1.5;
 const TIER_T1_MIN = 10;
@@ -50,13 +55,26 @@ export interface SynthesizeConceptsOpts {
   /** Test seam: alternative chat function. */
   _chat?: typeof gatewayChat;
   /** Test seam: skip DB query; cluster these atoms directly. */
-  _atoms?: Array<{ slug: string; concept_refs: string[]; body: string; title: string }>;
+  _atoms?: Array<{
+    slug: string;
+    concept_refs: string[];
+    body: string;
+    title: string;
+    source_id?: string;
+    source_slug?: string;
+    research_policy?: string;
+  }>;
 }
 
 interface AtomGroup {
   conceptSlug: string;
   atomTitles: string[];
   atomBodies: string[];
+  atomSlugs: string[];
+  sourceIds: string[];
+  sourceSlugs: string[];
+  researchPolicies: string[];
+  evidence: Array<{ source_id: string; slug: string }>;
   tier: 'T1' | 'T2' | 'T3' | 'T4';
 }
 
@@ -79,11 +97,17 @@ export async function runPhaseSynthesizeConcepts(
     try {
       const rows = await engine.executeRaw<{
         slug: string;
+        source_id: string;
         title: string;
         compiled_truth: string;
-        frontmatter: { concepts?: string[]; imported_from?: string };
+        frontmatter: {
+          concepts?: string[];
+          imported_from?: string;
+          source_slug?: string;
+          research_policy?: string;
+        };
       }>(
-        `SELECT slug, title, compiled_truth, frontmatter
+        `SELECT slug, source_id, title, compiled_truth, frontmatter
            FROM pages
           WHERE type = 'atom'
             AND deleted_at IS NULL
@@ -96,6 +120,9 @@ export async function runPhaseSynthesizeConcepts(
           title: r.title,
           body: r.compiled_truth,
           concept_refs: r.frontmatter!.concepts!,
+          source_id: r.source_id,
+          source_slug: r.frontmatter?.source_slug,
+          research_policy: r.frontmatter?.research_policy,
         }));
     } catch {
       // No atoms table or query failed — phase no-ops cleanly.
@@ -113,12 +140,38 @@ export async function runPhaseSynthesizeConcepts(
   }
 
   // 2. Group atoms by concept slug
-  const groups = new Map<string, { titles: string[]; bodies: string[] }>();
+  const groups = new Map<string, {
+    titles: string[];
+    bodies: string[];
+    atomSlugs: string[];
+    sourceIds: string[];
+    sourceSlugs: string[];
+    researchPolicies: string[];
+    evidence: Array<{ source_id: string; slug: string }>;
+  }>();
   for (const atom of atoms) {
     for (const conceptSlug of atom.concept_refs) {
-      const existing = groups.get(conceptSlug) ?? { titles: [], bodies: [] };
+      const existing = groups.get(conceptSlug) ?? {
+        titles: [],
+        bodies: [],
+        atomSlugs: [],
+        sourceIds: [],
+        sourceSlugs: [],
+        researchPolicies: [],
+        evidence: [],
+      };
       existing.titles.push(atom.title);
       existing.bodies.push(atom.body);
+      existing.atomSlugs.push(atom.slug);
+      existing.sourceIds.push(atom.source_id ?? 'default');
+      if (atom.source_slug) existing.sourceSlugs.push(atom.source_slug);
+      if (atom.source_slug) {
+        existing.evidence.push({
+          source_id: atom.source_id ?? 'default',
+          slug: atom.source_slug,
+        });
+      }
+      if (atom.research_policy) existing.researchPolicies.push(atom.research_policy);
       groups.set(conceptSlug, existing);
     }
   }
@@ -128,12 +181,22 @@ export async function runPhaseSynthesizeConcepts(
   for (const [conceptSlug, data] of groups) {
     const count = data.titles.length;
     if (count < TIER_T3_MIN) continue;
+    const allResearch = data.researchPolicies.length === count;
+    if (allResearch) {
+      const distinctOriginals = new Set(data.evidence.map((item) => `${item.source_id}\0${item.slug}`));
+      if (distinctOriginals.size < 2) continue;
+    }
     const tier: AtomGroup['tier'] =
       count >= TIER_T1_MIN ? 'T1' : count >= TIER_T2_MIN ? 'T2' : 'T3';
     atomGroups.push({
       conceptSlug,
       atomTitles: data.titles,
       atomBodies: data.bodies,
+      atomSlugs: data.atomSlugs,
+      sourceIds: data.sourceIds,
+      sourceSlugs: data.sourceSlugs,
+      researchPolicies: data.researchPolicies,
+      evidence: data.evidence,
       tier,
     });
   }
@@ -177,6 +240,39 @@ export async function runPhaseSynthesizeConcepts(
 
   for (const group of atomGroups) {
     tierCounts[group.tier]++;
+    const title = group.conceptSlug.split('/').pop() ?? group.conceptSlug;
+    const distinctSources = [...new Set(group.sourceIds)].sort();
+    const outputSourceId = distinctSources.length === 1 ? distinctSources[0] : 'default';
+    const supportingAtoms = [...new Set(group.atomSlugs)].sort().slice(0, 20);
+    const supportingEvidence = [...new Map(
+      group.evidence.map((item) => [`${item.source_id}\0${item.slug}`, item]),
+    ).values()]
+      .sort((a, b) => a.source_id.localeCompare(b.source_id) || a.slug.localeCompare(b.slug))
+      .slice(0, 20);
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({
+        concept: group.conceptSlug,
+        atoms: supportingAtoms,
+        evidence: supportingEvidence,
+        bodies: group.atomBodies,
+      }))
+      .digest('hex');
+    const outputSlug = `concepts/${title}`;
+    const outputPath = opts.dryRun
+      ? null
+      : await resolveGeneratedOutputPath(engine, outputSlug, {
+          sourceId: outputSourceId,
+          brainDir: opts.brainDir,
+        });
+    const expectedOutputDigest = outputPath ? readGeneratedOutputDigest(outputPath) : null;
+    if (!opts.dryRun) {
+      const existing = await engine.getPage(outputSlug, { sourceId: outputSourceId });
+      if ((existing?.frontmatter as Record<string, unknown> | undefined)?.synthesis_fingerprint === fingerprint) {
+        conceptsWritten++;
+        opts.progress?.tick(1, `${conceptsWritten} concepts`);
+        continue;
+      }
+    }
     let narrative: string;
     if (group.tier === 'T1' || group.tier === 'T2') {
       if (estimatedSpendUsd >= budgetCap) {
@@ -221,7 +317,6 @@ export async function runPhaseSynthesizeConcepts(
     }
 
     if (!opts.dryRun) {
-      const title = group.conceptSlug.split('/').pop() ?? group.conceptSlug;
       // #2163: serialize to markdown and import via the canonical pipeline so
       // the page is chunked (+ embedded when a provider is configured) —
       // mirrors put_page's isAvailable('embedding') → noEmbed gate.
@@ -230,16 +325,32 @@ export async function runPhaseSynthesizeConcepts(
           tier: group.tier,
           mention_count: group.atomTitles.length,
           composite_score: group.atomTitles.length,
-          synthesized_at: new Date().toISOString(),
           synthesized_by: 'synthesize_concepts-v0.41',
+          synthesis_fingerprint: fingerprint,
+          supporting_atoms: supportingAtoms,
+          supporting_sources: supportingEvidence,
+          ...(group.researchPolicies.length === group.atomSlugs.length
+            ? { research_policy: group.researchPolicies[0] }
+            : {}),
+          gbrain_generated: true,
         },
-        narrative,
+        supportingEvidence.length > 0
+          ? `${narrative}\n\n## Supporting research\n\n${supportingEvidence
+              .map(({ source_id, slug }) => `- [[${slug}]] (source: ${source_id})`)
+              .join('\n')}`
+          : narrative,
         '',
         { type: 'concept', title: title.replace(/-/g, ' '), tags: [] },
       );
-      await importFromContent(engine, `concepts/${title}`, md, {
+      const write = await writeGeneratedOutput(engine, outputSlug, md, {
+        sourceId: outputSourceId,
+        brainDir: opts.brainDir,
+        expectedDigest: expectedOutputDigest,
         noEmbed: !isAvailable('embedding'),
       });
+      if (write.status === 'conflict' || write.status === 'file_only') {
+        failures.push({ concept: group.conceptSlug, error: write.error ?? write.status });
+      }
     }
     conceptsWritten++;
     // v0.41.19.0 (T4): one tick per concept group with running count.

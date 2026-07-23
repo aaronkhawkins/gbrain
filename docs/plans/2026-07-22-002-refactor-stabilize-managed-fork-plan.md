@@ -214,7 +214,7 @@ flowchart TB
 - Modify: focused existing tests named by ledger rows
 - Test: `test/build-identity.test.ts`
 - Test: `test/build-fork-release.test.ts`
-- Test: `test/cycle/extract-atoms-synthesize-concepts.test.ts`
+- Test: `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts`
 - Test: `test/opencode-server-language-model.test.ts`
 
 **Approach:** Record fork, upstream, and merge-base objects; version/schema heads; included and excluded side branches; candidate post-baseline fixes; effective fork capabilities; and code/config/data rollback classes. Characterize default-provider behavior, OpenCode/vLLM routes, hosted/local NVIDIA separation, embedding identity, source propagation, native research admission, generated output, and durable facts before resolving the merge. For every persisted or consumed contract, the ledger records producer, consumers, compatibility/version rule, old-to-new behavior, new-to-old rollback behavior, owner, proving test, and retirement condition. The public report contains only generic deployment labels, hashes, counts, statuses, and timestamps.
@@ -425,13 +425,13 @@ Provider credentials come only from deployment-scoped secret references in the p
 - Retire or convert to a non-writing adapter: `src/core/generated-page-indexer.ts`
 - Create: `src/core/generated-output-writer.ts`
 - Modify: `src/commands/dream.ts`
-- Test: `test/cycle/extract-atoms-synthesize-concepts.test.ts`
-- Test: `test/extract-atoms-page-discovery.test.ts`
+- Test: `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts`
+- Test: `test/extract-atoms-page-discovery.serial.test.ts`
 - Test: `test/cycle-patterns-child-outcome.test.ts`
 - Test: `test/cycle-patterns-deadline-budget.test.ts`
 - Test: `test/cycle-synthesize-subagent-timeout.test.ts`
-- Test: `test/generated-page-indexer.test.ts`
-- Create: `test/generated-output-writer.test.ts`
+- Test: `test/generated-page-indexer.serial.test.ts`
+- Create: `test/generated-output-writer.serial.test.ts`
 - Modify: `test/e2e/system-of-record-invariant.test.ts`
 - Test: `test/e2e/dream.test.ts`
 - Test: `test/e2e/isolated-research-pilot.test.ts`

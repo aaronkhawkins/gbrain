@@ -20,8 +20,14 @@ import {
 } from '../src/core/cycle/extract-atoms.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import type { ChatOpts, ChatResult } from '../src/core/ai/gateway.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
+let brainDir: string;
+let stateDir: string;
+const priorGbrainHome = process.env.GBRAIN_HOME;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -31,10 +37,20 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  if (brainDir) rmSync(brainDir, { recursive: true, force: true });
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+  if (priorGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = priorGbrainHome;
 });
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  if (brainDir) rmSync(brainDir, { recursive: true, force: true });
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-atoms-discovery-'));
+  stateDir = mkdtempSync(join(tmpdir(), 'gbrain-atoms-state-'));
+  process.env.GBRAIN_HOME = stateDir;
+  await engine.executeRaw('UPDATE sources SET local_path = $1 WHERE id = $2', [brainDir, 'default']);
 });
 
 function stubChat(text: string): (o: ChatOpts) => Promise<ChatResult> {
@@ -262,7 +278,10 @@ describe('v0.41.2.1: discoverExtractablePages SQL contract', () => {
 
   test('sourceId scopes both candidate AND atom-existence subquery (federated-brain isolation)', async () => {
     await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('dept-x', 'dept-x') ON CONFLICT DO NOTHING`,
+      `INSERT INTO sources (id, name, local_path, config) VALUES ('dept-x', 'dept-x', $1, '{}'::jsonb)
+       ON CONFLICT (id) DO UPDATE
+       SET local_path = EXCLUDED.local_path, archived = false, config = '{}'::jsonb`,
+      [brainDir],
     );
     await seedPage({ slug: 'meeting/a-default', type: 'meeting' });
     await seedPage({ slug: 'meeting/a-dept-x', type: 'meeting', source_id: 'dept-x' });
@@ -311,6 +330,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
       ],
       _chat: chat,
     });
+    expect(result.details?.failures).toEqual([]);
     expect(result.status).toBe('ok');
     expect(result.details?.atoms_extracted).toBe(2); // transcript + page-unique
     expect(result.details?.duplicates_skipped).toBe(1); // page collided with transcript
@@ -322,11 +342,12 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     // Use stubChatUnique so the two work-items write to distinct slugs;
     // a constant title would upsert into one slug and mask one origin.
     const chat = stubChatUnique();
-    await runPhaseExtractAtoms(engine, {
+    const result = await runPhaseExtractAtoms(engine, {
       _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'tchash1234567890ab' }],
       _pages: [{ slug: 'meeting/P', content: 'pc', contentHash: 'pchash1234567890ab' }],
       _chat: chat,
     });
+    expect(result.details?.failures).toEqual([]);
     const rows = await engine.executeRaw<{ slug: string; frontmatter: Record<string, unknown> }>(
       `SELECT slug, frontmatter FROM pages WHERE type = 'atom' ORDER BY slug`,
     );
@@ -343,15 +364,19 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
 
   test('sourceId threads into putPage call (D9 #1 regression — atoms land in correct source)', async () => {
     await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('dept-x', 'dept-x') ON CONFLICT DO NOTHING`,
+      `INSERT INTO sources (id, name, local_path, config) VALUES ('dept-x', 'dept-x', $1, '{}'::jsonb)
+       ON CONFLICT (id) DO UPDATE
+       SET local_path = EXCLUDED.local_path, archived = false, config = '{}'::jsonb`,
+      [brainDir],
     );
     const chat = stubChat(`[{"title":"x","atom_type":"insight","body":"b"}]`);
-    await runPhaseExtractAtoms(engine, {
+    const result = await runPhaseExtractAtoms(engine, {
       sourceId: 'dept-x',
       _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'tchash1234567890ab' }],
       _pages: [],
       _chat: chat,
     });
+    expect(result.details?.failures).toEqual([]);
     const rows = await engine.executeRaw<{ source_id: string }>(
       `SELECT source_id FROM pages WHERE type = 'atom'`,
     );
@@ -452,6 +477,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
       ],
       _chat: chat,
     });
+    expect(result.details?.failures).toEqual([]);
     expect(result.details?.pages_processed).toBe(2);
     expect(result.details?.pages_total).toBe(2);
     expect(result.details?.pages_skipped_budget).toBe(0);

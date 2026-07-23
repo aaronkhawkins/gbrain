@@ -634,6 +634,26 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     );
     process.exit(1);
   }
+  // Every scheduled Dream invocation is both startup and periodic
+  // reconciliation for file-only generated outputs left by a prior crash.
+  if (engine && brainDir && !opts.dryRun) {
+    try {
+      const { reconcileGeneratedOutputs } = await import('../core/generated-output-writer.ts');
+      const repaired = await reconcileGeneratedOutputs(engine, {
+        sourceId: resolvedSourceId ?? 'default',
+        brainDir,
+      });
+      if (repaired.failed > 0) {
+        process.stderr.write(
+          `[dream] generated-output reconciliation degraded: ${repaired.failed} receipt(s) unresolved\n`,
+        );
+      }
+    } catch (error) {
+      process.stderr.write(
+        `[dream] generated-output reconciliation failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
   // ─── issue #1678: bounded single-hold extract_atoms drain ──────────
   if (opts.drain) {
     if (engine === null) {

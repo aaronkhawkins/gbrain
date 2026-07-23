@@ -29,6 +29,7 @@ import type { Operation, OperationContext } from '../../operations.ts';
 import { paramDefToSchema } from '../../../mcp/tool-defs.ts';
 import { validateSourceId } from '../../utils.ts';
 import type { ToolCtx, ToolDef } from '../types.ts';
+import { stampGeneratedMarkdown, writeGeneratedOutput } from '../../generated-output-writer.ts';
 
 /**
  * v0.15 brain-tool allow-list. Review carefully when extending. Op names
@@ -209,6 +210,9 @@ export interface BuildBrainToolsOpts {
    * Unset → legacy 'default'.
    */
   sourceId?: string;
+  /** Explicit Dream/pattern output mode; never inferred from an allow-list. */
+  generatedOutput?: boolean;
+  generatedOutputExpectedDigests?: Readonly<Record<string, string>>;
 }
 
 interface OpContextDeps {
@@ -295,6 +299,35 @@ export function buildBrainTools(opts: BuildBrainToolsOpts): ToolDef[] {
           sourceId: opts.sourceId,
         });
         const params = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+        // Trusted Dream/pattern jobs carry an explicit namespace allow-list.
+        // Their put_page output is durable knowledge, so route it through the
+        // FS-first generated sink instead of the generic DB-first operation.
+        if (op.name === 'put_page' && opts.generatedOutput === true) {
+          const slug = String(params.slug ?? '');
+          const content = stampGeneratedMarkdown(String(params.content ?? ''));
+          // Preserve the operation's server-side namespace fence before any
+          // filesystem resolution.
+          const dryRunCtx = { ...opCtx, dryRun: true };
+          await op.handler(dryRunCtx, { ...params, slug, content });
+          const sourceId = opts.sourceId ?? 'default';
+          const result = await writeGeneratedOutput(ctx.engine, slug, content, {
+            sourceId,
+            expectedDigest: Object.prototype.hasOwnProperty.call(
+              opts.generatedOutputExpectedDigests ?? {},
+              slug,
+            )
+              ? opts.generatedOutputExpectedDigests![slug]
+              : null,
+          });
+          if (result.status === 'conflict' || result.status === 'file_only') {
+            throw new Error(result.error ?? `generated output ${result.status}`);
+          }
+          return {
+            slug,
+            status: result.status === 'noop' ? 'skipped' : 'imported',
+            generated_output: true,
+          };
+        }
         return op.handler(opCtx, params);
       },
     };

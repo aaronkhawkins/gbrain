@@ -51,11 +51,18 @@ import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult } from '../cycle.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { ProgressReporter } from '../progress.ts';
-import { chat as gatewayChat } from '../ai/gateway.ts';
+import { chat as gatewayChat, isAvailable } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { createHash } from 'crypto';
 import { slugifySegment } from '../sync.ts';
+import { extractionAdmissionSql } from './bookmark-extraction-policy.ts';
+import { BIRDCLAW_RESEARCH_POLICY } from './research-provenance.ts';
+import { serializeMarkdown } from '../markdown.ts';
+import {
+  snapshotGeneratedOutputDigests,
+  writeGeneratedOutput,
+} from '../generated-output-writer.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 
@@ -113,7 +120,7 @@ async function resolveExtractableTypes(): Promise<string[]> {
   } catch {
     // Pack unavailable (test seams, bootstrap) — legacy floor only.
   }
-  return unionExtractableTypes(packExtractable);
+  return unionExtractableTypes([...packExtractable, 'media']);
 }
 
 export interface ExtractAtomsOpts {
@@ -135,7 +142,12 @@ export interface ExtractAtomsOpts {
    * Mirrors _transcripts shape. `undefined` triggers discovery; `[]`
    * explicitly suppresses page discovery (for transcript-only tests).
    */
-  _pages?: Array<{ slug: string; content: string; contentHash: string }>;
+  _pages?: Array<{
+    slug: string;
+    content: string;
+    contentHash: string;
+    researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
+  }>;
   /**
    * v0.41.19.0 (T3): cooperative yield hook fired from inside the work
    * loop on a 30s throttle AND immediately after every `await chat()`
@@ -165,6 +177,7 @@ interface ExtractedAtom {
   lesson?: string;
   virality_score?: number;
   emotional_register?: string;
+  concepts?: string[];
 }
 
 const EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
@@ -189,6 +202,7 @@ interface DiscoveredPage {
   slug: string;
   content: string;
   contentHash: string;
+  researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
 }
 
 /**
@@ -217,10 +231,12 @@ export async function discoverExtractablePages(
   const sql = `
     SELECT p.slug,
            p.compiled_truth,
-           p.content_hash
+           p.content_hash,
+           CASE WHEN p.type = 'media' THEN '${BIRDCLAW_RESEARCH_POLICY}' END AS research_policy
     FROM pages p
     WHERE p.source_id = $1
       AND p.type = ANY($2::text[])
+      AND ${extractionAdmissionSql('p')}
       AND p.deleted_at IS NULL
       AND p.content_hash IS NOT NULL
       AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -251,11 +267,13 @@ export async function discoverExtractablePages(
       slug: string;
       compiled_truth: string;
       content_hash: string;
+      research_policy?: typeof BIRDCLAW_RESEARCH_POLICY;
     }>(sql, params);
     return rows.map((r) => ({
       slug: r.slug,
       content: r.compiled_truth,
       contentHash: r.content_hash,
+      ...(r.research_policy ? { researchPolicy: r.research_policy } : {}),
     }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -293,6 +311,7 @@ export async function countExtractAtomsBacklog(
       ? `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.source_id = $1
            AND p.type = ANY($2::text[])
+           AND ${extractionAdmissionSql('p')}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -306,6 +325,7 @@ export async function countExtractAtomsBacklog(
            )`
       : `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.type = ANY($1::text[])
+           AND ${extractionAdmissionSql('p')}
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
@@ -452,7 +472,13 @@ export async function runPhaseExtractAtoms(
   //    as a brain page).
   type WorkItem =
     | { kind: 'transcript'; filePath: string; content: string; contentHash: string }
-    | { kind: 'page'; slug: string; content: string; contentHash: string };
+    | {
+        kind: 'page';
+        slug: string;
+        content: string;
+        contentHash: string;
+        researchPolicy?: typeof BIRDCLAW_RESEARCH_POLICY;
+      };
 
   const seenHashes = new Set<string>();
   const work: WorkItem[] = [];
@@ -501,6 +527,12 @@ export async function runPhaseExtractAtoms(
   const failures: Array<{ source: string; error: string }> = [];
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
+  const atomDigestSnapshot = opts.dryRun
+    ? {}
+    : await snapshotGeneratedOutputDigests(engine, ['atoms/'], {
+        sourceId,
+        brainDir: opts.brainDir,
+      });
 
   // v0.41.19.0 (T3): throttled yield helper. Fires `opts.yieldDuringPhase`
   // every 30s. Cycle.ts threads `buildYieldDuringPhase(lock, outer)` so
@@ -536,7 +568,9 @@ export async function runPhaseExtractAtoms(
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     try {
       const result = await chat({
-        system: EXTRACT_PROMPT,
+        system: item.kind === 'page' && item.researchPolicy
+          ? `${EXTRACT_PROMPT}\nFor this marked research source, also include concepts: an array of 1-5 specific durable topic slugs.`
+          : EXTRACT_PROMPT,
         messages: [
           {
             role: 'user',
@@ -572,28 +606,37 @@ export async function runPhaseExtractAtoms(
           // v0.41.2.1 D9 #1 — thread sourceId through every putPage so
           // atoms land in the source we discovered them from. Pre-fix
           // the third arg was missing and atoms always wrote to 'default'.
-          await engine.putPage(
-            slug,
+          const markdown = serializeMarkdown(
             {
-              title: atom.title,
-              type: 'atom',
-              compiled_truth: atom.body,
-              frontmatter: {
-                type: 'atom',
-                atom_type: atom.atom_type,
-                ...originFrontmatter,
-                source_hash: item.contentHash.slice(0, 16),
-                ...(atom.source_quote && { source_quote: atom.source_quote }),
-                ...(atom.lesson && { lesson: atom.lesson }),
-                ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
-                ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
-                extracted_at: new Date().toISOString(),
-                extracted_by: 'extract_atoms-v0.41.2.1',
-              },
-              timeline: '',
+              atom_type: atom.atom_type,
+              ...originFrontmatter,
+              source_hash: item.contentHash.slice(0, 16),
+              ...(atom.source_quote && { source_quote: atom.source_quote }),
+              ...(atom.lesson && { lesson: atom.lesson }),
+              ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
+              ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
+              ...(atom.concepts && { concepts: atom.concepts }),
+              ...(item.kind === 'page' && item.researchPolicy
+                ? { research_policy: item.researchPolicy }
+                : {}),
+              extracted_by: 'extract_atoms-v0.41.2.1',
+              gbrain_generated: true,
             },
-            { sourceId },
+            atom.body,
+            '',
+            { type: 'atom', title: atom.title, tags: [] },
           );
+          const write = await writeGeneratedOutput(engine, slug, markdown, {
+            sourceId,
+            brainDir: opts.brainDir,
+            expectedDigest: Object.prototype.hasOwnProperty.call(atomDigestSnapshot, slug)
+              ? atomDigestSnapshot[slug]
+              : null,
+            noEmbed: !isAvailable('embedding'),
+          });
+          if (write.status === 'conflict' || write.status === 'file_only') {
+            throw new Error(write.error ?? `generated output ${write.status}`);
+          }
           totalAtomsExtracted++;
         }
       } else {
@@ -729,6 +772,13 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
           : undefined,
       emotional_register:
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
+      concepts: Array.isArray(obj.concepts)
+        ? [...new Set(obj.concepts
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => slugifySegment(value))
+            .filter(Boolean))]
+            .slice(0, 5)
+        : undefined,
     });
   }
   return atoms;
@@ -766,12 +816,13 @@ function sourceDate(ref: string): string {
  * - Date comes from the SOURCE, not the run date, so re-extracting an
  *   append-only transcript on a later day yields the SAME slug → putPage
  *   upserts instead of minting a cross-day duplicate.
- * - The 6-char title hash keeps two distinct atoms whose titles share the
- *   first 60 chars on separate slugs, so a deterministic slug never silently
- *   clobbers a *different* atom. Hash is over the title only (not body) so an
- *   LLM rewording the body on re-extraction still upserts rather than dupes.
+ * - The 6-char source+title hash keeps identical model titles from unrelated
+ *   sources separate while remaining stable when an LLM rewords only the body.
  */
 function atomSlug(title: string, srcRef: string): string {
-  const hash = createHash('sha256').update(title).digest('hex').slice(0, 6);
+  // Source identity is part of the path CAS key. Two unrelated sources often
+  // produce the same short model title; title-only identity made the second
+  // source look like a divergent concurrent rewrite of the first.
+  const hash = createHash('sha256').update(`${srcRef}\0${title}`).digest('hex').slice(0, 6);
   return `atoms/${sourceDate(srcRef)}/${atomSlugStem(title)}-${hash}`;
 }

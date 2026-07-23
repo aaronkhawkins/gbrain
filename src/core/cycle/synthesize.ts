@@ -43,6 +43,12 @@ import { serializeMarkdown, serializePageToMarkdown } from '../markdown.ts';
 import type { Page, PageType } from '../types.ts';
 import { validateSourceId } from '../utils.ts';
 import { safeSplitIndex } from '../text-safe.ts';
+import {
+  readGeneratedOutputDigest,
+  resolveGeneratedOutputPath,
+  snapshotGeneratedOutputDigests,
+  writeGeneratedOutput,
+} from '../generated-output-writer.ts';
 
 // Slug regex from validatePageSlug — kept in sync.
 // Used for the orchestrator-written summary index slug.
@@ -434,6 +440,12 @@ export async function runPhaseSynthesize(
     const skipReports: Array<{ filePath: string; reason: string }> = [];
 
     const maxCharsPerChunk = computeChunkCharBudget(config.model, config.maxPromptTokens);
+    const cycleSourceId = opts.sourceId ?? 'default';
+    const generatedOutputExpectedDigests = await snapshotGeneratedOutputDigests(
+      engine,
+      allowedSlugPrefixes,
+      { sourceId: cycleSourceId, brainDir: opts.brainDir },
+    );
 
     for (const t of worthProcessing) {
       const hash16 = t.contentHash.slice(0, 16);
@@ -490,6 +502,8 @@ export async function runPhaseSynthesize(
           // #1586: scope every child tool call to the cycle's resolved source
           // so put_page writes land there instead of the hardcoded 'default'.
           ...(opts.sourceId ? { source_id: opts.sourceId } : {}),
+          generated_output: true,
+          generated_output_expected_digests: generatedOutputExpectedDigests,
         };
         // Idempotency key parity:
         //   - single-chunk → legacy `dream:synth:<filePath>:<hash16>` (byte-
@@ -550,7 +564,6 @@ export async function runPhaseSynthesize(
     // v0.32.8: refs carry source_id so reverseWriteRefs picks the correct
     // (source, slug) row. #1586: refs are stamped with the cycle's resolved
     // source (children write there via SubagentHandlerData.source_id).
-    const cycleSourceId = opts.sourceId ?? 'default';
     const writtenRefs = await collectChildPutPageSlugs(engine, childIds, chunkInfo, cycleSourceId);
 
     const summaryDate = opts.date ?? today();
@@ -559,10 +572,10 @@ export async function runPhaseSynthesize(
     // of every child-written page BEFORE reverse-rendering, so generated pages
     // are queryable (`frontmatter->>'dream_generated'`) and a later put_page
     // write-through (which re-renders from the DB row) can't erase the stamp.
-    await stampDreamProvenance(engine, writtenRefs, summaryDate);
-
-    // Dual-write: reverse-render each DB row → markdown file.
-    const reverseWriteCount = await reverseWriteRefs(engine, opts.brainDir, writtenRefs, cycleSourceId);
+    // Trusted child put_page calls already commit through the FS-first sink.
+    // The DB stamp/reverse-write path is intentionally retired: it would make
+    // the database authoritative again and create a second file writer.
+    const reverseWriteCount = writtenRefs.length;
 
     // Summary index page (deterministic; orchestrator-written via direct
     // engine.putPage so no allow-list path needed).
@@ -1298,31 +1311,14 @@ async function writeSummaryPage(
     { type: 'note' as string, title: `Dream cycle ${summaryDate}`, tags: ['dream-cycle'] },
   );
 
-  // Direct engine.putPage — orchestrator write, no subagent context, no
-  // allow-list check (server-side viaSubagent=false). The summary slug is
-  // pre-validated against SUMMARY_SLUG_RE in the caller.
-  // Importing put_page via operations.ts would re-run namespace logic
-  // unnecessarily; we go straight to the engine.
-  const { parseMarkdown } = await import('../markdown.ts');
-  const parsed = parseMarkdown(fullMarkdown);
-  // #1586: summary lands in the cycle's resolved source too — otherwise the
-  // children live in the named source while the index drifts to 'default'.
-  await engine.putPage(summarySlug, {
-    type: parsed.type,
-    title: parsed.title,
-    compiled_truth: parsed.compiled_truth,
-    timeline: parsed.timeline,
-    frontmatter: parsed.frontmatter,
-  }, { sourceId });
-
-  // Also write to disk (orchestrator dual-write).
-  try {
-    const filePath = join(brainDir, `${summarySlug}.md`);
-    mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, fullMarkdown, 'utf8');
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`[dream] summary file-write failed: ${msg}\n`);
+  const path = await resolveGeneratedOutputPath(engine, summarySlug, { sourceId, brainDir });
+  const result = await writeGeneratedOutput(engine, summarySlug, fullMarkdown, {
+    sourceId,
+    brainDir,
+    expectedDigest: readGeneratedOutputDigest(path),
+  });
+  if (result.status === 'conflict' || result.status === 'file_only') {
+    throw new Error(result.error ?? `summary generated output ${result.status}`);
   }
 }
 

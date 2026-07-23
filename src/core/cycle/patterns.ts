@@ -32,10 +32,12 @@ import type { Page, PageType } from '../types.ts';
 import { loadAllowedSlugPrefixes, loadOutputRoot } from './synthesize.ts';
 import { probeChatModel } from '../ai/gateway.ts';
 import { normalizeModelId } from '../model-id.ts';
+import { snapshotGeneratedOutputDigests } from '../generated-output-writer.ts';
 
 export interface PatternsPhaseOpts {
   brainDir: string;
   dryRun: boolean;
+  sourceId?: string;
   yieldDuringPhase?: () => Promise<void>;
   /**
    * issue #2860 — `gbrain dream --phase patterns --once`. Bypasses the
@@ -115,7 +117,8 @@ export async function runPhasePatterns(
     }
 
     // Gather reflections within lookback window.
-    const reflections = await gatherReflections(engine, config.lookbackDays, config.outputRoot);
+    const sourceId = opts.sourceId ?? 'default';
+    const reflections = await gatherReflections(engine, config.lookbackDays, config.outputRoot, sourceId);
     if (reflections.length < config.minEvidence) {
       return skipped(
         'insufficient_evidence',
@@ -167,11 +170,19 @@ export async function runPhasePatterns(
     }
 
     const queue = new MinionQueue(engine);
+    const generatedOutputExpectedDigests = await snapshotGeneratedOutputDigests(
+      engine,
+      allowedSlugPrefixes,
+      { sourceId, brainDir: opts.brainDir },
+    );
     const data: SubagentHandlerData = {
       prompt: buildPatternsPrompt(reflections, config.minEvidence, config.outputRoot),
       model: config.model,
       max_turns: 30,
       allowed_slug_prefixes: allowedSlugPrefixes,
+      source_id: sourceId,
+      generated_output: true,
+      generated_output_expected_digests: generatedOutputExpectedDigests,
     };
     const submitOpts: Partial<MinionJobInput> = {
       max_stalled: 3,
@@ -210,10 +221,9 @@ export async function runPhasePatterns(
     // Collect refs the subagent wrote (codex finding #2 — query tool exec rows).
     // v0.32.8: refs carry source_id so reverseWriteRefs targets the right
     // (source, slug) row instead of the first DB match.
-    const writtenRefs = await collectChildPutPageSlugs(engine, [job.id]);
-
-    // Reverse-write to fs.
-    const reverseWriteCount = await reverseWriteRefs(engine, opts.brainDir, writtenRefs);
+    const writtenRefs = await collectChildPutPageSlugs(engine, [job.id], sourceId);
+    // Trusted child writes already flowed through the sole FS-first sink.
+    const reverseWriteCount = writtenRefs.length;
 
     const details = {
       reflections_considered: reflections.length,
@@ -329,18 +339,20 @@ async function gatherReflections(
   engine: BrainEngine,
   lookbackDays: number,
   outputRoot = 'wiki',
+  sourceId = 'default',
 ): Promise<ReflectionRef[]> {
   const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
   // #2415: reflections live under the configured output root (bound as a
   // parameter; outputRoot is slug-grammar-validated by loadOutputRoot).
   const rows = await engine.executeRaw<{ slug: string; title: string | null; compiled_truth: string | null }>(
     `SELECT slug, title, compiled_truth
-       FROM pages
+      FROM pages
       WHERE slug LIKE $2
+        AND source_id = $3
         AND updated_at >= $1::timestamptz
       ORDER BY updated_at DESC
       LIMIT 100`,
-    [since, `${outputRoot}/personal/reflections/%`],
+    [since, `${outputRoot}/personal/reflections/%`, sourceId],
   );
   return rows.map(r => ({
     slug: r.slug,
@@ -386,6 +398,7 @@ When done, briefly list the pattern slugs you wrote/updated in your final messag
 async function collectChildPutPageSlugs(
   engine: BrainEngine,
   childIds: number[],
+  sourceId = 'default',
 ): Promise<Array<{ slug: string; source_id: string }>> {
   if (childIds.length === 0) return [];
   // v0.32.8: subagent put_page tool schema doesn't expose source_id (subagents
@@ -406,7 +419,7 @@ async function collectChildPutPageSlugs(
   return rows
     .map(r => r.slug)
     .filter((s): s is string => typeof s === 'string' && s.length > 0)
-    .map(slug => ({ slug, source_id: 'default' }));
+    .map(slug => ({ slug, source_id: sourceId }));
 }
 
 // ── Reverse-write ────────────────────────────────────────────────────

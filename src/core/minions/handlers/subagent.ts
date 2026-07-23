@@ -274,6 +274,8 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       allowedSlugPrefixes: data.allowed_slug_prefixes,
       // #1586: cycle-resolved source scope for tool-call OperationContexts.
       sourceId: data.source_id,
+      generatedOutput: data.generated_output === true,
+      generatedOutputExpectedDigests: data.generated_output_expected_digests,
     });
     const toolDefs = data.allowed_tools && data.allowed_tools.length > 0
       ? filterAllowedTools(registry, data.allowed_tools)

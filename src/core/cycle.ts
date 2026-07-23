@@ -1919,6 +1919,7 @@ export async function runCycle(
         const { result, duration_ms } = await timePhase(() => runPhasePatterns(engine, {
           brainDir,
           dryRun,
+          sourceId: cycleSourceId,
           yieldDuringPhase: opts.yieldDuringPhase,
           once: opts.onceForPhase === 'patterns',
           deadlineAtMs: opts.deadlineAtMs ?? null,

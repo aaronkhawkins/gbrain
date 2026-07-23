@@ -79,11 +79,11 @@ U2; the selected invariant is a decision target, not a completed resolution.
 | `src/core/contextual-retrieval-service.ts` | U4 | Full embedding identity, not dimensions alone, gates semantic work | contextual retrieval and embedding identity suites | Reconcile both |
 | `src/core/search/hybrid.ts` | U4 | Identity mismatch fails closed while upstream lexical/search fixes remain | hybrid/search integration suites | Reconcile both |
 | `src/core/postgres-engine.ts` | U5 | `(source_id, slug)` and engine parity govern every changed operation | engine parity and source-scope suites | Reconcile both |
-| `src/core/cycle/extract-atoms.ts` | U6 | Unmarked extraction stays generic; marked research gets explicit policy and source provenance | `test/cycle/extract-atoms-synthesize-concepts.test.ts` | Reconcile both |
+| `src/core/cycle/extract-atoms.ts` | U6 | Unmarked extraction stays generic; marked research gets explicit policy and source provenance | `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts` | Reconcile both |
 | `src/core/cycle/patterns.ts` | U6 | Gateway reachability and bounded work coexist with research behavior | patterns provider/deadline suites | Reconcile both |
-| `src/core/cycle/synthesize-concepts.ts` | U6 | Generic synthesis remains default; research promotion is marked, bounded, source-aware, and no-churn | `test/cycle/extract-atoms-synthesize-concepts.test.ts` | Reconcile both |
+| `src/core/cycle/synthesize-concepts.ts` | U6 | Generic synthesis remains default; research promotion is marked, bounded, source-aware, and no-churn | `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts` | Reconcile both |
 | `src/core/import-file.ts` | U6 | One FS-first canonical sink owns generated output; import stays idempotent and source-aware | import, generated-output, sync recovery suites | Replace dual-write overlap through the U6 sink |
-| `test/cycle/extract-atoms-synthesize-concepts.test.ts` | U6 | Both upstream generic and fork research assertions survive | the file itself plus U6 integration suites | Combine fixtures; never select one side wholesale |
+| `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts` | U6 | Both upstream generic and fork research assertions survive | the file itself plus U6 integration suites | Combine fixtures; never select one side wholesale |
 | `test/handlers.test.ts` | U7 | Existing durable facts compatibility and upstream lifecycle fixes both remain covered | the file itself, Minion resilience suites | Combine fixtures |
 
 The table contains 16 production or documentation paths plus two conflicted
@@ -177,7 +177,7 @@ directions of compatibility, owner, proof, and retirement condition.
 | C05 hosted NVIDIA identity | upstream `nvidia` recipe | gateway, providers/models diagnostics, embedding | New additive ID; must coexist with C04 and carry its own base URL, auth, models, dimensions, cost, and privacy contract | Previous fork cannot interpret hosted-only config/jobs; quarantine them before rollback | U4 / quarantine-required | upstream NVIDIA recipe/dim suites plus distinct-ID fixture | Retire no earlier than upstream removal; never alias to C04 |
 | C06 embedding identity | config + embed writer | pages/chunks, stale detection, hybrid retrieval, status | Provider, exact model, dimensions, active column, preprocessing signature, and stored provenance must agree; same width alone is incompatible | Previous reader allowed only for a cohort it can prove; otherwise lexical/fail-closed or restore | U4 / quarantine-or-restore | embedding identity, dim, index lifecycle, hybrid suites | Retire fork gate when canonical engine enforces the same complete identity |
 | C07 source/page identity | source resolver and canonical operations | import, Dream, facts, takes, search, both engines | `(source_id, slug)` is identity; opaque source context survives all calls; malformed identities and remote overrides outside scalar/federated grants fail closed; old default-source rows remain readable | Candidate-created non-default rows require a source-aware previous reader or roll-forward | U5 / compatibility-gated | `test/source-scope-resolver.test.ts`, source resolver, ingestion roundtrip, extraction, engine parity, and real-Postgres multi-source suites | Never retire composite identity; retire adapters after all callers are source-aware |
-| C08 research policy/provenance v1 | bookmark policy and extraction | atom writer, synthesis, status, retrieval trace | Only marked sources receive `birdclaw-research-v1`; unmarked behavior stays generic; old marked frontmatter remains readable | Previous fork reads v1; new provenance fields must remain additive | U6 / backward-compatible | `test/cycle/extract-atoms-synthesize-concepts.test.ts`, research health suites | Retire when generic upstream policy can express the same admission and evidence rules |
+| C08 research policy/provenance v1 | bookmark policy and extraction | atom writer, synthesis, status, retrieval trace | Only marked sources receive `birdclaw-research-v1`; unmarked behavior stays generic; old marked frontmatter remains readable | Previous fork reads v1; new provenance fields must remain additive | U6 / backward-compatible | `test/cycle/extract-atoms-synthesize-concepts.serial.test.ts`, research health suites | Retire when generic upstream policy can express the same admission and evidence rules |
 | C09 generated knowledge file + projection | U6 FS-first sink | import, chunks, embeddings, retrieval, sync reconciler | Canonical file is commit point; DB projection is idempotent and replayable; existing DB-only/custom chunks remain readable without new dual writes | Before normal writes, reselect code and replay canonical files; after writes, roll forward unless a tested lossless replay exists | U6 / roll-forward after writes | generated output, import, sync recovery, repeat-run suites | Retire custom indexer after exactly-once parity; adapter may remain non-writing only |
 | C10 facts-absorb payload v1 | facts enqueue sites | Minion handler and facts writer | Missing v1 fields normalize to explicit defaults; source ID and content hash fence writes; future versions reject | Current v1 remains readable by previous fork; any later payload version must drain/quarantine before rollback | U7 / backward-compatible now | `test/handlers.test.ts`, facts backstop suites | Retire legacy omission defaults after all accepted v1 jobs have drained and an envelope migration exists |
 | C11 Minion lifecycle/job rows | queue, worker, supervisor | all durable handlers, status/doctor | Preserve accepted jobs, retry reset, source backpressure, refreshed route snapshot, reconnect, and explicit child outcome | Stop candidate workers; drain compatible jobs and quarantine new envelopes before previous worker starts | U7 / quarantine-required | Minion, handler, worker reconnect, E2E resilience suites | Retire fork lifecycle patches when upstream behavior and old/new payload fixtures pass |
@@ -185,6 +185,36 @@ directions of compatibility, owner, proof, and retirement condition.
 | C13 import checkpoint v1 | upstream import staging | import retry and sync | Canonical target identity and staged completion remain idempotent; old imports without checkpoint still run | Previous code may ignore additive checkpoints but must not mistake staged work for committed output | U5/U6 / backward-compatible with replay | import checkpoint, sync recovery suites | Retire only through versioned checkpoint migration |
 | C14 status/build JSON | status, doctor, models/providers | operator verifier and later observability | Additive content-free sections remain bounded and optional; existing fields retain types; actual process identity is explicit | Previous consumers may ignore additive fields; candidate verifier must reject missing required candidate fields | U8 / backward-compatible reader | status sections, build identity, compiled verifier suites | Retire fork sections when canonical upstream status supplies equivalent machine-readable evidence |
 | C15 generated facts/pages/chunks/provenance rows | canonical operations and U6/U7 writers | search, Dream, status, previous/candidate readers | Writes are source-scoped, idempotent, and carry enough provenance to detect duplicates/staleness | Restore only before normal writes or with tested delta replay; otherwise roll forward | U6/U7 / roll-forward after writes | repeat-run Dream, facts idempotency, retrieval trace suites | No retirement until one canonical writer owns each namespace |
+
+## U6 Dream and generated-output disposition
+
+- Status: implementation complete; no deployment or live source mutation.
+- Characterization: upstream generic extraction remained intact, while marked
+  bookmark admission had regressed in two fixtures and every generated-output
+  family was DB-first or DB-only.
+- Selected writer: one source-scoped FS-first sink. Lock order is source sync
+  lock then bounded canonical-path lease. Atomic durable placement is the
+  knowledge commit point; import rechecks the digest before projection.
+- Concurrency: identical content coalesces without touching the canonical file;
+  a divergent expected-digest mismatch is an explicit conflict.
+- Recovery: content-free durable receipts in the private runtime-state plane
+  record pending, file-committed, projected, or projection-failed state with
+  bounded error codes. Each scheduled Dream startup scans unresolved receipts
+  and repairs file-only projections automatically.
+- Caller disposition: atoms, concepts, trusted Dream reflection/original
+  writes, Dream summaries, and patterns use the sink. The former generated
+  page indexer remains only as a non-writing compatibility adapter.
+- Source policy: homogeneous output stays in its originating source. Mixed
+  concepts use the existing `default` aggregation source and retain bounded
+  atom/source evidence. Pattern reads and writes are source scoped.
+- Research policy: only explicitly marked bookmark media is admitted;
+  collector digests and unmarked media remain excluded. Research promotion
+  requires distinct original evidence, while mixed/unmarked groups keep the
+  generic count policy.
+- Verification: PGLite crash, recovery, CAS, no-op, projection, source
+  isolation, research admission, Dream child outcome/deadline, and concept
+  retrieval fixtures are required. Real-Postgres coverage remains an explicit
+  `DATABASE_URL`-gated predeployment gate.
 | C16 maintenance config/report | upstream maintain command + fork durable maintenance job | CLI, scheduler, Minion queue, operator | Pack-aware actions and orphan exclusions remain config-owned and non-destructive by default | Stop scheduling; previous fork can ignore additive report fields; queued new action types require quarantine | U7 / quarantine-required | maintain parser/report/job suites | Retire fork wrapper when upstream maintenance is durable and pack-aware end to end |
 
 ### Clean auto-merge interaction map

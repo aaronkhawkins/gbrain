@@ -6,8 +6,14 @@ import {
 } from '../src/core/generated-page-indexer.ts';
 import { MARKDOWN_CHUNKER_VERSION } from '../src/core/chunkers/recursive.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
+let brainDir: string;
+let stateDir: string;
+const priorGbrainHome = process.env.GBRAIN_HOME;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -15,13 +21,28 @@ beforeAll(async () => {
   await engine.initSchema();
 }, 60_000);
 
-afterAll(async () => engine.disconnect());
-beforeEach(async () => resetPgliteState(engine));
+afterAll(async () => {
+  await engine.disconnect();
+  if (brainDir) rmSync(brainDir, { recursive: true, force: true });
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+  if (priorGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = priorGbrainHome;
+});
+beforeEach(async () => {
+  await resetPgliteState(engine);
+  if (brainDir) rmSync(brainDir, { recursive: true, force: true });
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-indexer-adapter-'));
+  stateDir = mkdtempSync(join(tmpdir(), 'gbrain-indexer-state-'));
+  process.env.GBRAIN_HOME = stateDir;
+  await engine.executeRaw('UPDATE sources SET local_path = $1 WHERE id = $2', [brainDir, 'default']);
+});
 
 describe('generated page indexing', () => {
   test('writes a generated page and canonical searchable chunks atomically', async () => {
     await engine.executeRaw(
-      `INSERT INTO sources (id, name, config) VALUES ('research', 'research', '{}'::jsonb)`,
+      `INSERT INTO sources (id, name, local_path, config) VALUES ('research', 'research', $1, '{}'::jsonb)`,
+      [brainDir],
     );
     await putGeneratedSearchablePage(engine, 'atoms/2026-07-13/swift-concurrency', {
       type: 'atom',

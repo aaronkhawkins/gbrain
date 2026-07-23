@@ -472,6 +472,10 @@ export interface SubagentHandlerData {
    * tool-registry build time.
    */
   source_id?: string;
+  /** Route trusted put_page calls through the FS-first generated-output sink. */
+  generated_output?: boolean;
+  /** Canonical digests captured before the generating job began. */
+  generated_output_expected_digests?: Record<string, string>;
   /**
    * v0.41 Approach C: opt out of the auto-generated tool-usage preamble
    * that `buildSystemPrompt()` splices into `system`. Default behavior
