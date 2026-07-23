@@ -26,6 +26,9 @@ import { llamaServerReranker } from './llama-server-reranker.ts';
 import { moonshot } from './moonshot.ts';
 import { mistral } from './mistral.ts';
 import { nvidia } from './nvidia.ts';
+import { opencodeServer } from './opencode-server.ts';
+import { nvidiaNim } from './nvidia-nim.ts';
+import { vllm } from './vllm.ts';
 
 const ALL: Recipe[] = [
   openai,
@@ -48,6 +51,9 @@ const ALL: Recipe[] = [
   moonshot,
   mistral,
   nvidia,
+  opencodeServer,
+  nvidiaNim,
+  vllm,
 ];
 
 /** Map from `provider:id` key to recipe. */

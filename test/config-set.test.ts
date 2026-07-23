@@ -54,6 +54,12 @@ describe('KNOWN_CONFIG_KEYS', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('zeroentropy_api_key');
   });
 
+  test('does not allow OpenCode connection credentials in DB-backed config', () => {
+    expect(KNOWN_CONFIG_KEYS).not.toContain('opencode_server_password');
+    expect(KNOWN_CONFIG_KEYS).not.toContain('opencode_server_username');
+    expect(KNOWN_CONFIG_KEYS).not.toContain('opencode_server_url');
+  });
+
   test('no duplicate entries', () => {
     const set = new Set(KNOWN_CONFIG_KEYS);
     expect(set.size).toBe(KNOWN_CONFIG_KEYS.length);

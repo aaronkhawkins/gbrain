@@ -39,6 +39,8 @@ const TIERS: ModelTier[] = ['utility', 'reasoning', 'deep', 'subagent'];
 
 const PER_TASK_KEYS: Array<{ key: string; tier: ModelTier; description: string }> = [
   { key: 'models.dream.synthesize',         tier: 'reasoning', description: 'Dream synthesis (conversation → brain pages)' },
+  { key: 'models.dream.extract_atoms',      tier: 'utility',   description: 'Native atom extraction from transcripts and pages' },
+  { key: 'models.dream.synthesize_concepts', tier: 'reasoning', description: 'Native concept synthesis from extracted atoms' },
   { key: 'models.dream.synthesize_verdict', tier: 'utility',   description: 'Dream synthesis verdict (Haiku judge)' },
   { key: 'models.dream.patterns',           tier: 'reasoning', description: 'Pattern discovery (cross-take themes)' },
   { key: 'models.drift',                    tier: 'reasoning', description: 'Drift LLM judge (v0.29 scaffold)' },
@@ -66,14 +68,31 @@ interface ModelsReport {
   aliases: { defaults: Record<string, string>; user: Record<string, string> };
 }
 
-async function probeSource(engine: BrainEngine, configKey: string, envVar: string): Promise<string | null> {
-  // For per-task probes, return the source the resolver USED (config / env /
-  // tier default / hardcoded). The resolver itself is the source of truth;
-  // we re-walk a subset of its precedence here to attribute the value.
-  const configVal = await engine.getConfig(configKey);
-  if (configVal && configVal.trim()) return `config: ${configKey}`;
-  if (process.env[envVar] && process.env[envVar]!.trim()) return `env: ${envVar}`;
-  return null;
+async function resolveModelSource(
+  engine: BrainEngine,
+  opts: { configKey?: string; tier?: ModelTier; envVar?: string; fallback: string },
+): Promise<string> {
+  // Keep this in the same order as resolveModel. Report entries do not have a
+  // CLI flag or deprecated config key, so their first possible source is the
+  // task key followed by the shared routing layers.
+  if (opts.configKey) {
+    const taskValue = await engine.getConfig(opts.configKey);
+    if (taskValue?.trim()) return `config: ${opts.configKey}`;
+  }
+
+  const globalDefault = await engine.getConfig('models.default');
+  if (globalDefault?.trim()) return 'config: models.default';
+
+  if (opts.tier) {
+    const tierValue = await engine.getConfig(`models.tier.${opts.tier}`);
+    if (tierValue?.trim()) return `config: models.tier.${opts.tier}`;
+  }
+
+  const envVar = opts.envVar ?? 'GBRAIN_MODEL';
+  if (process.env[envVar]?.trim()) return `env: ${envVar}`;
+
+  if (opts.tier && TIER_DEFAULTS[opts.tier]) return `default: tier.${opts.tier}`;
+  return `fallback: ${opts.fallback}`;
 }
 
 export async function buildModelsReport(engine: BrainEngine): Promise<ModelsReport> {
@@ -81,25 +100,15 @@ export async function buildModelsReport(engine: BrainEngine): Promise<ModelsRepo
 
   const tiers = {} as Record<ModelTier, ModelEntry>;
   for (const t of TIERS) {
-    const tierOverride = await engine.getConfig(`models.tier.${t}`);
-    // What models.default beats tier — re-walk the chain to attribute properly.
-    let source: string;
-    if (globalDefault && globalDefault.trim()) {
-      source = 'config: models.default';
-    } else if (tierOverride && tierOverride.trim()) {
-      source = `config: models.tier.${t}`;
-    } else {
-      source = 'default';
-    }
     const resolved = await resolveModel(engine, { tier: t, fallback: TIER_DEFAULTS[t] });
+    const source = await resolveModelSource(engine, { tier: t, fallback: TIER_DEFAULTS[t] });
     tiers[t] = { tier: t, resolved, source };
   }
 
   const per_task: ModelsReport['per_task'] = [];
   for (const { key, tier, description } of PER_TASK_KEYS) {
     const resolved = await resolveModel(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
-    const explicit = await probeSource(engine, key, 'GBRAIN_MODEL');
-    const source = explicit ?? `tier.${tier}`;
+    const source = await resolveModelSource(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
     per_task.push({ key, tier, resolved, source, description });
   }
 
@@ -519,9 +528,14 @@ async function probeModel(modelStr: string, touchpoint: 'chat' | 'expansion'): P
   const start = Date.now();
   try {
     const { chat } = await import('../core/ai/gateway.ts');
-    // Use AbortController so the 5s timeout doesn't hang on a stuck network.
+    // OpenCode includes local session setup plus subscription-backed inference;
+    // five seconds is routinely too short even when both sides are healthy.
+    const timeoutMs = modelStr.startsWith('opencode-server:') ? 20_000 : 5_000;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error('probe timed out after 5s')), 5000);
+    const timeoutId = setTimeout(
+      () => controller.abort(new Error(`probe timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
     try {
       await chat({
         model: modelStr,

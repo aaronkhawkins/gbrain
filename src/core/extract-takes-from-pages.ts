@@ -194,7 +194,7 @@ export async function extractTakesFromPages(
         // config, same idiom as enrich.ts) instead of hardcoded cloud Haiku.
         // On OAuth/local-only installs the hardcoded model made every takes
         // extraction die with llm_unavailable despite a working chat_model.
-        model: opts.model || getChatModel(),
+        model: opts.model ?? getChatModel(),
         system: CLASSIFIER_SYSTEM,
         messages: [
           {

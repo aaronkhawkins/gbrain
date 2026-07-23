@@ -292,3 +292,47 @@ git show --cc --stat <u2-merge-commit>
 git diff 37749f135d0e33392b6c7acf83e01d01898314b1 <u2-merge-commit>
 git diff bb5a66942d7a7b0992f94fc59b4710c8e30b1830 <u2-merge-commit>
 ```
+
+## U3 gateway and provider receipt
+
+- Status: resolved and locally verified; focused commit pending finalization.
+- Provider registry: upstream hosted providers remain registered, while the
+  fork's `opencode-server`, `nvidia-nim`, and `vllm` identities are restored as
+  distinct recipes. No provider ID is aliased or silently migrated.
+- Routing authority: model selection remains in the shared resolver and AI
+  gateway. The task report exposes the two native cognition routes with the
+  same task/global/tier/environment/default precedence used by execution.
+  Dream phases and workflow adapters gained no provider-specific branches.
+- Configuration: file, database, and environment base-URL planes retain
+  upstream per-provider merge behavior. Local provider environment overrides
+  reach the shared gateway builder, and long-lived queued jobs retain
+  upstream's pre-handler gateway refresh.
+- OpenCode: the existing bounded loopback adapter is registered for chat and
+  expansion, preserves provider-native finish reasons and tool calls, and
+  keeps diagnostics content-free. Connection credentials remain private
+  file/environment inputs and are deliberately not accepted by the
+  DB-backed `config set` allowlist.
+- vLLM: arbitrary operator-selected model IDs remain supported through the
+  OpenAI-compatible transport. Background calls disable provider-side
+  thinking, authenticated readiness remains optional, and empty nonzero-token
+  output is classified as retryable or output-budget exhaustion from the
+  provider-neutral finish reason.
+- Upstream behavior retained: provider-scoped/model-scoped request options,
+  prompt-cache breakpoints, OpenAI cache routing keys, tool-call pairing,
+  model-list diagnostics, default AI deadlines, and retry ownership remain
+  intact.
+- Pure transformer boundary: page synopsis generation still accepts its model
+  from the caller/gateway; contextual retrieval now derives the default from
+  the effective gateway route instead of embedding a cloud-provider choice.
+- Privacy: repository fixtures use synthetic values only. No live endpoint,
+  credential, prompt, response, private selector, or secret-derived
+  fingerprint was read or recorded.
+- Verification: 200 focused gateway, provider, config, foreground/queued,
+  tool-loop, OpenCode, vLLM, model-report, contextual-retrieval, and takes
+  routing/progression tests passed. TypeScript typecheck and all 31 repository
+  verification checks passed. No live provider or brain was contacted.
+
+Remaining U3 risk is operational rather than code-path ambiguity: real
+provider reachability and credential rotation/revocation are deployment gates
+for U8. U3 did not modify live configuration, queues, sources, databases, or
+release selection.
