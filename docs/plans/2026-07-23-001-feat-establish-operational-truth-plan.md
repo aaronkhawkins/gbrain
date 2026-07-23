@@ -411,14 +411,14 @@ The U-ID gaps preserve stable identifiers from the earlier revision: former U2 m
   1. Compare GBrain’s discovered sources and recurring work for the personal and second brains with the actual deployed schedules; add configuration only for overrides or legacy paths that cannot yet register themselves.
   2. Deploy one launchd-supervised native observer per brain with separate `GBRAIN_HOME`, credentials, ports, and logs.
   3. Deploy the homelab scrape targets, dashboard, and alerts.
-  4. Observe for 24 hours and repair configuration or instrumentation gaps; do not add canary infrastructure during acceptance.
+  4. Run live smoke and failure/recovery checks and repair configuration or instrumentation gaps; do not add canary infrastructure during acceptance.
 - **Test Scenarios:**
   - Stopping one observer affects only its brain.
   - Pausing a safe test schedule or seeding a failed test job produces the expected dashboard state and one alert.
   - Backlog and missing-instrumentation panels match the underlying GBrain status evidence.
   - Restarting Prometheus, Grafana, or an observer preserves honest stale/unknown transitions.
   - A content scan of metrics, dashboards, alerts, and acceptance notes finds no protected material.
-- **Verification:** Both brains remain visible for 24 hours, known safe failure demonstrations alert and recover, and every expected recurring activity is either observed or explicitly marked with an instrumentation follow-up.
+- **Verification:** Both brains are visible and current, known safe failure demonstrations alert and recover, and every expected recurring activity is either observed or explicitly marked with an instrumentation follow-up.
 
 ---
 
@@ -433,7 +433,7 @@ The U-ID gaps preserve stable identifiers from the earlier revision: former U2 m
 | Metrics validity | GBrain U4 | Golden exposition parses and respects the bounded-series/content contract |
 | Observability configuration | Observability deployment repository U7-U8 | Ansible templates render; Prometheus, Grafana dashboard, and alert provisioning tests pass |
 | Deployed smoke | U9 | Prometheus sees both observers; Grafana renders both brains; Mattermost receives and resolves one safe test alert |
-| Observation | U9 | 24 hours with no unexplained missing observer, missed expected work, cross-brain effect, or sensitive telemetry |
+| Live acceptance | U9 | Current observers, no unexplained missed expected work, no cross-brain effect, and no sensitive telemetry |
 
 Full repository E2E is not a Phase 1A default gate. It is reserved for changes that touch shared database migrations, engine behavior, or release policy and must use the existing memory-bounded execution policy.
 
@@ -446,7 +446,7 @@ Full repository E2E is not a Phase 1A default gate. It is reserved for changes t
 - U4 is done when independently scoped native observers expose valid content-free metrics over Tailscale.
 - U7 is done when the existing Grafana on the observability host shows fleet and detail status for the personal and second brains.
 - U8 is done when sustained failures notify the existing Mattermost observability route and recover cleanly.
-- U9 is done when 24-hour acceptance proves every expected activity is observed or visibly lacks instrumentation.
+- U9 is done when live acceptance proves every expected activity is observed or visibly lacks instrumentation.
 - Phase 1A does not claim semantic end-to-end proof; Phase 1C remains the owner of that acceptance.
 - Experimental collectors, duplicate queries, unused dashboard panels, real credentials, and abandoned deployment files are absent from the final changes.
 

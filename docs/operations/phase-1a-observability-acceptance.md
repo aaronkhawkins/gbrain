@@ -27,9 +27,9 @@ Content-free acceptance checklist. Do not paste knowledge bodies, credentials, s
 | Restore success | Alert resolves; dashboard returns healthy/degraded honestly |
 | Restart Prometheus or Grafana | Dashboard shows last known / stale without inventing healthy |
 
-## 24-hour observation
+## Live acceptance
 
-- [ ] No unexplained missing observer
+- [ ] Both observers are present and current
 - [ ] No cross-brain credential or metrics bleed
 - [ ] Every expected recurring activity is either observed or explicitly `instrumentation_missing`
 - [ ] No protected material in metrics, dashboards, or alerts
