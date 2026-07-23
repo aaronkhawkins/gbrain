@@ -36,6 +36,7 @@ import type {
   ParseResult,
   PatternEntry,
 } from './types.ts';
+import { isConversationParserEligible } from './eligibility.ts';
 
 export type { ParseConversationOpts, ParseResult, MatchedMessage } from './types.ts';
 
@@ -448,7 +449,7 @@ export function parseConversation(
   body: string,
   opts: ParseConversationOpts = {},
 ): ParseResult {
-  if (!body) {
+  if (!body || !isConversationParserEligible(opts.page)) {
     return { messages: [], phase: 'no_match' };
   }
 

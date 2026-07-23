@@ -25,6 +25,7 @@ import {
   scorePatternFull,
 } from '../../src/core/conversation-parser/parse.ts';
 import { BUILTIN_PATTERNS } from '../../src/core/conversation-parser/builtins.ts';
+import { isConversationParserEligible } from '../../src/core/conversation-parser/eligibility.ts';
 import type { Page } from '../../src/core/types.ts';
 
 // Helper to construct a minimal Page for date-derivation tests.
@@ -338,6 +339,25 @@ describe('parseConversation — degenerate inputs', () => {
     const r = parseConversation('This is just prose with no chat shape.');
     expect(r.phase).toBe('no_match');
     expect(r.messages).toHaveLength(0);
+  });
+});
+
+describe('parseConversation — explicit page eligibility', () => {
+  const turnBody = '**Alice Example** (2024-03-15 9:00 AM): hello';
+
+  test('curated-summary pages opt out even when their body is turn-formatted', () => {
+    const page = makePage({ format: 'curated-summary' });
+    expect(isConversationParserEligible(page)).toBe(false);
+    expect(parseConversation(turnBody, { page })).toEqual({
+      messages: [],
+      phase: 'no_match',
+    });
+  });
+
+  test('unknown formats remain eligible and parse normally', () => {
+    const page = makePage({ format: 'raw-export' });
+    expect(isConversationParserEligible(page)).toBe(true);
+    expect(parseConversation(turnBody, { page }).phase).toBe('regex_match');
   });
 });
 

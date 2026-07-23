@@ -92,6 +92,7 @@ import { withRefreshingLock, LockUnavailableError } from '../core/db-lock.ts';
 import { assertFactsEmbeddingDimMatchesConfig } from '../core/embedding-dim-check.ts';
 import { writeReceipt, shortRunId } from '../core/extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../core/extract/rollup-writer.ts';
+import { isConversationParserEligible } from '../core/conversation-parser/eligibility.ts';
 
 // ---------------------------------------------------------------------------
 // Tunables (exported for tests).
@@ -668,6 +669,10 @@ async function processPage(
   page: Page,
   sinceIso: string | undefined,
 ): Promise<{ newEndIso: string | null }> {
+  if (!isConversationParserEligible(page)) {
+    return { newEndIso: null };
+  }
+
   state.result.pages_considered++;
 
   // Body cap check first — pre-parse, pre-segment, pre-extraction.
@@ -1028,10 +1033,10 @@ export async function runExtractConversationFactsCore(
 
           // Respect --limit at batch granularity: clip the batch so we
           // never overshoot the cap by `workers - 1` extra pages.
-          let claimable = batch;
+          let claimable = batch.filter(isConversationParserEligible);
           if (opts.limit) {
             const remaining = opts.limit - processedPagesCount;
-            if (remaining < batch.length) claimable = batch.slice(0, remaining);
+            if (remaining < claimable.length) claimable = claimable.slice(0, remaining);
           }
 
           await runSlidingPool({

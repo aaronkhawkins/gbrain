@@ -38,6 +38,7 @@ import {
   PER_SEGMENT_SOURCE_PREFIX,
   ALLOWED_TYPES,
 } from '../src/commands/extract-conversation-facts.ts';
+import { computeConversationFactsBacklogCheck } from '../src/commands/doctor.ts';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers.
@@ -332,6 +333,13 @@ describe('runExtractConversationFactsCore', () => {
       timeline: '',
       frontmatter: {},
     });
+    await engine.putPage('conversations/imessage/curated-summary', {
+      type: 'conversation',
+      title: 'Curated conversation summary',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: { format: 'curated-summary' },
+    });
     await engine.putPage('people/alice-example', {
       type: 'person',
       title: 'Alice Example',
@@ -414,6 +422,33 @@ describe('runExtractConversationFactsCore', () => {
     });
     expect(result.pages_considered).toBe(1);
     expect(result.pages_processed).toBe(1);
+  });
+
+  test('curated-summary pages are excluded from extraction eligibility', async () => {
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/imessage/curated-summary',
+      dryRun: true,
+      sleepMs: 0,
+    });
+    expect(result.pages_considered).toBe(0);
+    expect(result.pages_processed).toBe(0);
+  });
+
+  test('batch extraction filters curated-summary pages before processing', async () => {
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      dryRun: true,
+      sleepMs: 0,
+    });
+    expect(result.pages_considered).toBe(3);
+    expect(result.pages_processed).toBe(3);
+  });
+
+  test('curated-summary pages are excluded from the doctor backlog', async () => {
+    await engine.setConfig('cycle.conversation_facts_backfill.enabled', 'true');
+    const check = await computeConversationFactsBacklogCheck(engine);
+    expect(check.details?.backlog).toBe(3);
   });
 
   test('sinceIso filters already-processed history', async () => {

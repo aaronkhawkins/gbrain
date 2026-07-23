@@ -53,6 +53,10 @@ import { isUndefinedColumnError } from '../core/utils.ts';
 // drift from what search actually filters.
 import { resolveHardExcludes, DEFAULT_HARD_EXCLUDES } from '../core/search/source-boost.ts';
 import { escapeLikePattern, buildVisibilityClause } from '../core/search/sql-ranking.ts';
+import {
+  CURATED_SUMMARY_FORMAT,
+  isConversationParserEligible,
+} from '../core/conversation-parser/eligibility.ts';
 
 export interface Check {
   name: string;
@@ -3148,13 +3152,14 @@ export async function computeConversationFactsBacklogCheck(
       `SELECT COUNT(*) AS count FROM pages p
        WHERE p.type = ANY($1::text[])
          AND p.deleted_at IS NULL
+         AND COALESCE(p.frontmatter->>'format', '') <> $2
          AND NOT EXISTS (
            SELECT 1 FROM facts f
            WHERE f.source = 'cli:extract-conversation-facts:terminal'
              AND f.source_session = 'cli:extract-conversation-facts:terminal:' || p.slug
              AND f.source_id = p.source_id
          )`,
-      [types],
+      [types, CURATED_SUMMARY_FORMAT],
     );
 
     const backlog = Number(rows[0]?.count ?? 0);
@@ -3203,6 +3208,87 @@ export async function computeConversationFactsBacklogCheck(
       message: `backlog query failed: ${(err as Error).message}`,
     };
   }
+}
+
+const CONVERSATION_FORMAT_COVERAGE_TYPES = [
+  'conversation',
+  'meeting',
+  'slack',
+  'email',
+  'imessage',
+  'imessage-daily',
+] as const;
+const CONVERSATION_FORMAT_COVERAGE_SAMPLE_LIMIT = 200;
+const CONVERSATION_FORMAT_UNMATCHED_SLUG_LIMIT = 5;
+
+export async function computeConversationFormatCoverageCheck(
+  engine: BrainEngine,
+): Promise<Check> {
+  const { readConversationBodyForParsing } = await import('../core/conversation-parser/body.ts');
+  const { parseConversation } = await import('../core/conversation-parser/parse.ts');
+
+  const sampled: import('../core/types.ts').Page[] = [];
+  for (const type of CONVERSATION_FORMAT_COVERAGE_TYPES) {
+    const pages = await engine.listPages({
+      limit: 50,
+      type: type as import('../core/types.ts').PageType,
+    });
+    sampled.push(...pages);
+  }
+  const eligible = sampled
+    .filter(isConversationParserEligible)
+    .slice(0, CONVERSATION_FORMAT_COVERAGE_SAMPLE_LIMIT);
+
+  if (eligible.length === 0) {
+    return {
+      name: 'conversation_format_coverage',
+      status: 'ok',
+      message: 'No eligible conversation-type pages — coverage check not applicable',
+    };
+  }
+
+  const hitsByPattern: Record<string, number> = {};
+  const unmatchedSlugs: string[] = [];
+  for (const page of eligible) {
+    const body = await readConversationBodyForParsing(engine, page);
+    const result = parseConversation(body, {
+      page,
+      noPolish: true,
+      noFallback: true,
+    });
+    const id = result.matched_pattern_id ?? '_no_match';
+    hitsByPattern[id] = (hitsByPattern[id] ?? 0) + 1;
+    if (result.phase === 'no_match') unmatchedSlugs.push(page.slug);
+  }
+
+  const unmatched = unmatchedSlugs.length;
+  const unmatchedPct = (unmatched / eligible.length) * 100;
+  const breakdown = Object.entries(hitsByPattern)
+    .sort(([, a], [, b]) => b - a)
+    .map(([pattern, count]) => `${pattern}=${count}`)
+    .join(', ');
+
+  if (unmatchedPct > 10) {
+    const shownSlugs = unmatchedSlugs.slice(0, CONVERSATION_FORMAT_UNMATCHED_SLUG_LIMIT);
+    const remaining = unmatched - shownSlugs.length;
+    const unmatchedSummary =
+      shownSlugs.join(', ') + (remaining > 0 ? ` (+${remaining} more)` : '');
+    return {
+      name: 'conversation_format_coverage',
+      status: 'warn',
+      message:
+        `${unmatched}/${eligible.length} conversation pages (${unmatchedPct.toFixed(1)}%) match NO built-in pattern. ` +
+        `Breakdown: ${breakdown}. ` +
+        `Unmatched slugs: ${unmatchedSummary}. ` +
+        `Investigate: gbrain conversation-parser scan ${shownSlugs[0]}`,
+    };
+  }
+
+  return {
+    name: 'conversation_format_coverage',
+    status: 'ok',
+    message: `${eligible.length} pages: ${breakdown}`,
+  };
 }
 
 /**
@@ -4994,54 +5080,7 @@ export async function buildChecks(
   // triage the misses interactively.
   if (engine) {
     try {
-      const { readConversationBodyForParsing } = await import('../core/conversation-parser/body.ts');
-      const { parseConversation } = await import('../core/conversation-parser/parse.ts');
-      const allowedTypes = ['conversation', 'meeting', 'slack', 'email', 'imessage', 'imessage-daily'] as const;
-      // PageFilters supports singular `type` only; iterate the allowed types
-      // and cap at ~50/each to land at ~200 total max.
-      const sample: import('../core/types.ts').Page[] = [];
-      for (const t of allowedTypes) {
-        const slice = await engine.listPages({ limit: 50, type: t as import('../core/types.ts').PageType });
-        sample.push(...slice);
-      }
-      if (sample.length === 0) {
-        checks.push({
-          name: 'conversation_format_coverage',
-          status: 'ok',
-          message: 'No conversation-type pages — coverage check not applicable',
-        });
-      } else {
-        const hitsByPattern: Record<string, number> = {};
-        let unmatched = 0;
-        for (const page of sample) {
-          const body = await readConversationBodyForParsing(engine, page);
-          const result = parseConversation(body, { page, noPolish: true, noFallback: true });
-          const id = result.matched_pattern_id ?? '_no_match';
-          hitsByPattern[id] = (hitsByPattern[id] ?? 0) + 1;
-          if (result.phase === 'no_match') unmatched++;
-        }
-        const unmatchedPct = (unmatched / sample.length) * 100;
-        const breakdown = Object.entries(hitsByPattern)
-          .sort(([, a], [, b]) => b - a)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(', ');
-        if (unmatchedPct > 10) {
-          checks.push({
-            name: 'conversation_format_coverage',
-            status: 'warn',
-            message:
-              `${unmatched}/${sample.length} conversation pages (${unmatchedPct.toFixed(1)}%) match NO built-in pattern. ` +
-              `Breakdown: ${breakdown}. ` +
-              `Investigate: gbrain conversation-parser scan <slug>`,
-          });
-        } else {
-          checks.push({
-            name: 'conversation_format_coverage',
-            status: 'ok',
-            message: `${sample.length} pages: ${breakdown}`,
-          });
-        }
-      }
+      checks.push(await computeConversationFormatCoverageCheck(engine));
     } catch (err) {
       checks.push({
         name: 'conversation_format_coverage',

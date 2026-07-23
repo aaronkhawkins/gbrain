@@ -19,6 +19,9 @@
 
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import type { BrainEngine } from '../src/core/engine.ts';
+import type { Page } from '../src/core/types.ts';
+import { computeConversationFormatCoverageCheck } from '../src/commands/doctor.ts';
 
 interface DoctorCheck {
   name: string;
@@ -94,5 +97,68 @@ describe('doctor — v0.41.16.0 new checks emit', () => {
   test('schema_version is stable (2 at v0.41.16.0)', () => {
     const env = runDoctor();
     expect(env.schema_version).toBe(2);
+  });
+});
+
+function coveragePage(
+  slug: string,
+  body: string,
+  frontmatter: Record<string, unknown> = {},
+): Page {
+  return {
+    id: 1,
+    slug,
+    type: 'conversation',
+    title: slug,
+    compiled_truth: body,
+    timeline: '',
+    frontmatter,
+    created_at: new Date(),
+    updated_at: new Date(),
+  } as Page;
+}
+
+describe('conversation_format_coverage eligibility', () => {
+  test('excludes curated summaries while retaining actionable raw misses', async () => {
+    const pages = [
+      coveragePage(
+        'conversations/curated',
+        '**Alice** (2024-03-15 9:00 AM): this would parse',
+        { format: 'curated-summary' },
+      ),
+      ...Array.from({ length: 7 }, (_, i) =>
+        coveragePage(`conversations/raw-miss-${i + 1}`, 'unknown raw turn layout')),
+      coveragePage(
+        'conversations/raw-hit',
+        '**Alice** (2024-03-15 9:00 AM): hello',
+      ),
+    ];
+    const engine = {
+      listPages: async ({ type }: { type?: string }) =>
+        type === 'conversation' ? pages : [],
+    } as unknown as BrainEngine;
+
+    const check = await computeConversationFormatCoverageCheck(engine);
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('7/8 conversation pages');
+    expect(check.message).not.toContain('conversations/curated');
+    expect(check.message).toContain('conversations/raw-miss-1');
+    expect(check.message).toContain('conversations/raw-miss-5');
+    expect(check.message).not.toContain('conversations/raw-miss-6');
+    expect(check.message).toContain('(+2 more)');
+  });
+
+  test('reports not applicable when every sampled page opts out', async () => {
+    const engine = {
+      listPages: async ({ type }: { type?: string }) =>
+        type === 'conversation'
+          ? [coveragePage('conversations/curated', 'summary', { format: 'curated-summary' })]
+          : [],
+    } as unknown as BrainEngine;
+
+    const check = await computeConversationFormatCoverageCheck(engine);
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('No eligible conversation-type pages');
   });
 });
