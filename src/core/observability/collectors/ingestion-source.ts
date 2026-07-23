@@ -6,7 +6,6 @@ import type { BrainEngine } from '../../engine.ts';
 import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
-import { sourceWorkKey } from '../expected-work.ts';
 import type { CollectorOpts } from './index.ts';
 import { toIsoTimestampStrict, unavailableEvidence } from './helpers.ts';
 
@@ -37,8 +36,7 @@ export async function collectIngestionSourceEvidence(
   const byId = new Map(metrics.map((m) => [m.source_id, m]));
 
   for (const entry of entries) {
-    const m = byId.get(entry.selector);
-    const m2 = m ?? [...byId.values()].find((x) => sourceWorkKey(x.source_id) === entry.key);
+    const m2 = byId.get(entry.selector);
     if (!m2) {
       out.set(entry.key, unavailableEvidence('evidence_unavailable'));
       continue;

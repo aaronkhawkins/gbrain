@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { collectAllEvidence } from '../../src/core/observability/collectors/index.ts';
 import {
   buildOperationalSnapshot,
+  buildReadOnlyOperationalSnapshot,
   serializeOperationalSnapshot,
 } from '../../src/core/observability/snapshot.ts';
+import { LATEST_VERSION } from '../../src/core/migrate.ts';
 import type {
   ExpectedWorkEntry,
   WorkEvidence,
@@ -94,5 +96,25 @@ describe('operational snapshot security posture', () => {
     });
     snapshot.warnings = result.warnings;
     expect(serializeOperationalSnapshot(snapshot)).not.toContain(secret);
+  });
+
+  test('a schema newer than this runtime is incompatible', async () => {
+    const snapshot = await buildReadOnlyOperationalSnapshot({
+      engine: {
+        kind: 'pglite',
+        getConfig: async (key: string) =>
+          key === 'version' ? String(LATEST_VERSION + 1) : null,
+        executeRaw: async () => [],
+      } as never,
+      registry: [dbWork],
+      evidenceByKey: new Map([[dbWork.key, healthy]]),
+      now: new Date('2026-07-23T12:00:00.000Z'),
+      brainId: 'ahead_schema',
+    });
+
+    expect(snapshot.items[0]).toMatchObject({
+      state: 'unknown',
+      reason: 'schema_incompatible',
+    });
   });
 });

@@ -8,6 +8,7 @@ import { collectFactEvidence } from '../../../src/core/observability/collectors/
 import { collectLinkEvidence } from '../../../src/core/observability/collectors/links.ts';
 
 const NOW = new Date('2026-07-23T12:00:00.000Z');
+const SOURCE_LABEL_KEY = 'test-brain-source-label-key';
 
 describe('observer collector query efficiency', () => {
   test('ingestion and embedding share one source-health computation per snapshot', async () => {
@@ -40,6 +41,7 @@ describe('observer collector query efficiency', () => {
     } as unknown as BrainEngine;
     const registry = buildExpectedWorkRegistry({
       sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: true,
     }).filter((entry) =>
@@ -69,6 +71,7 @@ describe('observer collector query efficiency', () => {
     } as unknown as BrainEngine;
     const entries = buildExpectedWorkRegistry({
       sourceIds: ['alpha', 'beta'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
     }).filter((entry) => entry.evidence_adapter === 'facts');
@@ -76,8 +79,8 @@ describe('observer collector query efficiency', () => {
     const result = await collectFactEvidence(entries, engine, { now: NOW });
 
     expect(calls).toBe(1);
-    expect(result.get('facts.pending.alpha')?.backlog_items).toBe(7);
-    expect(result.get('facts.pending.beta')?.backlog_items).toBe(0);
+    expect(result.get(entries.find((entry) => entry.selector === 'alpha')!.key)?.backlog_items).toBe(7);
+    expect(result.get(entries.find((entry) => entry.selector === 'beta')!.key)?.backlog_items).toBe(0);
   });
 
   test('links aggregate all source counts in one query', async () => {
@@ -93,6 +96,7 @@ describe('observer collector query efficiency', () => {
     } as unknown as BrainEngine;
     const entries = buildExpectedWorkRegistry({
       sourceIds: ['alpha', 'beta'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
     }).filter((entry) => entry.evidence_adapter === 'links');
@@ -100,8 +104,8 @@ describe('observer collector query efficiency', () => {
     const result = await collectLinkEvidence(entries, engine, { now: NOW });
 
     expect(calls).toBe(1);
-    expect(result.get('links.extraction.alpha')?.backlog_items).toBe(3);
-    expect(result.get('links.extraction.beta')?.backlog_items).toBe(1);
+    expect(result.get(entries.find((entry) => entry.selector === 'alpha')!.key)?.backlog_items).toBe(3);
+    expect(result.get(entries.find((entry) => entry.selector === 'beta')!.key)?.backlog_items).toBe(1);
   });
 
   test('a failed batch falls back to isolated source evidence', async () => {
@@ -116,14 +120,15 @@ describe('observer collector query efficiency', () => {
     } as unknown as BrainEngine;
     const entries = buildExpectedWorkRegistry({
       sourceIds: ['alpha', 'beta'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
     }).filter((entry) => entry.evidence_adapter === 'facts');
 
     const result = await collectFactEvidence(entries, engine, { now: NOW });
 
-    expect(result.get('facts.pending.alpha')?.backlog_items).toBe(4);
-    expect(result.get('facts.pending.beta')).toMatchObject({
+    expect(result.get(entries.find((entry) => entry.selector === 'alpha')!.key)?.backlog_items).toBe(4);
+    expect(result.get(entries.find((entry) => entry.selector === 'beta')!.key)).toMatchObject({
       backlog_items: null,
       force_state: 'unknown',
       force_reason: 'evidence_unavailable',

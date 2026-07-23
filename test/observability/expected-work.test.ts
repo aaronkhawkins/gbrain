@@ -7,6 +7,7 @@ import {
   evaluateWorkItem,
   assertExportableSnapshot,
   resolveEnabledDreamPhases,
+  opaqueSourceSegment,
   sourceWorkKey,
   dreamPhaseWorkKey,
   minionWorkKey,
@@ -14,6 +15,7 @@ import {
 import type { ExpectedWorkEntry, WorkEvidence } from '../../src/core/observability/types.ts';
 
 const NOW = new Date('2026-07-23T12:00:00.000Z');
+const SOURCE_LABEL_KEY = 'test-brain-source-label-key';
 
 function entry(partial: Partial<ExpectedWorkEntry> & Pick<ExpectedWorkEntry, 'key'>): ExpectedWorkEntry {
   return {
@@ -33,16 +35,17 @@ describe('buildExpectedWorkRegistry', () => {
   test('discovers source-scoped Dream/Minion work and global phases from scheduler registrations', () => {
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['wiki', 'notes'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: ['sync', 'extract_atoms', 'embed'],
     });
     const keys = reg.map((e) => e.key);
-    expect(keys).toContain(sourceWorkKey('wiki'));
-    expect(keys).toContain(sourceWorkKey('notes'));
-    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms', 'wiki'));
-    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms', 'notes'));
+    expect(keys).toContain(sourceWorkKey('wiki', SOURCE_LABEL_KEY));
+    expect(keys).toContain(sourceWorkKey('notes', SOURCE_LABEL_KEY));
+    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms', 'wiki', SOURCE_LABEL_KEY));
+    expect(keys).toContain(dreamPhaseWorkKey('extract_atoms', 'notes', SOURCE_LABEL_KEY));
     expect(keys).toContain(dreamPhaseWorkKey('embed'));
-    expect(keys).toContain(minionWorkKey('autopilot-cycle', 'wiki'));
-    expect(keys).toContain(minionWorkKey('autopilot-cycle', 'notes'));
+    expect(keys).toContain(minionWorkKey('autopilot-cycle', 'wiki', SOURCE_LABEL_KEY));
+    expect(keys).toContain(minionWorkKey('autopilot-cycle', 'notes', SOURCE_LABEL_KEY));
     expect(keys).toContain(minionWorkKey('autopilot-global-maintenance'));
     expect(keys).not.toContain(minionWorkKey('embed-backfill'));
     expect(keys).toContain('embedding.coverage');
@@ -53,19 +56,60 @@ describe('buildExpectedWorkRegistry', () => {
   test('adds generic fact/link evidence for each source', () => {
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
     });
+    const sourceSegment = opaqueSourceSegment('wiki', SOURCE_LABEL_KEY);
     expect(reg).toContainEqual(expect.objectContaining({
-      key: 'facts.pending.wiki',
+      key: `facts.pending.${sourceSegment}`,
       evidence_adapter: 'facts',
       selector: 'wiki',
     }));
     expect(reg).toContainEqual(expect.objectContaining({
-      key: 'links.extraction.wiki',
+      key: `links.extraction.${sourceSegment}`,
       evidence_adapter: 'links',
       selector: 'wiki',
     }));
+  });
+
+  test('uses global Dream scope when the scheduler emits its unscoped fallback', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: ['default'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      scheduledSourceIds: [],
+      enabledDreamPhases: ['sync'],
+      includeInfrastructure: false,
+    });
+
+    expect(reg).toContainEqual(expect.objectContaining({
+      key: dreamPhaseWorkKey('sync'),
+      scope: { type: 'global' },
+    }));
+    expect(reg).not.toContainEqual(expect.objectContaining({
+      scope: { type: 'source', source_id: 'default' },
+      kind: 'dream_phase',
+    }));
+  });
+
+  test('source-derived exported keys are stable, brain-keyed, and opaque', () => {
+    const sensitiveSourceId = 'client-secret-project';
+    const first = opaqueSourceSegment(sensitiveSourceId, 'brain-a-key');
+    const repeated = opaqueSourceSegment(sensitiveSourceId, 'brain-a-key');
+    const otherBrain = opaqueSourceSegment(sensitiveSourceId, 'brain-b-key');
+
+    expect(first).toBe(repeated);
+    expect(first).not.toBe(otherBrain);
+    expect(first).toMatch(/^s_[a-f0-9]{16}$/);
+    expect(first).not.toContain('client');
+
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: [sensitiveSourceId],
+      sourceLabelKey: 'brain-a-key',
+      enabledDreamPhases: ['sync'],
+      includeInfrastructure: false,
+    });
+    expect(JSON.stringify(reg.map((item) => item.key))).not.toContain(sensitiveSourceId);
   });
 
   test('discovery failures remain visible as partial unknown axes', () => {
@@ -127,9 +171,10 @@ describe('buildExpectedWorkRegistry', () => {
   });
 
   test('policy override can disable a required item', () => {
-    const key = sourceWorkKey('wiki');
+    const key = sourceWorkKey('wiki', SOURCE_LABEL_KEY);
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
       observability: {
@@ -208,6 +253,26 @@ describe('evaluateWorkItem cadence', () => {
     const obs = evaluateWorkItem(e, null, NOW);
     expect(obs.state).toBe('disabled');
   });
+
+  test('a soft degraded hint cannot mask a required missed cadence failure', () => {
+    const e = entry({
+      key: 'minion.job',
+      cadence_seconds: 3600,
+      grace_seconds: 1800,
+    });
+    const obs = evaluateWorkItem(e, {
+      last_attempt_at: '2026-07-23T11:00:00.000Z',
+      last_success_at: '2026-07-23T08:00:00.000Z',
+      backlog_items: 1,
+      oldest_pending_age_seconds: 7200,
+      recent_failures: 0,
+      force_state: 'degraded',
+      force_reason: 'stalled',
+    }, NOW);
+
+    expect(obs.state).toBe('failed');
+    expect(obs.reason).toBe('missed_cadence');
+  });
 });
 
 describe('assertExportableSnapshot', () => {
@@ -248,5 +313,33 @@ describe('resolveEnabledDreamPhases', () => {
     expect(phases).toContain('extract_atoms');
     expect(phases).toContain('skillopt');
     expect(phases).not.toContain('enrich_thin');
+  });
+
+  test('omits synthesis without a corpus and honors runtime opt-in gates', () => {
+    const defaults = resolveEnabledDreamPhases({
+      packPhases: [],
+      phaseEnabled: {},
+      synthesizeCorpusConfigured: false,
+    });
+    expect(defaults).not.toContain('synthesize');
+    expect(defaults).not.toContain('conversation_facts_backfill');
+    expect(defaults).toContain('patterns');
+
+    const optedIn = resolveEnabledDreamPhases({
+      packPhases: [],
+      phaseEnabled: {
+        synthesize: true,
+        conversation_facts_backfill: true,
+        enrich_thin: true,
+        skillopt: true,
+      },
+      synthesizeCorpusConfigured: false,
+    });
+    expect(optedIn).toEqual(expect.arrayContaining([
+      'synthesize',
+      'conversation_facts_backfill',
+      'enrich_thin',
+      'skillopt',
+    ]));
   });
 });
