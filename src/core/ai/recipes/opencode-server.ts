@@ -21,7 +21,7 @@ export const opencodeServer: Recipe = {
   },
   touchpoints: {
     chat: {
-      models: ['gpt-5.5', 'gpt-5.5-fast', 'gpt-5.4', 'gpt-5.4-mini'],
+      models: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.5-fast', 'gpt-5.4', 'gpt-5.4-mini'],
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,
@@ -29,7 +29,7 @@ export const opencodeServer: Recipe = {
       price_last_verified: '2026-07-10',
     },
     expansion: {
-      models: ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'],
+      models: ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol'],
       price_last_verified: '2026-07-10',
     },
   },

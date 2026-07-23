@@ -62,7 +62,7 @@ describe('opencode-server recipe', () => {
     expect(recipe?.implementation).toBe('opencode-server');
     expect(recipe?.touchpoints.chat?.supports_tools).toBe(true);
     expect(recipe?.touchpoints.chat?.supports_subagent_loop).toBe(true);
-    expect(recipe?.touchpoints.chat?.models).toContain('gpt-5.5');
+    expect(recipe?.touchpoints.chat?.models).toContain('gpt-5.6-sol');
     expect(recipe?.touchpoints.expansion?.models).toContain('gpt-5.4-mini');
   });
 });
