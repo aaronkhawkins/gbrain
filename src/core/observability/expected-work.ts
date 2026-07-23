@@ -20,6 +20,7 @@ import type {
   WorkEvidence,
   WorkObservation,
   WorkPolicyOverride,
+  RegisteredProcessorWork,
 } from './types.ts';
 import { createHmac } from 'node:crypto';
 import {
@@ -141,6 +142,7 @@ export interface RegistryInput {
   scheduledSourceIds?: string[];
   /** Scheduler registrations/cadence. Defaults to the native autopilot registry. */
   recurringMinions?: RecurringMinionRegistration[];
+  registeredProcessors?: RegisteredProcessorWork[];
   /** Axes that could not be discovered and must stay visibly unknown. */
   discoveryFailures?: DiscoveryAxis[];
   /** Config-disabled phases (explicit off). */
@@ -322,6 +324,24 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
       selector: 'autopilot',
       repair_runbook: 'observer-missing',
     }, obs.work?.['runtime.autopilot']));
+  }
+
+  for (const processor of input.registeredProcessors ?? []) {
+    const key = `processor.${sanitizeWorkSegment(processor.key)}`;
+    entries.push(applyOverride({
+      key,
+      kind: 'content_processor',
+      enabled: processor.enabled,
+      required: processor.required,
+      criticality: processor.required ? 'required' : 'optional',
+      cadence_seconds: processor.cadence_seconds,
+      grace_seconds: processor.grace_seconds,
+      evidence_adapter: 'processing_receipt',
+      selector: processor.key,
+      backlog_warn: processor.backlog_warn ?? undefined,
+      backlog_fail: processor.backlog_fail ?? undefined,
+      repair_runbook: processor.runbook,
+    }, obs.work?.[key]));
   }
 
   for (const ext of obs.external_work ?? []) {

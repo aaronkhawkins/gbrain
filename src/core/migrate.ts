@@ -5779,6 +5779,55 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 127,
+    name: 'generic_processing_receipts',
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS processing_registrations (
+        processor_key VARCHAR(64) PRIMARY KEY,
+        processor_version VARCHAR(32) NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        cadence_seconds INTEGER NOT NULL CHECK (cadence_seconds >= 60),
+        grace_seconds INTEGER NOT NULL DEFAULT 0 CHECK (grace_seconds >= 0),
+        backlog_warn INTEGER CHECK (backlog_warn IS NULL OR backlog_warn >= 0),
+        backlog_fail INTEGER CHECK (backlog_fail IS NULL OR backlog_fail >= 0),
+        runbook VARCHAR(64) NOT NULL,
+        repair_job_name VARCHAR(64),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (backlog_warn IS NULL OR backlog_fail IS NULL OR backlog_warn <= backlog_fail)
+      );
+
+      CREATE TABLE IF NOT EXISTS processing_receipts (
+        id BIGSERIAL PRIMARY KEY,
+        processor_key VARCHAR(64) NOT NULL REFERENCES processing_registrations(processor_key) ON DELETE CASCADE,
+        processor_version VARCHAR(32) NOT NULL,
+        scope_id VARCHAR(128) NOT NULL,
+        input_fingerprint CHAR(64) NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+        outcome VARCHAR(16) NOT NULL DEFAULT 'running'
+          CHECK (outcome IN ('running','completed','partial','failed','skipped')),
+        started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at TIMESTAMPTZ,
+        input_count INTEGER NOT NULL DEFAULT 0 CHECK (input_count >= 0),
+        output_count INTEGER NOT NULL DEFAULT 0 CHECK (output_count >= 0),
+        backlog_count INTEGER CHECK (backlog_count IS NULL OR backlog_count >= 0),
+        reason_code VARCHAR(48),
+        lineage_kind VARCHAR(64),
+        lineage_id VARCHAR(128),
+        repair_job_id BIGINT REFERENCES minion_jobs(id) ON DELETE SET NULL,
+        UNIQUE (processor_key, processor_version, scope_id, input_fingerprint)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_processing_receipts_observer
+        ON processing_receipts (processor_key, finished_at DESC, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_processing_receipts_running
+        ON processing_receipts (processor_key, started_at)
+        WHERE outcome = 'running';
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

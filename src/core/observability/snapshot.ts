@@ -36,6 +36,7 @@ import {
 } from '../minions/recurring-work.ts';
 import { withObserverReadOnlyEngine } from './read-only-engine.ts';
 import { LATEST_VERSION } from '../migrate.ts';
+import { listProcessingRegistrations } from '../processing-receipts.ts';
 
 export interface BuildOperationalSnapshotOpts {
   engine: BrainEngine | null;
@@ -212,6 +213,7 @@ export async function discoverRegistryInput(
     synthesizeCorpusConfigured,
   });
   let globalFloorMinutes = AUTOPILOT_GLOBAL_FLOOR_MINUTES;
+  let registeredProcessors: RegistryInput['registeredProcessors'] = [];
   if (engine) {
     try {
       const raw = await engine.getConfig(AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY);
@@ -219,6 +221,21 @@ export async function discoverRegistryInput(
       if (Number.isFinite(parsed) && parsed >= 1) globalFloorMinutes = parsed;
     } catch {
       // The scheduler registration still exists; use its native default.
+    }
+    try {
+      registeredProcessors = (await listProcessingRegistrations(engine)).map((row) => ({
+        key: row.processor_key,
+        version: row.processor_version,
+        enabled: row.enabled,
+        required: row.required,
+        cadence_seconds: row.cadence_seconds,
+        grace_seconds: row.grace_seconds,
+        backlog_warn: row.backlog_warn,
+        backlog_fail: row.backlog_fail,
+        runbook: row.runbook,
+      }));
+    } catch {
+      // Older schemas have no generic processor registry.
     }
   }
 
@@ -233,6 +250,7 @@ export async function discoverRegistryInput(
       scheduledSourceIds,
       globalFloorMinutes,
     }),
+    registeredProcessors,
     discoveryFailures,
     observability,
     includeInfrastructure: true,

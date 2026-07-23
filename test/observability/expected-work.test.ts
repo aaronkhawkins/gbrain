@@ -73,6 +73,32 @@ describe('buildExpectedWorkRegistry', () => {
     }));
   });
 
+  test('discovers registered processors without processor-specific observer code', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: [],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+      registeredProcessors: [{
+        key: 'fixture.expand',
+        version: '1',
+        enabled: true,
+        required: false,
+        cadence_seconds: 3600,
+        grace_seconds: 300,
+        backlog_warn: 10,
+        backlog_fail: 100,
+        runbook: 'missed-work',
+      }],
+    });
+    expect(reg).toContainEqual(expect.objectContaining({
+      key: 'processor.fixture.expand',
+      evidence_adapter: 'processing_receipt',
+      selector: 'fixture.expand',
+      backlog_warn: 10,
+      backlog_fail: 100,
+    }));
+  });
+
   test('uses global Dream scope when the scheduler emits its unscoped fallback', () => {
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['default'],

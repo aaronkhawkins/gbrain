@@ -23,6 +23,7 @@ import { collectFactEvidence } from './facts.ts';
 import { collectLinkEvidence } from './links.ts';
 import { collectExtractRollupEvidence } from './extract-rollup.ts';
 import { collectDiscoveryEvidence } from './discovery.ts';
+import { collectProcessingReceiptEvidence } from './processing-receipt.ts';
 import {
   sourceIdsForScope,
   unavailableEvidence,
@@ -85,6 +86,7 @@ const ADAPTERS: Record<string, AdapterFn> = {
   facts: collectFactEvidence,
   links: collectLinkEvidence,
   extract_rollup: collectExtractRollupEvidence,
+  processing_receipt: collectProcessingReceiptEvidence,
   discovery: collectDiscoveryEvidence,
 };
 

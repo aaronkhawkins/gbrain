@@ -55,6 +55,7 @@ export const EVIDENCE_ADAPTERS = [
   'facts',
   'links',
   'extract_rollup',
+  'processing_receipt',
   'discovery',
   'none',
 ] as const;
@@ -200,6 +201,19 @@ export interface ExternalWorkDeclaration {
     source_id?: string;
   };
   note?: string;
+}
+
+/** Durable, content-free processor registration discovered from the brain DB. */
+export interface RegisteredProcessorWork {
+  key: string;
+  version: string;
+  enabled: boolean;
+  required: boolean;
+  cadence_seconds: number;
+  grace_seconds: number;
+  backlog_warn: number | null;
+  backlog_fail: number | null;
+  runbook: string;
 }
 
 export const OPERATIONAL_SNAPSHOT_SCHEMA_VERSION = 1 as const;
