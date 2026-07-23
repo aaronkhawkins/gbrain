@@ -211,6 +211,21 @@ describe('v0.41.2.1: discoverExtractablePages SQL contract', () => {
     expect(discovered.map((page) => page.slug)).toEqual(['media/x/bookmark']);
   });
 
+  test('honors an explicit atom-extraction opt-out', async () => {
+    await seedPage({
+      slug: 'source/metadata-only',
+      type: 'source',
+      frontmatter: { atom_extraction: false },
+    });
+    await seedPage({
+      slug: 'source/extractable',
+      type: 'source',
+    });
+
+    const discovered = await discoverExtractablePages(engine, 'default');
+    expect(discovered.map((page) => page.slug)).toEqual(['source/extractable']);
+  });
+
   test('NOT EXISTS subquery skips pages whose source_hash has existing atoms', async () => {
     // Page content_hash is 20 chars; substring(from 1 for 16) yields the
     // first 16 chars. The seeded atom must carry exactly those 16 chars

@@ -32,6 +32,13 @@ export function classifyExtractionCandidate(candidate: ExtractionCandidate): Ext
   if (!EXTRACTABLE_PAGE_TYPES.includes(candidate.type as typeof EXTRACTABLE_PAGE_TYPES[number])) {
     return { eligible: false };
   }
+  const atomExtraction = candidate.frontmatter?.atom_extraction;
+  if (
+    atomExtraction === false ||
+    (typeof atomExtraction === 'string' && atomExtraction.toLowerCase() === 'false')
+  ) {
+    return { eligible: false };
+  }
   const facts = normalizeResearchProvenance(candidate.frontmatter);
   const birdclawOwned = facts.intakeAdapter === BIRDCLAW_INTAKE_ADAPTER;
   const researchBookmark = birdclawOwned &&
@@ -46,13 +53,16 @@ export function classifyExtractionCandidate(candidate: ExtractionCandidate): Ext
 /** SQL equivalent of classifyExtractionCandidate; keep callers from drifting. */
 export function extractionAdmissionSql(alias = 'p'): string {
   return `(
-    (${alias}.type <> 'media'
-      AND COALESCE(${alias}.frontmatter->>'intake_adapter', '') <> '${BIRDCLAW_INTAKE_ADAPTER}')
-    OR (
-      ${alias}.type = 'media'
-      AND ${alias}.frontmatter->>'intake_adapter' = '${BIRDCLAW_INTAKE_ADAPTER}'
-      AND ${alias}.frontmatter->>'content_kind' = '${BIRDCLAW_BOOKMARK_KIND}'
-      AND lower(COALESCE(${alias}.frontmatter->>'concept_synthesis_candidate', '')) = 'true'
+    lower(COALESCE(${alias}.frontmatter->>'atom_extraction', 'true')) <> 'false'
+    AND (
+      (${alias}.type <> 'media'
+        AND COALESCE(${alias}.frontmatter->>'intake_adapter', '') <> '${BIRDCLAW_INTAKE_ADAPTER}')
+      OR (
+        ${alias}.type = 'media'
+        AND ${alias}.frontmatter->>'intake_adapter' = '${BIRDCLAW_INTAKE_ADAPTER}'
+        AND ${alias}.frontmatter->>'content_kind' = '${BIRDCLAW_BOOKMARK_KIND}'
+        AND lower(COALESCE(${alias}.frontmatter->>'concept_synthesis_candidate', '')) = 'true'
+      )
     )
   )`;
 }

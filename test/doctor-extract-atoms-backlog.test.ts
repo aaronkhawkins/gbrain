@@ -77,6 +77,17 @@ describe('countExtractAtomsBacklog (issue #1678)', () => {
     expect(await countExtractAtomsBacklog(engine)).toBe(0);
   });
 
+  it('ignores pages explicitly opted out of atom extraction', async () => {
+    await engine.putPage('source-metadata-only', {
+      type: 'source',
+      title: 'metadata only',
+      compiled_truth: BODY,
+      frontmatter: { atom_extraction: false },
+    });
+    expect(await countExtractAtomsBacklog(engine)).toBe(0);
+    expect(await countExtractAtomsBacklog(engine, 'default')).toBe(0);
+  });
+
   it('counts marked media with the same eligibility rule as discovery', async () => {
     await engine.putPage('media/x/bookmark', {
       type: 'media', title: 'bookmark', compiled_truth: BODY,
