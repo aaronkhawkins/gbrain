@@ -9,6 +9,12 @@
 import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import {
+  newestIso,
+  parseJsonRecord,
+  toIsoTimestamp,
+  unavailableEvidence,
+} from './helpers.ts';
 
 export const MINION_ATTEMPT_HISTORY_LIMIT = 100;
 
@@ -29,30 +35,15 @@ interface BacklogRow {
   created_at: string | Date | null;
 }
 
-function iso(value: string | Date | null | undefined): string | null {
-  if (!value) return null;
-  const parsed = value instanceof Date ? value : new Date(value);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
-}
-
 function eventIso(row: JobEvidenceRow): string | null {
-  return iso(row.finished_at) ?? iso(row.started_at) ?? iso(row.updated_at) ?? iso(row.created_at);
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
-    } catch {
-      return null;
-    }
-  }
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  return toIsoTimestamp(row.finished_at) ??
+    toIsoTimestamp(row.started_at) ??
+    toIsoTimestamp(row.updated_at) ??
+    toIsoTimestamp(row.created_at);
 }
 
 function jobSourceId(data: unknown): string | null {
-  const record = asRecord(data);
+  const record = parseJsonRecord(data);
   const source = record?.source_id ?? record?.sourceId;
   return typeof source === 'string' ? source : null;
 }
@@ -74,7 +65,12 @@ export async function collectMinionJobEvidence(
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
-    for (const entry of entries) out.set(entry.key, unknownEvidence('db_unreachable'));
+    for (const entry of entries) {
+      out.set(
+        entry.key,
+        unavailableEvidence('db_unreachable', { recent_failures: 0 }),
+      );
+    }
     return out;
   }
 
@@ -133,7 +129,12 @@ export async function collectMinionJobEvidence(
         ));
       }
     } catch {
-      for (const entry of entries) out.set(entry.key, unknownEvidence('evidence_unavailable'));
+      for (const entry of entries) {
+        out.set(
+          entry.key,
+          unavailableEvidence('evidence_unavailable', { recent_failures: 0 }),
+        );
+      }
       return out;
     }
   }
@@ -143,9 +144,9 @@ export async function collectMinionJobEvidence(
     const scopedBacklog = backlogRows.filter((row) =>
       ['waiting', 'active', 'delayed', 'waiting-children', 'paused'].includes(row.status) &&
       matchesEntry(row as JobEvidenceRow, entry));
-    const lastAttempt = newest(scopedAttempts.map(eventIso));
+    const lastAttempt = newestIso(scopedAttempts.map(eventIso));
     const successful = scopedAttempts.filter((row) => row.status === 'completed');
-    const lastSuccess = newest(successful.map(eventIso));
+    const lastSuccess = newestIso(successful.map(eventIso));
     const successMs = lastSuccess ? new Date(lastSuccess).getTime() : Number.NEGATIVE_INFINITY;
     const failureCutoffMs = opts.now.getTime() - 24 * 60 * 60 * 1000;
     const unsupersededFailures = scopedAttempts.filter((row) => {
@@ -157,7 +158,7 @@ export async function collectMinionJobEvidence(
     });
     const unsupersededDead = unsupersededFailures.some((row) => row.status === 'dead');
     const oldestPendingMs = scopedBacklog.reduce<number | null>((oldest, row) => {
-      const timestamp = iso(row.created_at);
+      const timestamp = toIsoTimestamp(row.created_at);
       if (!timestamp) return oldest;
       const value = new Date(timestamp).getTime();
       return oldest === null || value < oldest ? value : oldest;
@@ -167,7 +168,13 @@ export async function collectMinionJobEvidence(
       : Math.max(0, Math.floor((opts.now.getTime() - oldestPendingMs) / 1000));
 
     if (scopedAttempts.length === 0 && scopedBacklog.length === 0) {
-      out.set(entry.key, unknownEvidence('evidence_unavailable', 0));
+      out.set(
+        entry.key,
+        unavailableEvidence('evidence_unavailable', {
+          backlog_items: 0,
+          recent_failures: 0,
+        }),
+      );
       continue;
     }
 
@@ -188,27 +195,4 @@ export async function collectMinionJobEvidence(
   }
 
   return out;
-}
-
-function newest(values: Array<string | null>): string | null {
-  let newestValue: string | null = null;
-  for (const value of values) {
-    if (value && (!newestValue || value > newestValue)) newestValue = value;
-  }
-  return newestValue;
-}
-
-function unknownEvidence(
-  reason: 'db_unreachable' | 'evidence_unavailable',
-  backlog: number | null = null,
-): WorkEvidence {
-  return {
-    last_attempt_at: null,
-    last_success_at: null,
-    backlog_items: backlog,
-    oldest_pending_age_seconds: null,
-    recent_failures: 0,
-    force_state: 'unknown',
-    force_reason: reason,
-  };
 }

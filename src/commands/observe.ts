@@ -20,7 +20,6 @@ import {
   assertSafeBind,
   assertObserverTiming,
 } from '../core/observability/observer-server.ts';
-import type { ObservabilityConfig } from '../core/observability/types.ts';
 
 export const OBSERVE_HELP = `gbrain observe — per-brain operational observer
 
@@ -46,8 +45,8 @@ function parseFlag(args: string[], name: string): string | undefined {
   return undefined;
 }
 
-function readObs(cfg: GBrainConfig | null): ObservabilityConfig {
-  return (cfg as { observability?: ObservabilityConfig } | null)?.observability ?? {};
+function readObs(cfg: GBrainConfig | null): NonNullable<GBrainConfig['observability']> {
+  return cfg?.observability ?? {};
 }
 
 export interface RunObserveResult {
@@ -81,8 +80,6 @@ export async function runObserve(
   const cfg = loadConfig();
 
   if (sub === 'snapshot') {
-    const json = rest.includes('--json') || true; // always JSON for machine use
-    void json;
     try {
       const snap = await buildReadOnlyOperationalSnapshot({
         engine,

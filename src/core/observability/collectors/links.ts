@@ -6,6 +6,7 @@ import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from '../../link-extraction.ts';
+import { unavailableEvidence } from './helpers.ts';
 
 export async function collectLinkEvidence(
   entries: ExpectedWorkEntry[],
@@ -14,7 +15,7 @@ export async function collectLinkEvidence(
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
-    for (const entry of entries) out.set(entry.key, unknownEvidence('db_unreachable'));
+    for (const entry of entries) out.set(entry.key, unavailableEvidence('db_unreachable'));
     return out;
   }
 
@@ -32,22 +33,8 @@ export async function collectLinkEvidence(
         recent_failures: 0,
       });
     } catch {
-      out.set(entry.key, unknownEvidence('evidence_unavailable'));
+      out.set(entry.key, unavailableEvidence('evidence_unavailable'));
     }
   }
   return out;
-}
-
-function unknownEvidence(
-  reason: 'db_unreachable' | 'evidence_unavailable',
-): WorkEvidence {
-  return {
-    last_attempt_at: null,
-    last_success_at: null,
-    backlog_items: null,
-    oldest_pending_age_seconds: null,
-    recent_failures: null,
-    force_state: 'unknown',
-    force_reason: reason,
-  };
 }

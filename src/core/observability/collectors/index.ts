@@ -21,6 +21,10 @@ import { collectFactEvidence } from './facts.ts';
 import { collectLinkEvidence } from './links.ts';
 import { collectExtractRollupEvidence } from './extract-rollup.ts';
 import { collectDiscoveryEvidence } from './discovery.ts';
+import {
+  unavailableEvidence,
+  unavailableEvidenceMap,
+} from './helpers.ts';
 
 export interface CollectAllOpts {
   engine: BrainEngine | null;
@@ -89,16 +93,8 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
     if (remaining <= 0) {
       partial = true;
       warn('collector_timeout');
-      for (const e of entries) {
-        evidence.set(e.key, {
-          last_attempt_at: null,
-          last_success_at: null,
-          backlog_items: null,
-          oldest_pending_age_seconds: null,
-          recent_failures: null,
-          force_state: 'unknown',
-          force_reason: 'collector_timeout',
-        });
+      for (const [key, value] of unavailableEvidenceMap(entries, 'collector_timeout')) {
+        evidence.set(key, value);
       }
       continue;
     }
@@ -118,21 +114,12 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
       const result = await withTimeout(
         adapter(entries, opts.engine, { config: opts.config, now }),
         remaining,
-        adapterId,
       );
       if (result === 'timeout') {
         partial = true;
         warn('collector_timeout');
-        for (const e of entries) {
-          evidence.set(e.key, {
-            last_attempt_at: null,
-            last_success_at: null,
-            backlog_items: null,
-            oldest_pending_age_seconds: null,
-            recent_failures: null,
-            force_state: 'unknown',
-            force_reason: 'collector_timeout',
-          });
+        for (const [key, value] of unavailableEvidenceMap(entries, 'collector_timeout')) {
+          evidence.set(key, value);
         }
       } else {
         for (const [k, v] of result) evidence.set(k, v);
@@ -142,15 +129,10 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
       opts.onCollectorError?.(adapterId, err);
       warn('collector_failed');
       for (const e of entries) {
-        evidence.set(e.key, {
-          last_attempt_at: null,
-          last_success_at: null,
-          backlog_items: null,
-          oldest_pending_age_seconds: null,
-          recent_failures: null,
-          force_state: 'unknown',
-          force_reason: opts.engine ? 'evidence_unavailable' : 'db_unreachable',
-        });
+        evidence.set(
+          e.key,
+          unavailableEvidence(opts.engine ? 'evidence_unavailable' : 'db_unreachable'),
+        );
       }
     }
   }
@@ -161,7 +143,6 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
 async function withTimeout<T>(
   p: Promise<T>,
   ms: number,
-  _label: string,
 ): Promise<T | 'timeout'> {
   if (ms <= 0) return 'timeout';
   let timer: ReturnType<typeof setTimeout> | undefined;

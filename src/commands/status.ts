@@ -40,8 +40,8 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
-import { existsSync, readFileSync } from 'node:fs';
-import { gbrainPath, loadConfig, isThinClient } from '../core/config.ts';
+import { loadConfig, isThinClient } from '../core/config.ts';
+import { readAutopilotLockStatus } from '../core/autopilot-status.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { VERSION } from '../version.ts';
 import {
@@ -320,31 +320,7 @@ function buildWorkerSummary(): WorkerSummary {
 }
 
 function buildAutopilotStatus(): AutopilotStatus {
-  const lockPath = gbrainPath('autopilot.lock');
-  const lockfile_present = existsSync(lockPath);
-  let pid: number | null = null;
-  let running = false;
-  if (lockfile_present) {
-    try {
-      const raw = readFileSync(lockPath, 'utf-8').trim();
-      const parsed = parseInt(raw, 10);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        pid = parsed;
-        try {
-          // kill -0 probes liveness without sending a real signal. Throws ESRCH
-          // if the PID is gone, EPERM if alive but owned by another user (which
-          // still tells us "something with that PID exists").
-          process.kill(parsed, 0);
-          running = true;
-        } catch (err) {
-          const code = (err as NodeJS.ErrnoException).code;
-          running = code === 'EPERM';
-        }
-      }
-    } catch {
-      /* unreadable lockfile, leave pid=null/running=false */
-    }
-  }
+  const { lockfile_present, pid, running } = readAutopilotLockStatus();
   return {
     installed: lockfile_present, // installed-or-running proxy; daemons writing the lock are installed
     lockfile_present,

@@ -1885,15 +1885,6 @@ async function handleCliOnly(command: string, args: string[]) {
         setCliExitVerdict(result.exitCode);
         break;
       }
-      // Phase 1A — also reachable via the pre-switch probeOnly path above.
-      // Kept here so --help-less dispatch through the generic switch stays
-      // consistent if the early return is bypassed in tests.
-      case 'observe': {
-        const { runObserve } = await import('./commands/observe.ts');
-        const result = await runObserve(engine, args);
-        setCliExitVerdict(result.exitCode);
-        break;
-      }
       // v0.43 (#2180) — `gbrain advisor`: ranked, read-only "what to do next".
       // CLI surface; the same signals are exposed over MCP via the `advisor` op.
       case 'advisor': {
