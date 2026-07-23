@@ -125,6 +125,20 @@ describe('resolveRequestedScope — default (no param)', () => {
     expect(resolveRequestedScope(ctxOf({ remote: true, sourceId: 'a' }), undefined)).toEqual({ sourceId: 'a' });
   });
 
+  test('remote empty grant without scalar binding is denied, never widened to all', () => {
+    const ctx = ctxOf({
+      remote: true,
+      sourceId: '',
+      auth: { token: 't', clientId: 'c', scopes: [], allowedSources: [] } as any,
+    });
+    expect(() => resolveRequestedScope(ctx, undefined)).toThrow(OperationError);
+    try {
+      resolveRequestedScope(ctx, undefined);
+    } catch (e) {
+      expect((e as OperationError).code).toBe('permission_denied');
+    }
+  });
+
   test('malformed scalar or federated context fails closed', () => {
     expect(() => resolveRequestedScope(ctxOf({ sourceId: '../a' }), undefined)).toThrow(OperationError);
     const badGrant = ctxOf({ auth: { allowedSources: ['a', 'bad/source'] } as OperationContext['auth'] });

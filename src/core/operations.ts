@@ -474,6 +474,13 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
     }
     return { sourceId: ctx.sourceId };
   }
+  if (ctx.remote !== false) {
+    throw new OperationError(
+      'permission_denied',
+      'The remote caller has no source in scope.',
+      'Bind the caller to a source or grant at least one federated source.',
+    );
+  }
   return {};
 }
 
