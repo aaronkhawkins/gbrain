@@ -6,7 +6,10 @@
 // child reporter — phases receive the SAME reporter and only call tick
 // / heartbeat (cycle.ts owns start / finish).
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { runPhaseExtractAtoms } from '../../src/core/cycle/extract-atoms.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
@@ -14,6 +17,7 @@ import type { ProgressReporter } from '../../src/core/progress.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
+let brainDir: string;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -27,6 +31,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-extract-progress-'));
+});
+
+afterEach(() => {
+  rmSync(brainDir, { recursive: true, force: true });
 });
 
 function makeMockReporter(): {
@@ -72,6 +81,7 @@ describe('extract_atoms progress wiring (T4)', () => {
       _pages: [],
       _chat: stubChat(validAtomJson),
       progress: reporter,
+      brainDir,
     });
     const startEvents = events.filter(e => e.kind === 'start');
     const finishEvents = events.filter(e => e.kind === 'finish');
@@ -89,6 +99,7 @@ describe('extract_atoms progress wiring (T4)', () => {
       _pages: [],
       _chat: stubChat('[]'),
       progress: reporter,
+      brainDir,
     });
     const heartbeats = events.filter(e => e.kind === 'heartbeat');
     expect(heartbeats.length).toBeGreaterThanOrEqual(1);
@@ -111,6 +122,7 @@ describe('extract_atoms progress wiring (T4)', () => {
       _pages: [],
       _chat: stubChat(validAtomJson),
       progress: reporter,
+      brainDir,
     });
     const ticks = events.filter(e => e.kind === 'tick');
     expect(ticks.length).toBe(3);

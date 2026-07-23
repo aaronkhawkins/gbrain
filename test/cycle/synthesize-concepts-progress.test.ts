@@ -4,7 +4,10 @@
 // concept-group loop (one tick per concept written). Cycle.ts owns
 // start/finish; phase only ticks.
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
@@ -12,6 +15,7 @@ import type { ProgressReporter } from '../../src/core/progress.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
+let brainDir: string;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -25,6 +29,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-synthesize-progress-'));
+});
+
+afterEach(() => {
+  rmSync(brainDir, { recursive: true, force: true });
 });
 
 function makeMockReporter(): {
@@ -64,6 +73,7 @@ describe('synthesize_concepts progress wiring (T4)', () => {
       ],
       _chat: stubChat('narrative text'),
       progress: reporter,
+      brainDir,
     });
     expect(events.filter(e => e.kind === 'start').length).toBe(0);
     expect(events.filter(e => e.kind === 'finish').length).toBe(0);
@@ -80,6 +90,7 @@ describe('synthesize_concepts progress wiring (T4)', () => {
       ],
       _chat: stubChat('narrative text'),
       progress: reporter,
+      brainDir,
     });
     const ticks = events.filter(e => e.kind === 'tick');
     // Two concept groups, each ≥2 atoms → both qualify for synthesis
