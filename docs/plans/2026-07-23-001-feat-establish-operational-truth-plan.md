@@ -13,12 +13,11 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** Make every production GBrain report whether its critical capabilities are working continuously, with fleet and per-brain views, bounded alerts, and stage-specific evidence that does not expose knowledge content.
-- **Authority:** Product behavior comes from R16-R19 and AE5-AE6 in `docs/brainstorms/2026-07-22-001-gbrain-knowledge-runtime-requirements.md`; phase sequencing and the MVP capability set come from `docs/roadmaps/2026-07-22-001-gbrain-knowledge-runtime-roadmap.md`.
-- **Entry gate:** The Phase 0 managed-fork release is accepted. A brain's semantic-retrieval canary cannot count as operational truth until its embedding cohort passes `docs/plans/2026-07-22-003-refactor-rebuild-embedding-cohorts-plan.md`.
-- **Execution profile:** Build contracts and collectors before transport or presentation, prove them with deterministic fixtures, then deploy one read-only observer and activate alerts only after fault injection demonstrates bounded behavior.
-- **Stop conditions:** Stop rollout on wrong brain/build/source identity, sensitive-content emission, unbounded metric cardinality, any observer mutation, any canary-runner mutation outside an explicitly authorized synthetic canary, or a dashboard state that disagrees with the underlying capability receipt.
-- **Tail ownership:** Checked-in capability definitions, dashboards, alert rules, tests, and generic runbooks live in this repository. Credentials, real brain names, endpoints, notification routes, and deployment mappings remain private operator configuration.
+- **Objective:** Give Aaron one reliable Grafana view showing whether every configured brain and every expected recurring GBrain activity is working, with Mattermost notification when a sustained failure occurs.
+- **First delivery:** Phase 1A is an operational scoreboard built from existing GBrain evidence. It does not require synthetic transactions, a new canary framework, or a new general monitoring agent.
+- **Architecture boundary:** GBrain owns the operational meaning and emits a content-free snapshot. Prometheus transports and retains metrics; Grafana displays them; Grafana-managed alerting notifies.
+- **Deployment:** One native GBrain observer process runs per brain on the GBrain host. Prometheus and Grafana remain on `akhserver01` and are provisioned through the `akh-homelab` repository.
+- **Stop conditions:** Stop if metrics expose knowledge content or credentials, a collector bypasses GBrain domain services with duplicated SQL, one observer can access multiple protected brains, or Grafana/Prometheus starts defining health independently of GBrain.
 
 ---
 
@@ -26,105 +25,126 @@ execution: code
 
 ### Summary
 
-Phase 1 establishes a content-free operational surface that answers whether intake freshness, Minion execution, Dream processing, embedding readiness, and hybrid retrieval work for each brain. It replaces interpretation of changing Doctor scores with stable capability states, repeatable deployed-path canaries, and actionable fleet alerts.
+Phase 1A adds a native, read-only operational projection to GBrain. It answers whether the brain is reachable, registered sources are healthy, enabled recurring work happened, queues are progressing, Dream phases completed, embeddings are ready, and configured content-processing paths are current.
+
+The first release intentionally reports existing truth. It does not attempt automatic repair. Missing evidence is shown as `unknown` with an actionable reason instead of being inferred as healthy.
 
 ### Problem Frame
 
-GBrain already exposes component evidence through `gbrain status --json`, Doctor checks, source health, queue statistics, build receipts, and search telemetry. Those surfaces were designed independently and do not share stable capability identities, state semantics, reason codes, or freshness rules. An operator can therefore see healthy components while a user-visible path is degraded, or receive a composite score that changes without revealing whether an important capability stopped working.
+GBrain already stores most of the evidence needed to determine whether it is operating:
 
-Worker liveness is especially ambiguous. The current worker registry is a best-effort host-local file used for niceness observability, while supervisor audit events report historical process outcomes. Neither is authoritative fleet-visible proof that a worker with the expected brain and build identity is currently renewing a lease.
+- `gbrain status --json` reports build, source sync, recent cycles, research backlog, locks, supervisor history, queues, and autopilot state.
+- `src/core/source-health.ts` computes batched source, queue, and embedding coverage metrics.
+- `minion_jobs` records scheduled and asynchronous work, attempts, progress, outcomes, and failures.
+- Dream and autopilot persist job and phase results.
+- Build receipts, embedding identity, and search telemetry describe the deployed and retrieval paths.
+- Doctor contains valuable diagnostics and repair guidance.
 
-The phase must preserve hard brain boundaries. Monitoring may aggregate content-free states across independently credentialed databases, but it must not query knowledge through connected-brain federation, centralize page bodies, or turn Grafana into a knowledge system of record.
+These surfaces do not yet answer “did every activity that was supposed to run actually run?” They also do not project a stable fleet status into the homelab observability stack. As a result, a stopped Dream cycle, stale source, embedding backlog, or failed custom enrichment is often discovered only when someone manually runs Doctor.
 
-Product Contract preservation: R16-R19, F4, AE5, and AE6 remain the source authority. Phase 1 fulfills only their roadmap-defined MVP subset; later capability families remain additive follow-up work.
+The implementation must extend GBrain rather than create a second health model beside it. The observer will call GBrain collectors and domain services. Prometheus will scrape their result; it will not query the brain database.
+
+Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows the first delivery to visibility and alerts over existing evidence. End-to-end canaries remain required follow-up work after the scoreboard earns trust.
 
 ### Actors
 
-- A5. Knowledge operator: views fleet state, investigates a failed stage, acknowledges maintenance, and follows repair guidance.
-- A6. Enrichment worker: registers authoritative liveness and produces durable job or Dream outcomes.
-- A7. Observer: runs as a scheduled one-shot process for exactly one brain, evaluates capability state through independently scoped credentials, and atomically exports content-free telemetry.
-- A8. Canary runner: submits only versioned synthetic fixtures authorized for its target and records stage-specific receipts.
-- A9. Monitoring stack: scrapes metrics, renders dashboards, evaluates alert rules, and routes notifications without becoming authoritative for knowledge state.
+- A5. Knowledge operator: opens the fleet dashboard, sees what is late or broken, and follows repair guidance.
+- A6. Enrichment worker: records durable Minion, Dream, source, or processor outcomes.
+- A7. GBrain observer: a native GBrain process scoped to one `GBRAIN_HOME` and one brain credential that computes and exposes the operational snapshot.
+- A9. Homelab observability stack: Prometheus scrapes content-free metrics; Grafana displays and alerts without reading brain data.
 
 ### Requirements
 
-**Capability truth**
+#### Operational truth inside GBrain
 
-- R16. The runtime must expose machine-readable capability metrics for sources, Minion queues and workers, Dream cycles and phases, enrichment passes, content processors, embeddings, derived knowledge, provider health, and retrieval quality.
-- R20. The Phase 1 MVP must provide stable identities and state semantics for intake freshness, Minion worker and queue liveness, Dream phase outcomes, embedding identity and readiness, and retrieval with lexical and semantic stages distinguished.
-- R21. Every capability observation must identify its brain, capability, stage, database observation time, freshness deadline, state, and bounded reason code; free-form errors remain in private diagnostic logs.
-- R22. `healthy`, `degraded`, `failed`, `unknown`, and `disabled` must have one shared meaning across CLI snapshots, metrics, dashboards, alerts, and canary receipts.
-- R23. Doctor diagnostics may contribute evidence and repair guidance, but Doctor categories and composite scores must not define capability state.
+- R16. GBrain must expose machine-readable operational state for sources, Minion work, Dream cycles and phases, embeddings, retrieval evidence, and configured enrichment or content-processing activities.
+- R20. GBrain must derive a bounded expected-work registry from registered `IngestionSource` instances, the active pack’s enabled Dream phases, scheduled Minion work, and explicit configuration only where an existing runtime registration cannot express cadence.
+- R21. Each expected-work entry must have a stable key, enabled/required state, criticality, expected cadence, grace period, evidence adapter, optional backlog thresholds, alert policy, and repair guidance.
+- R22. Each configured work item must report current state, last attempt, last success, next due time, backlog count, oldest pending age, recent failure count, and one bounded reason when that field applies.
+- R23. `healthy`, `degraded`, `failed`, `unknown`, and `disabled` must mean the same thing in GBrain JSON, OpenMetrics, dashboards, and alerts.
+- R24. Doctor checks may supply evidence and repair guidance, but Doctor category scores and the aggregate brain score must not define operational state.
+- R25. An expected item with no supported evidence must report `unknown` with `instrumentation_missing`; absence of evidence must never be healthy.
 
-**Fleet visibility and privacy**
+#### Fleet visibility and notifications
 
-- R17. The operator must have a fleet overview and per-brain drill-down with actionable alerts, while operational telemetry must exclude page bodies and other sensitive content by default.
-- R24. Each brain must run an independently configured scheduled observer with a database role restricted to enumerated content-free observability views; the monitoring agent aggregates their atomic metric files so no observer process becomes a universal cross-brain credential or knowledge reader.
-- R25. Public metrics and receipts must use configured opaque brain/source identifiers and bounded labels; they must not contain database URLs, file paths, source names, page slugs, prompts, responses, job payloads, email addresses, or unbounded error text.
-- R26. Alerting must include hold periods, maintenance inhibition, deduplication, severity, ownership, and a repair link so transient or planned conditions do not create repeated noise.
+- R17. Grafana must provide a fleet overview and per-brain drill-down, while exported telemetry excludes knowledge content, source URLs, credentials, prompts, responses, and raw errors.
+- R26. Each brain must run an independently configured native GBrain observer; no observer may load credentials for another hard-boundary brain.
+- R27. Prometheus on `akhserver01` must scrape each observer over the tailnet and retain only bounded, content-free time series.
+- R28. Grafana-managed alerting must notify the existing Mattermost observability route for missed cadence, repeated failure, stalled/dead work, growing backlog, embedding mismatch, or missing observer after configured hold periods.
+- R29. Dashboard state must remain visible during planned maintenance even when notifications are suppressed.
 
-**Canary proof**
+#### Sources and recurring enhancement
 
-- R18. Every critical end-to-end capability must have a repeatable canary that proves a known input reaches the expected durable and retrievable outcome through the deployed path.
-- R27. Every canary must declare its version, target fingerprint, expected stages and mutations, timeout, cleanup rule, idempotency key, and expiry before execution.
-- R28. A canary must distinguish `not run`, `unsupported`, `blocked`, `failed`, and `passed`; absence of evidence must never be rendered as success.
-- R29. Mutating canaries must use a disposable repository-backed source and isolated queue, enumerate allowed mutations, verify unrelated state remains unchanged, clean up, and record a post-cleanup receipt.
+- R30. Every registered source must appear through the same source-health contract, without source-specific monitoring code in GBrain core.
+- R31. Every enabled Dream phase, scheduled Minion activity, and registered content processor that already records a source checkpoint, Minion job, phase result, or retrieval receipt must appear through the same expected-work contract.
+- R32. A current process that records no durable GBrain evidence must appear as unobservable and receive a follow-up instrumentation task; Grafana, n8n, and shell scripts must not become competing reasoning-state stores.
 
-**Managed-fork posture**
+#### Deferred proof
 
-- R19. The maintained fork must integrate useful upstream reliability work before duplicating it, preserve upstream mergeability where practical, and express downstream behavior through supported contracts, plugins, source adapters, processors, and enrichment definitions before changing the core.
-- R30. Capability collection must adapt existing status, source-health, queue, build-identity, embedding-identity, and search-telemetry primitives through typed collectors rather than duplicating their queries in dashboards or alert rules.
+- R18. Every critical end-to-end capability must eventually have a repeatable deployed-path canary.
+- R33. Synthetic transactions, mutation policies, canary receipt storage, and fault injection are deferred to Phase 1C and do not block the Phase 1A scoreboard.
 
 ### Key Flow
 
 - F4. Continuous operational assurance
-  - **Trigger:** A scheduled collection or canary run begins, or an underlying capability receipt changes.
-  - **Actors:** A5, A6, A7, A8, A9
-  - **Steps:** Each observer connects to exactly one configured brain; typed collectors produce a capability snapshot; the observer exports bounded metrics; scheduled canaries record stage receipts; Prometheus evaluates rules; Grafana renders fleet and brain views; alerts link to capability-specific repair guidance.
-  - **Outcome:** The operator sees current capability truth for every configured brain and can identify the failed stage without accessing knowledge content.
-  - **Covered by:** R16-R30
+  - **Trigger:** The observer refresh interval elapses or Prometheus scrapes an observer.
+  - **Actors:** A5, A6, A7, A9
+  - **Steps:** The per-brain observer loads that brain’s expected-work registry; GBrain collectors read existing domain evidence; GBrain produces one content-free snapshot; the observer exposes OpenMetrics; Prometheus scrapes it; Grafana renders fleet and detail views; sustained actionable states notify Mattermost.
+  - **Outcome:** Aaron can identify the affected brain, activity, stage, backlog, age, and repair path without manually running Doctor or exposing knowledge content.
+  - **Covered by:** R16-R17, R20-R32
 
 ### Acceptance Examples
 
-- AE5. **Covers R16, R17, R20-R26.** Given a required Minion worker stops renewing its lease while queued work exists, the affected brain transitions from healthy to degraded and then failed at the configured deadlines; the dashboard shows worker and backlog stages; one bounded alert fires with repair guidance; no job payload or brain content appears in telemetry.
-- AE6. **Covers R18, R20-R23, R27-R30.** Given database, embedding, and worker components are healthy but semantic retrieval is disabled, the lexical stage passes, the semantic stage fails, overall retrieval fails, the receipt identifies the embedding identity branch actually exercised, and neither cache nor lexical fallback masks the failure.
-- AE7. **Covers R17, R24-R26.** Given one protected brain's observer credential is revoked, only that brain reports `unknown` with a bounded authorization reason; other brains continue reporting; no endpoint or credential detail is emitted.
-- AE8. **Covers R18, R27-R29.** Given a mutating canary is repeated with the same identity, it produces no duplicate durable output, cleans its synthetic source, and proves unrelated counts and timestamps did not change.
-- AE9. **Covers R20-R23, R26.** Given a planned maintenance window inhibits a worker-stopped alert, the dashboard still reports the true degraded state while notification delivery is suppressed only for the bounded maintenance interval.
+- AE5. **Covers R16-R17, R20-R32.** Given a required Dream cycle or exact Minion job has no successful run inside its cadence and grace window, the affected work item becomes failed, the brain becomes degraded or failed according to criticality, Grafana shows its last attempt and backlog, and one Mattermost alert links to repair guidance.
+- AE6. **Covers R18, R33.** Semantic end-to-end canary proof remains visibly unavailable until Phase 1C; healthy database and embedding component metrics do not claim that the canary passed.
+- AE7. **Covers R17, R26-R29.** Given the AKH observer stops, Prometheus reports only AKH as unavailable, the personal brain remains visible, and no database credential or protected content crosses the boundary.
+- AE8. **Covers R30-R32.** Given a registered source remains healthy but one enabled Dream enhancement stops, the dashboard shows source intake as current and that enhancement as late instead of collapsing the entire source-to-knowledge path into one healthy pipeline.
+- AE9. **Covers R22, R30-R32.** Given a transcript processor is configured but has no durable GBrain receipt, the dashboard reports `unknown / instrumentation_missing` and identifies instrumentation as the next action rather than silently omitting the processor.
 
 ### Success Criteria
 
-- A stopped worker, stale source, dead job, failed Dream phase, embedding mismatch, and degraded semantic retrieval each produce the correct capability state and bounded alert.
-- Every configured production brain reports build identity, observation freshness, and MVP capability state from one fleet view.
-- Capability snapshots, OpenMetrics output, canary receipts, dashboards, and alerts share the same stable capability IDs and reason-code registry.
-- Monitoring stores no page body, prompt, response, evidence excerpt, private source name, or raw endpoint.
-- Fault-injection tests prove that Doctor score changes cannot override capability truth and that healthy component checks cannot mask a failed end-to-end canary.
+- One Grafana fleet dashboard shows every configured brain and expected recurring work item.
+- Every work item shows state, last success, next due, and relevant backlog/failure evidence.
+- Personal and AKH observers run independently and can fail independently.
+- Missed schedules, failed jobs, stalled backlogs, embedding problems, and missing observers produce bounded Mattermost alerts.
+- Registered sources and recurring enhancements appear through generic GBrain contracts rather than workflow-specific monitoring code.
+- No dashboard query or Prometheus rule contains GBrain database SQL or reimplements state calculation.
+- No knowledge body, prompt, response, source URL, job payload, credential, or raw error is exported.
 
 ### Scope Boundaries
 
-#### Included
+#### Included in Phase 1A
 
-- The five Phase 1 MVP capability families.
-- A stable typed snapshot and reason-code contract.
-- Authoritative worker heartbeats for Postgres and compatible one-shot snapshots for PGLite.
-- One scheduled read-only Postgres observer command per brain with atomic OpenMetrics output.
-- Versioned canary receipts and the MVP canary set.
-- Provisioned Grafana dashboards, Prometheus rules, private per-brain observer descriptors, generic runbooks, and fault-injection acceptance.
+- Native expected-work registry, capability snapshot, and bounded state semantics.
+- Adapters over existing GBrain status, source, Minion, Dream, embedding, retrieval, and host-local evidence.
+- Native per-brain OpenMetrics observer endpoint.
+- Personal and AKH production observer deployment.
+- Grafana fleet and brain-detail dashboards on `akhserver01`.
+- Grafana-managed Mattermost alerts and short repair runbooks.
+- Backlog and “needs attention” panels that support manual brain destashing.
+- Automatic discovery of registered sources and enabled recurring work, plus explicit `instrumentation_missing` results for legacy paths outside those contracts.
 
-#### Deferred to Follow-Up Work
+#### Deferred to Phase 1B
 
-- Additive capability families for transcription, OCR, media processing, enrichment definitions, knowledge derivation quality, provider cost, and assistant delegation.
-- A web administration UI for configuring observers or maintenance windows.
-- Automated remediation beyond links to operator-approved repair procedures.
-- Long-term SLO/error-budget policy after enough baseline data exists.
+- A first-class processing receipt contract for external processors that cannot use an existing source, Minion, Dream, embedding, or retrieval receipt.
+- Database-authoritative worker leases if current queue progress, supervisor state, and schedule evidence cannot distinguish a required idle worker from a missing worker.
+- Assisted repair and controlled backlog-drain actions.
+- Additional Loki logs or OpenTelemetry traces for cross-process investigation.
+
+#### Deferred to Phase 1C
+
+- Synthetic transactions and end-to-end canary fixtures.
+- Canary mutation policies, isolated synthetic sources, cleanup receipts, and fault injection.
+- Retrieval proof that semantic ranking contributed to a known result.
+- Long-term SLOs and error budgets.
 
 #### Outside This Product's Identity
 
-- Replacing Doctor as an interactive diagnostic tool.
-- Using Grafana, Prometheus, or alert history as the knowledge system of record.
-- Scraping all databases with one universal credential.
-- Exporting per-page, per-job-ID, per-query, or other unbounded labels.
-- Treating `process exists`, `HTTP 200`, or a composite score as end-to-end proof.
+- Grafana or Prometheus as the knowledge or reasoning system of record.
+- A universal observer credential spanning multiple protected brains.
+- Raw database queries or Doctor-score formulas embedded in dashboards.
+- Automatic deletion or cleanup merely because an item appears on the destash view.
+- Treating process existence, HTTP 200, or an aggregate score as proof that expected work completed.
 
 ---
 
@@ -132,430 +152,318 @@ Product Contract preservation: R16-R19, F4, AE5, and AE6 remain the source autho
 
 ### Key Technical Decisions
 
-- KTD1. **Capability state is the contract, not Doctor score.** (session-settled: user-directed — chosen over relying on composite Doctor scores: changing scores repeatedly failed to establish whether the brain was useful.) A versioned `CapabilitySnapshot` owns IDs, states, reason codes, timestamps, and stage composition. Doctor maps relevant checks into diagnostic evidence but cannot directly set the overall state.
-- KTD2. **Collect one consistent snapshot and project it many ways.** Database-backed evidence is read in one bounded read-only repeatable-read transaction using database time as the generation watermark. External evidence is timestamped separately and joined only under explicit freshness rules. Pure typed collectors produce one content-free snapshot consumed by `gbrain status --json`, the observer, canary evaluation, and tests. Prometheus exposition and CLI rendering are adapters; dashboards never query GBrain databases directly.
-- KTD3. **Run one scheduled least-privilege observer per brain.** `gbrain observe snapshot --openmetrics` runs outside `gbrain serve`, resolves one explicit deployment descriptor, and atomically replaces a local metrics file collected by the existing homelab monitoring agent. Its PostgreSQL role has `default_transaction_read_only=on` and `SELECT` only on enumerated content-free observability views or tables, with no access to page, chunk, prompt, response, or evidence payload columns. A serving failure cannot take monitoring down, and no observer process holds credentials for multiple hard-boundary brains.
-- KTD4. **Make worker liveness database-authoritative.** Add a `minion_workers` lease table keyed by brain-local worker identity and queue. Workers upsert build/config identity and renew `last_seen_at`; clean shutdown retires the lease, while expiry is authoritative. The existing host-local registry remains for niceness and process debugging only.
-- KTD5. **Use a bounded deterministic OpenMetrics projection.** A small internal renderer emits only the registered Phase 1 families with a `gbrain_` namespace, base units, help/type metadata, configured opaque target IDs, and a fixed label registry. State is exported as a one-hot gauge over the five allowed states; ages, deadlines, backlogs, and counts use separate gauges. Build metadata uses one bounded info family rather than attaching checksums to every series.
-- KTD6. **Persist build-bound canary receipts in the target brain.** Versioned definitions live in code/config; content-free execution receipts live in a dedicated table so the observer can distinguish never-run, stale, blocked, and failed outcomes without scraping logs. A receipt contributes state only when its target, deployment build, effective config, and canary-definition fingerprints exactly match the current snapshot; mismatches are `not run` or `blocked`, never inherited success. Synthetic knowledge remains in its disposable source and is removed after proof.
-- KTD7. **Separate observation from mutation authority.** The observer credential is read-only. A one-time target token provisions or rotates a revocable canary policy bound to one target, disposable source, isolated queue, operation allowlist, schedule, and maximum lifetime. Scheduled runs derive short-lived run authorization and idempotency from that policy without human token minting. Every canary mutation and cleanup call passes through one guarded API that revalidates policy, run identity, expiry, synthetic source, isolated queue, and enumerated operation; direct general-purpose writes are denied. An unfinished run may receive cleanup-only authorization tied to its original artifacts and deletion allowlist until a separate bounded cleanup deadline.
-- KTD8. **Distinguish retrieval stages explicitly.** Retrieval receipts record cache bypass, lexical candidates, embedding identity acceptance, semantic candidates, fusion contribution, and expected winner. A lexical result cannot satisfy semantic proof, and a semantic-disable event cannot be downgraded because the final answer still looks plausible.
-- KTD9. **Aggregate metrics, not credentials or knowledge.** Each brain's private observer descriptor supplies one opaque monitoring ID, one brain home or endpoint, one credential reference, expected build/config fingerprints, capability policy, atomic output path, and an optional `maintenance_until` timestamp. The homelab monitoring agent collects each file and Prometheus performs fleet aggregation; observers never mount another brain or read knowledge content. Missing, invalid, or expired maintenance values mean no inhibition.
-- KTD10. **Alerts follow state duration and capability criticality.** Checked-in Prometheus rules use per-capability hold periods and a bounded maintenance signal. Database time is authoritative for brain evidence, lease, receipt, and maintenance timestamps; monotonic observer time is used only for local deadlines. The observer exports clock offset and returns unknown for time-dependent evidence beyond a declared skew limit. Critical identity or cross-boundary failures alert immediately; freshness and liveness failures use configured grace periods. Dashboard truth remains visible even when notifications are inhibited.
+- KTD1. **GBrain owns state calculation.** (session-settled: user-approved — chosen over an external monitoring agent interpreting database tables: the system must use GBrain as a runtime, not merely as storage.) Collectors and the expected-work evaluator live in GBrain. External systems consume the resulting snapshot only.
+- KTD2. **The observer is a native GBrain process, not a separate brain-aware agent.** (session-settled: user-approved — chosen over adding a custom database-polling service: the first delivery should be unobtrusive and reuse GBrain’s configuration and evidence.) Each process starts with one `GBRAIN_HOME`, loads one brain configuration, computes snapshots through GBrain services, opens database work in read-only sessions, and exposes only read-only health and metrics endpoints.
+- KTD3. **Prometheus directly scrapes per-brain observers over Tailscale.** This matches the existing central Prometheus model on `akhserver01` and avoids adding Pushgateway, remote-write, or a Mac-specific metrics relay. Each observer binds only to the configured tailnet address and a distinct port.
+- KTD4. **Expected work is discovered from GBrain registrations first.** `IngestionSource` registrations supply source identity and health; the active pack supplies enabled Dream phases; the scheduler and Minion registry supply recurring jobs and cadence. Per-brain configuration may override criticality, cadence, grace, or thresholds and may describe a legacy external path, but it does not manually duplicate normal GBrain registrations. Grafana never decides what “late” means.
+- KTD5. **Reuse evidence owners before adding persistence.** `status`, source health, `minion_jobs`, Dream results, build receipts, embedding identity, search telemetry, and brain-isolated supervisor/autopilot files remain authoritative. Phase 1A adds a normalization layer, not duplicate SQL or new receipt tables.
+- KTD6. **Use aggregate state plus work-item detail, not a new score.** A brain rolls up required items deterministically, while Grafana retains each item’s individual state and reason. Doctor’s score remains an interactive heuristic and is not exported as operational truth.
+- KTD7. **Use Prometheus/OpenMetrics now; reserve OpenTelemetry for traces.** Scheduled-state gauges fit the existing Prometheus/Grafana stack. Logs may later go to Loki and execution traces to Tempo through Alloy, but neither is required to answer whether expected work ran.
+- KTD8. **Destash begins with visibility, not mutation.** The dashboard exposes stale sources, unembedded chunks, dead/failed jobs, pending facts, extraction lag, and custom processor backlogs. Repair or deletion remains an explicit operator action.
+- KTD9. **Canaries remain important but do not gate first value.** Component and receipt evidence provide the initial scoreboard. Phase 1C adds end-to-end proof where those signals cannot establish user-visible behavior, especially semantic retrieval.
+- KTD10. **Generic runtime contracts live in the managed fork; domain integrations use extension seams.** The observer, operational snapshot, source/pass discovery, and metric contract are maintained GBrain runtime capabilities. A particular intake source, content processor, or domain enhancement belongs in a plugin, skillpack, or integration package loaded through GBrain’s supported contracts rather than a source-specific branch in observability core.
 
 ### High-Level Technical Design
 
 ```mermaid
-flowchart TB
-    subgraph brain["One independently secured brain"]
-      status["Existing status, health, queue, identity primitives"]
-      workers["Minion workers"]
-      lease["minion_workers leases"]
-      receipts["capability_canary_runs"]
-      canary["Canary runner"]
-      collectors["Typed capability collectors"]
-      status --> collectors
-      workers --> lease
-      lease --> collectors
-      receipts --> collectors
-      canary --> receipts
+flowchart LR
+    subgraph host["GBrain host"]
+      pconfig["Personal GBRAIN_HOME"] --> pobserver["gbrain observe serve<br/>personal port"]
+      aconfig["AKH GBRAIN_HOME"] --> aobserver["gbrain observe serve<br/>AKH port"]
+      pbrain["Personal DB + local runtime evidence"] --> pobserver
+      abrain["AKH DB + local runtime evidence"] --> aobserver
     end
 
-    descriptor["Private one-brain descriptor"] --> observer["Scheduled one-shot observer"]
-    collectors --> observer
-    observer --> snapshot["CapabilitySnapshot v1"]
-    snapshot --> metrics["Atomic OpenMetrics file"]
-    metrics --> agent["Homelab metrics agent"]
-    agent --> prometheus["Prometheus fleet aggregation"]
-    prometheus --> grafana["Grafana fleet and brain views"]
-    prometheus --> alerts["Alert rules and notification routing"]
+    pobserver -->|"content-free /metrics over Tailscale"| prometheus["Prometheus<br/>akhserver01"]
+    aobserver -->|"content-free /metrics over Tailscale"| prometheus
+    prometheus --> grafana["Grafana fleet + detail dashboards"]
+    grafana --> alerts["Grafana-managed alerting"]
+    alerts --> mattermost["Mattermost observability channel"]
 ```
 
-The implementation has three ownership layers:
+The observer has two integration surfaces:
 
-1. **Evidence primitives** retain their current owners: source health, queue stats, cycle outcomes, build identity, embedding identity, and search telemetry.
-2. **Capability collectors** normalize that evidence into stable state and reason semantics. They are deterministic and content-free.
-3. **Operational projections** expose the snapshot through CLI JSON, OpenMetrics, dashboards, alerts, and canary receipts without redefining state.
+1. **Inside GBrain:** configuration, engine connection, status services, evidence collectors, expected-work evaluation, state rollup, JSON, and OpenMetrics rendering.
+2. **Outside GBrain:** OS service supervision, Prometheus scrape configuration, Grafana provisioning, alert delivery, and time-series retention.
 
-### Capability Model
+Prometheus never receives database credentials. The observer process is the only monitoring component that opens a brain connection, and it does so through the same GBrain engine/configuration path as the CLI.
 
-| Capability ID | Required stages | Healthy proof | Primary failure evidence |
-|---|---|---|---|
-| `intake.freshness` | source identity, checkpoint, freshness | Required sources are observed within policy and have no blocking failure | stale checkpoint, source authorization, failed intake job |
-| `minions.execution` | worker lease, queue progress, dead/stalled jobs | Required queues have fresh workers and progress within policy | expired lease, oldest waiting age, dead/stalled delta |
-| `dream.processing` | schedule, run, phase outcomes | Required phases completed within policy with no hidden failure | stale full run, failed/partial phase, aborted durable job |
-| `embeddings.readiness` | provider/model/dimensions/signature/coverage | Accepted identity matches policy and required cohorts are complete | identity mismatch, missing labels, backlog, endpoint failure |
-| `retrieval.hybrid` | cache bypass, lexical, semantic, fusion | Lexical and semantic stages execute and the semantic branch contributes as expected | semantic disabled, identity rejection, no vector contribution, timeout |
+### Code Ownership and Upgrade Boundary
+
+| Location | Owns | Upgrade behavior |
+|---|---|---|
+| Managed GBrain fork | Generic source/pass discovery, expected-work evaluation, operational snapshots, `gbrain observe`, and OpenMetrics | Upstream releases are merged into the fork and verified; the deployed runtime is built from the fork rather than overwritten by a vanilla upstream install. |
+| GBrain plugins and skillpacks | Particular source adapters, processors, and domain-specific enhancement definitions | Loaded through existing `IngestionSource`, pack-phase, and Minion extension seams; they can evolve without editing observability core. |
+| Per-brain `GBRAIN_HOME` | Enabled plugins/packs, schedules, policy overrides, brain identity, and credentials | Private deployment state survives code upgrades and remains separate for each hard-boundary brain. |
+| `akh-homelab` | Prometheus targets, Grafana dashboards, alert rules, and Mattermost routing | Deployed independently through the existing Ansible-managed observability stack. |
+
+The managed fork is intentionally responsible for the reusable capability. Keeping all observability outside GBrain would recreate GBrain’s state model elsewhere. Keeping source-specific logic in core would make upstream integration unnecessarily conflict-prone. The split above preserves both runtime ownership and upgradeability.
+
+### Reused Evidence and New GBrain Work
+
+| Area | Reuse | Add in Phase 1A |
+|---|---|---|
+| Build/runtime | `src/core/build-identity.ts`, existing status build receipt | Stable observer and brain identity projection |
+| Sources/intake | `src/core/ingestion/types.ts`, ingestion daemon health, `src/core/source-health.ts`, sync status | Generic source observation for every registered `IngestionSource` |
+| Minions | handler/scheduler registration, `minion_jobs`, queue statistics, stalled/dead detection | Recurring-work discovery and missed-schedule evaluation |
+| Dream enhancements | active pack `phases`, `src/commands/status.ts` cycle snapshot, persisted phase results | Per-enabled-phase expected-work entries and phase-aware state |
+| Embeddings | source coverage, embedding configuration and identity | Readiness state and backlog thresholds |
+| Retrieval | existing embedding identity and search telemetry | Component-level retrieval state; canary result remains unavailable |
+| Doctor | selected pure diagnostic helpers and remediation text | Bounded reason-to-runbook mapping; no score reuse |
+| Host processes | brain-isolated worker registry, supervisor audit, autopilot PID | Freshness mapping and observer self-status |
+| Fleet UI | existing Prometheus, Grafana, and Mattermost route in `akh-homelab` | GBrain scrape targets, dashboards, recording/alert rules |
 
 ### State Semantics
 
 | State | Meaning |
 |---|---|
-| `healthy` | Required evidence is fresh and all mandatory stages satisfy policy. |
-| `degraded` | The capability still functions but a non-critical stage, freshness margin, or backlog threshold is outside its preferred range. |
-| `failed` | A mandatory stage is broken, expired beyond its failure deadline, or contradicted by an end-to-end canary. |
-| `unknown` | Required evidence cannot be obtained or is too stale to classify; unknown never rolls up as healthy. |
-| `disabled` | The capability is intentionally not required by the brain's declared policy; disabled is not success and cannot satisfy a required fleet gate. |
+| `healthy` | Fresh evidence proves the expected work completed and relevant backlog is within policy. |
+| `degraded` | Work is late within its failure grace, failing intermittently, or accumulating concerning backlog. |
+| `failed` | A required deadline was missed, a blocking failure occurred, or backlog exceeded its failure threshold. |
+| `unknown` | Evidence is unavailable, stale beyond interpretation, unsupported, or not instrumented. |
+| `disabled` | The brain configuration explicitly says the work is not expected. |
 
-Stage rollup is deterministic: any mandatory failed stage yields `failed`; otherwise any unknown mandatory stage yields `unknown`; otherwise any degraded stage yields `degraded`; all mandatory stages healthy yields `healthy`; an explicitly non-required capability yields `disabled`. A fresh, fingerprint-matching failed canary outranks healthy component evidence until a later fingerprint-matching successful canary supersedes it. Time-dependent evidence becomes unknown when observer/database clock skew exceeds policy.
+Required item rollup is deterministic: any required failed item yields failed; otherwise any required unknown item yields unknown; otherwise any degraded item yields degraded; otherwise all required items healthy yields healthy. Disabled optional items do not affect the rollup.
 
-### Metric and Label Contract
+### Metric Contract
 
-The snapshot adapter exports a bounded family such as:
+The initial bounded metric families are:
 
-- `gbrain_target_info{brain,build}` with value `1`.
-- `gbrain_observation_timestamp_seconds{brain}`.
-- `gbrain_capability_state{brain,capability,state}` with exactly one active state.
-- `gbrain_capability_last_success_timestamp_seconds{brain,capability}`.
-- `gbrain_capability_deadline_seconds{brain,capability}`.
-- `gbrain_capability_stage_state{brain,capability,stage,state}`.
-- `gbrain_capability_backlog_items{brain,capability,stage}`.
-- `gbrain_capability_oldest_item_age_seconds{brain,capability,stage}`.
-- `gbrain_canary_last_run_timestamp_seconds{brain,canary}`.
-- `gbrain_canary_result{brain,canary,result}` with one bounded result value active.
-- `gbrain_maintenance_until_timestamp_seconds{brain}`; absent or expired values do not inhibit alerts.
-- `gbrain_maintenance_active{brain}` calculated against the snapshot's database time.
-- `gbrain_observer_clock_offset_seconds{brain}` for bounded skew diagnosis.
+- `gbrain_observer_info{brain,build}`
+- `gbrain_observer_snapshot_timestamp_seconds{brain}`
+- `gbrain_brain_state{brain,state}`
+- `gbrain_expected_work_state{brain,work,state}`
+- `gbrain_expected_work_last_attempt_timestamp_seconds{brain,work}`
+- `gbrain_expected_work_last_success_timestamp_seconds{brain,work}`
+- `gbrain_expected_work_next_due_timestamp_seconds{brain,work}`
+- `gbrain_expected_work_backlog_items{brain,work}`
+- `gbrain_expected_work_oldest_pending_age_seconds{brain,work}`
+- `gbrain_expected_work_recent_failures{brain,work}`
+- `gbrain_expected_work_reason{brain,work,reason}`
 
-Allowed labels come from a checked-in registry. `brain`, `source`, and `build` values are configured opaque IDs or bounded release identifiers; `capability`, `stage`, `state`, `reason`, `canary`, and `result` are enums. Metric names use base units and omit label names, following Prometheus exporter guidance and the OpenMetrics exposition specification.
+`brain`, `work`, `state`, and `reason` come from bounded registries. Raw job IDs, source URLs, slugs, paths, errors, model responses, and payloads are prohibited labels.
 
-### Sequencing
+### Phase Sequence
 
 ```mermaid
-flowchart TB
-    u1["U1 Capability contract"] --> u2["U2 Worker leases"]
-    u1 --> u3["U3 MVP collectors"]
-    u2 --> u3
-    u3 --> u4["U4 Observer and OpenMetrics"]
-    u1 --> u5["U5 Canary framework"]
-    u3 --> u6["U6 MVP canaries"]
-    u5 --> u6
-    u4 --> u7["U7 Grafana dashboards"]
-    u4 --> u8["U8 Alerts and runbooks"]
-    u6 --> u7
-    u6 --> u8
-    u7 --> u8
-    u7 --> u9["U9 Fleet rollout and fault injection"]
-    u8 --> u9
+flowchart LR
+    p1a["Phase 1A<br/>scoreboard and alerts"] --> p1b["Phase 1B<br/>missing receipts and assisted repair"]
+    p1b --> p1c["Phase 1C<br/>end-to-end canaries"]
 ```
 
-U1, fixture design for U3, and non-mutating portions of U5 may begin during the Phase 0 observation window in an isolated worktree. Do not migrate a live database, replace a worker, deploy an observer, or run mutating canaries against an observed Phase 0 target until that target's gate is accepted.
-
-### Assumptions
-
-- The homelab has an existing Prometheus-compatible scraper, local metrics-agent or textfile-collector path, Grafana instance, and alert-routing path; private inventory must verify the collection path before U4 deployment.
-- Production brains use Postgres for authoritative worker leases and standalone observers. PGLite supports the same capability contract through in-process or one-shot status snapshots but cannot run a concurrent observer or act as a fleet coordination substrate because its database has an exclusive process lock.
-- Every monitored brain can schedule its own observer command with an independently scoped read-only credential, private atomic output path, and opaque operator-assigned monitoring ID.
+Phase 1A is complete when Aaron no longer needs to ask an assistant to discover routine operational failures. Phase 1B fills evidence gaps surfaced by the dashboard. Phase 1C proves paths that cannot be established from component and durable-work evidence alone.
 
 ---
 
 ## Implementation Units
 
-### U1. Define the capability contract and snapshot
+The U-ID gaps preserve stable identifiers from the earlier revision: former U2 moved to Phase 1B, while former U5-U6 moved to Phase 1C.
 
-- **Goal:** Establish the stable vocabulary that every later projection and test consumes.
-- **Requirements:** R20-R23, R25, R30
-- **Dependencies:** Accepted Phase 0 build/status identity vocabulary
+### U1. Define expected work and operational snapshots
+
+- **Goal:** Give GBrain one stable contract for what should run and how its evidence becomes operational state.
+- **Requirements:** R16, R20-R25, R30-R32; KTD1, KTD4-KTD6
+- **Dependencies:** Accepted Phase 0 runtime baseline
 - **Files:**
-  - Create: `src/core/observability/types.ts`
-  - Create: `src/core/observability/capability-registry.ts`
-  - Create: `src/core/observability/reason-codes.ts`
-  - Create: `src/core/observability/rollup.ts`
-  - Create: `src/core/observability/snapshot.ts`
-  - Modify: `src/commands/status.ts`
-  - Test: `test/observability/capability-contract.test.ts`
-  - Test: `test/observability/rollup.test.ts`
-  - Test: `test/status-sections.test.ts`
-- **Approach:** Define a versioned `CapabilitySnapshot` with target identity, database generation time, external-evidence timestamps, clock-offset diagnostic, collector freshness, capabilities, stages, state, bounded reasons, thresholds, and evidence timestamps. Keep build/config fingerprints opaque and content-free. Extend status JSON additively with a `capabilities` section while retaining schema-v1 fields for backward compatibility. Add compile-time/exhaustive registries so new state, capability, stage, or reason values cannot appear only in one projection. Agent-facing capability operations remain deferred until an assistant flow requires them.
+  - GBrain create: `src/core/observability/types.ts`
+  - GBrain create: `src/core/observability/expected-work.ts`
+  - GBrain create: `src/core/observability/reason-codes.ts`
+  - GBrain create: `src/core/observability/rollup.ts`
+  - GBrain create: `src/core/observability/snapshot.ts`
+  - GBrain modify: `src/core/config.ts`
+  - GBrain modify: `src/commands/status.ts`
+  - GBrain test: `test/observability/expected-work.test.ts`
+  - GBrain test: `test/observability/rollup.test.ts`
+  - GBrain test: `test/status-sections.test.ts`
+- **Approach:**
+  1. Build the registry from loaded `IngestionSource` declarations, active-pack Dream phases, and scheduled Minion definitions.
+  2. Keep default cadence and policy beside the scheduler or runtime registration that owns it; allow per-brain file-plane overrides without storing credentials or knowledge.
+  3. Add an additive `operational` section to status JSON while preserving existing schema-v1 fields.
+  4. Keep state and reason registries exhaustive so dashboards cannot invent new semantics.
 - **Test Scenarios:**
-  - Healthy, degraded, failed, unknown, and disabled stage combinations roll up per KTD1.
-  - A failed fresh canary outranks healthy components.
-  - A receipt from a different target, build, config, or definition cannot contribute success or failure to the current snapshot.
-  - Stale or missing mandatory evidence yields unknown rather than healthy.
-  - Snapshot serialization rejects free-form reason labels and private fields.
-  - Existing status consumers continue reading schema-v1 fields.
-- **Verification:** Focused unit tests pass; golden JSON contains no path, URL, prompt, content, or unbounded field; TypeScript exhaustiveness fails when a registry entry lacks a renderer mapping.
+  - A required daily item with a fresh success is healthy and reports its next due time.
+  - A missing success inside grace is degraded; after grace it is failed.
+  - An enabled item with no registered evidence adapter is unknown with `instrumentation_missing`.
+  - An explicitly disabled item is disabled and does not degrade the brain.
+  - Snapshot serialization rejects private fields and unregistered identifiers.
+  - Existing status JSON consumers continue reading legacy sections.
+- **Verification:** Focused contract tests pass and a golden snapshot contains every configured item with no knowledge or credential fields.
 
-### U2. Add authoritative Minion worker leases
+### U3. Adapt existing GBrain evidence
 
-- **Goal:** Distinguish an idle healthy worker from no worker using durable brain-local evidence.
-- **Requirements:** R16, R20-R22, R24, R30
-- **Dependencies:** U1; accepted Phase 0 schema baseline
+- **Goal:** Produce expected-work observations by reusing current evidence owners.
+- **Requirements:** R16, R21-R25, R30-R32; KTD1, KTD5
+- **Dependencies:** U1
 - **Files:**
-  - Modify: `src/core/migrate.ts`
-  - Modify: `src/schema.sql`
-  - Modify: `src/core/schema-embedded.ts`
-  - Modify: `src/core/pglite-schema.ts`
-  - Modify: `test/e2e/helpers.ts`
-  - Create: `src/core/minions/worker-heartbeat.ts`
-  - Modify: `src/core/minions/worker.ts`
-  - Modify: `src/core/minions/supervisor.ts`
-  - Modify: `src/commands/status.ts`
-  - Modify: `src/commands/doctor.ts`
-  - Test: `test/minion-worker-heartbeat.test.ts`
-  - Test: `test/e2e/minion-worker-heartbeat-postgres.test.ts`
-  - Test: `test/status-sections.test.ts`
-- **Approach:** Add the next available migration and both schema mirrors for `minion_workers`. Store a random worker instance ID, queue, started/last-seen/retired timestamps, lease duration, process build receipt, and opaque config/brain fingerprints. Renew through the worker's existing control loop with bounded jitter; heartbeat failure degrades the worker and cannot be silently swallowed indefinitely. Use database time for expiry. Preserve `worker-registry.ts` only for host-local PID/niceness diagnostics. Standalone lease monitoring is Postgres-only; PGLite exposes in-process snapshots without claiming concurrent-process authority.
+  - GBrain create: `src/core/observability/collectors/ingestion-source.ts`
+  - GBrain create: `src/core/observability/collectors/minion-job.ts`
+  - GBrain create: `src/core/observability/collectors/dream-phase.ts`
+  - GBrain create: `src/core/observability/collectors/embedding.ts`
+  - GBrain create: `src/core/observability/collectors/retrieval.ts`
+  - GBrain create: `src/core/observability/collectors/local-runtime.ts`
+  - GBrain create: `src/core/observability/collectors/index.ts`
+  - GBrain modify: `src/core/source-health.ts`
+  - GBrain modify: `src/core/search/embedding-identity.ts`
+  - GBrain modify: `src/commands/status.ts`
+  - GBrain test: `test/observability/collectors/*.test.ts`
+  - GBrain test: `test/e2e/operational-snapshot-postgres.test.ts`
+- **Approach:**
+  1. Extract or call reusable reads from current modules; do not copy SQL into an observer-specific layer.
+  2. Evaluate exact source instances, Minion job names, and Dream phase scopes so one successful activity cannot mask another late activity.
+  3. Provide bounded adapter definitions and fixtures for registered sources, enabled pack phases, scheduled Minion work, facts, links, embeddings, and registered content processors; U9 verifies the live per-brain discovery result.
+  4. Represent processors without durable evidence as unknown and record the smallest follow-up instrumentation seam.
 - **Test Scenarios:**
-  - A new worker registers before claiming work and renews while idle and active.
-  - Clean shutdown retires its lease; SIGKILL expires without cleanup.
-  - Two workers on one queue retain separate identities.
-  - Wrong brain/build/config identity becomes a failed stage.
-  - Database interruption recovers without creating duplicate live identities.
-  - PGLite supports local heartbeat reads without claiming cross-process authority.
-- **Verification:** Migration parity, Postgres E2E, restart/reconnect, lease expiry, and previous-reader compatibility tests pass; Doctor reports diagnostic evidence but capability rollup remains owned by U1.
+  - A registered source remains healthy while a late enabled `extract_atoms` phase fails only that enhancement.
+  - A completed Dream job with a failed required phase is not healthy.
+  - Dead, stalled, and old waiting jobs affect only their configured work item.
+  - A quiet caught-up source remains healthy.
+  - Embedding identity mismatch fails even when coverage is complete.
+  - Missing local supervisor evidence is unknown rather than healthy.
+  - Concurrent queue activity produces a self-consistent bounded snapshot.
+- **Verification:** Focused unit tests and one real-Postgres integration test prove all configured adapter types, with no duplicate database query ownership.
 
-### U3. Build the MVP capability collectors
+### U4. Expose a native per-brain Prometheus endpoint
 
-- **Goal:** Normalize existing operational evidence into the five stable capability families.
-- **Requirements:** R16, R20-R24, R30
-- **Dependencies:** U1, U2
+- **Goal:** Let central Prometheus scrape GBrain-owned operational truth without a separate database-polling agent.
+- **Requirements:** R17, R26-R27; KTD2-KTD3, KTD7
+- **Dependencies:** U1, U3
 - **Files:**
-  - Create: `src/core/observability/collectors/intake.ts`
-  - Create: `src/core/observability/collectors/minions.ts`
-  - Create: `src/core/observability/collectors/dream.ts`
-  - Create: `src/core/observability/collectors/embeddings.ts`
-  - Create: `src/core/observability/collectors/retrieval.ts`
-  - Create: `src/core/observability/collectors/index.ts`
-  - Modify: `src/core/source-health.ts`
-  - Modify: `src/core/search/embedding-identity.ts`
-  - Modify: `src/core/search/telemetry.ts`
-  - Modify: `src/commands/status.ts`
-  - Test: `test/observability/collectors/*.test.ts`
-  - Test: `test/e2e/capability-snapshot-postgres.test.ts`
-- **Approach:** Wrap current source metrics, worker leases, queue statistics, cycle job results, phase outcomes, embedding identity/coverage, and retrieval telemetry behind typed collectors. Read database evidence in one bounded repeatable-read transaction and use its database timestamp as the watermark. Timestamp external probes separately and join them only while both freshness and clock-skew policy hold. Each collector declares evidence freshness and policy inputs, uses bounded queries, and returns unknown on collection failure or deadline. Move only reusable pure evidence reads when necessary; do not copy SQL into observer code.
+  - GBrain create: `src/core/observability/openmetrics.ts`
+  - GBrain create: `src/core/observability/observer-server.ts`
+  - GBrain create: `src/commands/observe.ts`
+  - GBrain modify: `src/cli.ts`
+  - GBrain create: `docs/guides/observability-operator.md`
+  - GBrain test: `test/observability/openmetrics.test.ts`
+  - GBrain test: `test/observability/observer-server.test.ts`
+- **Approach:**
+  1. Add a native `gbrain observe serve` command that loads one `GBRAIN_HOME`, forces read-only database sessions, refreshes a cached snapshot on a bounded interval, and exposes only health and OpenMetrics read endpoints.
+  2. Reuse the CLI’s probe-only engine connection so observer startup never applies migrations; verify the supported schema version and report `unknown / schema_incompatible` when an operator must upgrade the brain.
+  3. Bind to an explicitly configured Tailscale address and per-brain port; reject wildcard/public binding by default.
+  4. Export observer generation time so Prometheus detects a process that is reachable but no longer refreshing.
+  5. Keep request handling input-free and prevent metrics requests from triggering unbounded Doctor work or mutations.
 - **Test Scenarios:**
-  - Quiet but caught-up sources remain healthy; stale checkpoints do not.
-  - Required queue with no fresh lease fails while an optional queue is disabled.
-  - Dead/stalled jobs and oldest waiting age affect the correct stage.
-  - Partial or failed Dream phases cannot be masked by a later job-level completion.
-  - Embedding dimensions, provider/model, preprocessing signature, and coverage must all match.
-  - Retrieval collection distinguishes cache, lexical, semantic, and fusion evidence.
-  - A concurrent lease/job/phase transition cannot produce a snapshot state that never existed.
-- **Verification:** Unit fixtures cover every reason code; Postgres E2E proves bounded query behavior and source/brain isolation; status snapshot stays content-free and deterministic.
+  - Two observers with different `GBRAIN_HOME` values expose different opaque brain identities and cannot load each other’s configuration.
+  - An unavailable database yields unknown/stale metrics without leaking its URL or replacing state with healthy.
+  - A pending or incompatible schema is reported without the observer attempting migration.
+  - A slow collector times out and preserves honest partial/unknown state.
+  - Unknown labels, newlines, high-cardinality values, and prohibited fields are rejected.
+  - Public/wildcard binding requires an explicit unsafe override and is absent from production configuration.
+  - Repeated scrapes return cached snapshots and do not rerun expensive collection.
+- **Verification:** Golden OpenMetrics parses with the pinned Prometheus tooling, endpoint tests prove brain isolation, and content scanning finds no prohibited data.
 
-### U4. Implement the one-shot observer and OpenMetrics projection
+### U7. Provision the fleet dashboard on akhserver01
 
-- **Goal:** Provide one independently scheduled atomic metric projection per brain without coupling monitoring to GBrain serving.
-- **Requirements:** R17, R21-R26, R30
-- **Dependencies:** U1-U3
+- **Goal:** Make the scoreboard visible in the existing Grafana instance.
+- **Requirements:** R17, R22, R27, R30; KTD3, KTD6, KTD8
+- **Dependencies:** U4
 - **Files:**
-  - Create: `src/core/observability/observer-config.ts`
-  - Create: `src/core/observability/openmetrics.ts`
-  - Create: `src/core/observability/observer-snapshot.ts`
-  - Create: `src/commands/observe.ts`
-  - Modify: `src/cli.ts`
-  - Create: `ops/observability/postgres/observer-role.sql.example`
-  - Create: `docs/guides/observability-operator.md`
-  - Test: `test/observability/observer-config.test.ts`
-  - Test: `test/observability/openmetrics.test.ts`
-  - Test: `test/observability/observer-snapshot.test.ts`
-  - Test: `test/e2e/observer-isolation-postgres.test.ts`
-- **Approach:** Add `gbrain observe snapshot --openmetrics --output <path>` as a Postgres-only one-shot command that short-circuits generic CLI engine connection, requires an explicit private 0600 one-brain deployment descriptor, opens one least-privilege observer connection, and writes a complete OpenMetrics document to a sibling temporary file before atomic replacement. Provision the role from an explicit allowlist of content-free views/tables and deny knowledge payload reads. File permissions default to 0600 and the configured local monitoring agent is granted only the access required to collect it. Emit observer success and generation timestamps so a missed schedule becomes stale/unknown rather than retaining apparent health. Validate label registry, series count, descriptor permissions, one-brain identity, output path, and `maintenance_until` on every run. PGLite callers use one-shot status JSON without concurrent file access.
+  - AKH Homelab modify: `roles/plg-stack/templates/prometheus.yml.j2`
+  - AKH Homelab create: `roles/plg-stack/templates/dashboards/gbrain-operations.json`
+  - AKH Homelab modify: `roles/plg-stack/tasks/main.yml`
+  - AKH Homelab test: `roles/plg-stack/tests/baseline.yml`
+  - AKH Homelab create: `roles/plg-stack/tests/gbrain.yml`
+- **Approach:**
+  1. Add private static scrape targets for the personal and AKH observer ports over Tailscale.
+  2. Provision a fleet landing dashboard with brain state, observer freshness, and each expected work item.
+  3. Group per-brain drill-down by registered sources, enabled enhancements, infrastructure, and backlogs while retaining last success, next due, oldest pending age, recent failures, and reason/runbook.
+  4. Add a “Needs attention / destash” section without write controls.
 - **Test Scenarios:**
-  - Two separately scheduled observers export separate opaque identities with no shared credential or configuration.
-  - An unavailable or unauthorized brain causes its command to fail without replacing the last file; Prometheus derives unknown from the expired generation timestamp without affecting another brain.
-  - Slow collection obeys deadlines and never partially replaces the previous file.
-  - Labels reject newline, secrets, high-cardinality values, and unknown enum members.
-  - The observer role can read required operational views but cannot select page, chunk, prompt, response, or evidence payloads.
-  - Output refuses broad file modes, unsafe paths, symlink replacement, and inline credential literals.
-  - Series count remains within a formula based on configured brains and registered stages.
-  - Health/readiness distinguish observer-process health from complete fleet health.
-- **Verification:** Golden OpenMetrics fixtures pass `promtool check metrics` or an equivalent parser; descriptor mode, credential separation, cardinality bounds, atomic replacement, stale-schedule behavior, and content scans pass.
+  - Personal healthy and AKH failed render independently.
+  - Unknown, disabled, degraded, failed, and stale-observer states are visually distinct.
+  - Registered sources and enabled Dream, Minion, embedding, link, fact, and content-processing work appear from generic registrations rather than a dashboard allowlist.
+  - Empty, partial, and newly configured brains render without query errors.
+  - Dashboard JSON contains no real database URL, credential, source URL, or knowledge field.
+- **Verification:** Ansible renders valid Prometheus and Grafana configuration; Grafana at `http://akhserver01.tailf8b117.ts.net:3000` loads the provisioned dashboard and both initial targets.
 
-### U5. Add the versioned canary framework and receipt store
+### U8. Add Mattermost alerts and repair guidance
 
-- **Goal:** Make deployed-path proof durable, repeatable, target-bound, and stage-aware.
-- **Requirements:** R18, R21-R22, R25, R27-R29
-- **Dependencies:** U1; Phase 0 mutation-target verifier contract
+- **Goal:** Notify Aaron about sustained actionable failures without alert noise.
+- **Requirements:** R17, R28-R29; KTD6-KTD8
+- **Dependencies:** U7
 - **Files:**
-  - Modify: `src/core/migrate.ts`
-  - Modify: `src/schema.sql`
-  - Modify: `src/core/schema-embedded.ts`
-  - Modify: `src/core/pglite-schema.ts`
-  - Modify: `test/e2e/helpers.ts`
-  - Create: `src/core/observability/canary/policies.ts`
-  - Create: `src/core/observability/canary/types.ts`
-  - Create: `src/core/observability/canary/registry.ts`
-  - Create: `src/core/observability/canary/receipts.ts`
-  - Create: `src/core/observability/canary/runner.ts`
-  - Create: `src/core/observability/canary/mutations.ts`
-  - Create: `src/commands/canary.ts`
-  - Modify: `src/cli.ts`
-  - Modify: `src/commands/jobs.ts`
-  - Modify: `src/core/minions/protected-names.ts`
-  - Modify: `scripts/verify-gbrain-mutation-target.ts`
-  - Test: `test/observability/canary-contract.test.ts`
-  - Test: `test/observability/canary-policy.test.ts`
-  - Test: `test/observability/canary-receipts.test.ts`
-  - Test: `test/observability/canary-mutation-guard.test.ts`
-  - Test: `test/e2e/canary-idempotency-postgres.test.ts`
-- **Approach:** Add `capability_canary_policies` and `capability_canary_runs` tables. A one-time target token provisions or rotates a policy with target fingerprint, disposable source, isolated queue, operation allowlist, cadence bounds, expiry, and revocation state. Each scheduled run atomically derives short-lived authorization and one protected Minion job from the policy. Route every synthetic write and cleanup through a guarded mutation API that checks policy, run, expiry, source, queue, and operation allowlist on each call; canary code receives no unrestricted engine mutation surface. Coalesce scheduled submissions. Run receipts are append-only except finalization of the owning run.
+  - AKH Homelab modify: `roles/plg-stack/templates/alerting/rules.yml.j2`
+  - AKH Homelab modify: `roles/plg-stack/templates/alerting/policies.yml.j2`
+  - AKH Homelab test: `roles/plg-stack/tests/alerts.yml`
+  - GBrain create: `docs/runbooks/observability/observer-missing.md`
+  - GBrain create: `docs/runbooks/observability/missed-work.md`
+  - GBrain create: `docs/runbooks/observability/backlog.md`
+  - GBrain create: `docs/runbooks/observability/embedding.md`
+- **Approach:** Alert on observer absence, failed required work, sustained unknown, dead/stalled work, growing backlog, and embedding mismatch. Use existing Grafana-managed alerting and Mattermost contact point. Keep cadence and failure semantics in GBrain metrics; alert rules apply only hold periods, routing, and maintenance suppression.
 - **Test Scenarios:**
-  - Read-only canaries run without mutation authority.
-  - Policy provisioning refuses wrong target, build, brain, source, expiry, or reused token.
-  - Revoked or expired policy blocks new runs while allowing only deletion-listed cleanup for a previously authorized unfinished run until its cleanup deadline.
-  - A crash recovered after run expiry can clean only artifacts owned by the original run.
-  - A valid run identity cannot write an unlisted page, source, queue, job, or operation.
-  - Crash after synthetic write is visibly incomplete and cleanup can resume idempotently.
-  - Reusing one run idempotency key cannot duplicate knowledge or its receipt; repeating the definition with a new run key creates one receipt and no duplicate durable knowledge.
-  - Unsupported and blocked outcomes remain distinct from failure and pass.
-  - Receipt serialization rejects payloads, content, URLs, and raw errors.
-- **Verification:** Dual-engine migration tests, mutation-target security tests, crash/retry E2E, privacy scans, and previous-reader compatibility pass.
+  - A missed required cadence fires once after its hold period and resolves on success.
+  - Observer absence alerts without duplicating every work-item alert.
+  - Planned maintenance suppresses notification but dashboard state remains unchanged.
+  - Multiple failures for one brain group into a bounded Mattermost notification.
+  - Every notification names only opaque brain/work identifiers and links to an existing runbook.
+- **Verification:** Provisioning tests prove pending, firing, grouped, suppressed, and resolved states through the existing `mattermost-observability` contact point backed by `vault_mattermost_observability_webhook_url`; Phase 1A introduces no notification credential.
 
-### U6. Implement the MVP deployed-path canaries
+### U9. Deploy and accept Phase 1A
 
-- **Goal:** Prove the five MVP capabilities through deterministic stage-specific fixtures.
-- **Requirements:** R18, R20-R23, R27-R30
-- **Dependencies:** U3, U5; accepted embedding cohort for semantic truth
+- **Goal:** Put the scoreboard into daily use for personal and AKH brains.
+- **Requirements:** R16-R17, R20-R32; AE5, AE7-AE9
+- **Dependencies:** U1, U3, U4, U7, U8
 - **Files:**
-  - Create: `src/core/observability/canary/definitions/intake-freshness.ts`
-  - Create: `src/core/observability/canary/definitions/minion-execution.ts`
-  - Create: `src/core/observability/canary/definitions/embedding-readiness.ts`
-  - Create: `src/core/observability/canary/definitions/hybrid-retrieval.ts`
-  - Modify: `src/core/types.ts`
-  - Modify: `src/core/search/hybrid.ts`
-  - Create: `test/fixtures/observability/canary-brain/`
-  - Test: `test/observability/mvp-canaries.test.ts`
-  - Test: `test/e2e/mvp-canary-postgres.test.ts`
-- **Approach:** Keep identity/freshness probes read-only where possible. Use one repository-backed synthetic source and isolated queue for write-path proof. Establish Dream truth from persisted phase outcomes and prove its failure path through U9 fault injection rather than paying for a recurring synthetic Dream run. Extend `HybridSearchMeta` with bounded lexical, semantic, and fusion-contribution evidence that contains no query or result content. The retrieval canary uses a unique lexical distractor and semantic target, bypasses query cache, asserts the accepted embedding identity, and derives the expected-winner assertion from that metadata.
+  - GBrain modify: `docs/guides/observability-operator.md`
+  - GBrain create: `docs/operations/phase-1a-observability-acceptance.md`
+  - GBrain create: `ops/launchd/ai.gbrain.observer.plist.template`
+  - GBrain test: `test/observability/deployment-contract.test.ts`
+- **Approach:**
+  1. Compare GBrain’s discovered sources and recurring work for personal and AKH with the actual deployed schedules; add configuration only for overrides or legacy paths that cannot yet register themselves.
+  2. Deploy one launchd-supervised native observer per brain with separate `GBRAIN_HOME`, credentials, ports, and logs.
+  3. Deploy the homelab scrape targets, dashboard, and alerts.
+  4. Observe for 24 hours and repair configuration or instrumentation gaps; do not add canary infrastructure during acceptance.
 - **Test Scenarios:**
-  - Each canary passes on a healthy disposable deployment and fails at every mandatory stage under fault injection.
-  - Stopped worker, dead job, failed Dream phase, wrong embedding identity, semantic disablement, and cache-only success produce distinct reasons.
-  - Repeated execution is a no-op outside new receipts.
-  - Cleanup removes synthetic pages/chunks/jobs and a post-cleanup sync converges.
-  - Unrelated source counts, timestamps, and retrieval results remain unchanged.
-- **Verification:** All canaries pass on restored Postgres fixtures, failure injection proves each reason and stage, privacy scans pass, and semantic acceptance is skipped or blocked—not passed—until the cohort gate is green.
-
-### U7. Provision fleet and per-brain Grafana dashboards
-
-- **Goal:** Render capability truth in one fleet view with drill-down to evidence and repair ownership.
-- **Requirements:** R17, R20-R26
-- **Dependencies:** U4, U6
-- **Files:**
-  - Create: `ops/observability/grafana/provisioning/dashboards/gbrain.yaml`
-  - Create: `ops/observability/grafana/dashboards/gbrain-fleet.json`
-  - Create: `ops/observability/grafana/dashboards/gbrain-detail.json`
-  - Create: `ops/observability/grafana/dashboards/gbrain-canaries.json`
-  - Create: `ops/observability/prometheus/gbrain-recording-rules.yaml`
-  - Create: `test/observability/grafana-provisioning.test.ts`
-  - Create: `test/observability/dashboard-contract.test.ts`
-- **Approach:** Provision dashboards as code against recording rules derived from the metric contract. The fleet dashboard is the default landing view and orders failed, unknown, and stale brains before healthy ones. Selecting a brain/capability opens the detail dashboard with variables and time range preserved; relevant stages link to the canary dashboard and runbook. Detail and canary views retain the current brain/capability context and provide a clear return to fleet. Fleet overview shows each brain and five capabilities, observation age, current state, and alert state. Brain detail shows stage state, freshness/deadline, backlog and oldest age, last successful canary, and a bounded reason. Variables use only registered opaque identifiers.
-- **Test Scenarios:**
-  - Every registered capability appears in fleet and detail dashboards.
-  - Unknown and disabled are visually and semantically distinct from healthy.
-  - A failed canary remains visible even when current component probes are healthy.
-  - Empty fleet, one brain, and multiple brains render without query errors.
-  - Loading, empty, query error, observer unavailable, stale last-known data, and partial capability data have distinct messages, retained timestamps, and operator actions.
-  - Canary panels render `not run`, `unsupported`, `blocked`, `failed`, and `passed` separately with the relevant timestamp and runbook action.
-  - State is encoded with text or icon plus color; panel/link names, variables, focus order, contrast, keyboard navigation, and narrow-width overflow meet Grafana's supported accessibility behavior.
-  - Dashboard JSON contains no real brain/source names, endpoints, credentials, or content fields.
-- **Verification:** Provisioning schemas validate, dashboard queries parse against fixture metrics, golden screenshots or panel-model tests cover all operational and canary states, keyboard/drill-down paths and responsive layouts are exercised, and recording rules preserve state semantics.
-
-### U8. Add bounded alerts, maintenance inhibition, and runbooks
-
-- **Goal:** Notify on sustained actionable failures without hiding dashboard truth or creating alert fatigue.
-- **Requirements:** R17, R21-R26
-- **Dependencies:** U4, U6, U7
-- **Files:**
-  - Create: `ops/observability/prometheus/gbrain-alert-rules.yaml`
-  - Create: `ops/observability/alertmanager/gbrain-inhibition.example.yaml`
-  - Create: `docs/runbooks/observability/intake-freshness.md`
-  - Create: `docs/runbooks/observability/minion-execution.md`
-  - Create: `docs/runbooks/observability/dream-processing.md`
-  - Create: `docs/runbooks/observability/embedding-readiness.md`
-  - Create: `docs/runbooks/observability/hybrid-retrieval.md`
-  - Create: `docs/runbooks/observability/observer-unknown.md`
-  - Create: `test/observability/alert-rules.test.ts`
-- **Approach:** Define alerts for observer absence, wrong identity, stale source, expired required worker lease, dead/stalled queue, failed Dream phase, embedding mismatch, and retrieval-stage failure. Use recording rules, explicit `for` durations, and one alert per brain/capability/severity. Inhibit only while a fresh snapshot reports `gbrain_maintenance_active=1`; missing, stale, invalid, expired, or clock-skewed maintenance evidence cannot inhibit. Runbooks start with safe read-only diagnosis and identify when mutation authorization is required.
-- **Test Scenarios:**
-  - Each roadmap failure produces the expected alert after its hold period.
-  - Recovery resolves the alert without manual state deletion.
-  - Maintenance inhibits notification but not metrics or dashboard state.
-  - Identity/cross-boundary failure bypasses normal hold periods.
-  - Repeated stage failures deduplicate to one capability alert.
-  - Alert labels and annotations remain content-free and bounded.
-- **Verification:** `promtool check rules` passes; rule-unit fixtures prove firing, pending, inhibited, and resolved states; every alert maps to an existing runbook and registered reason.
-
-### U9. Deploy, inject failures, and accept the fleet
-
-- **Goal:** Demonstrate operational truth against actual immutable deployments and hand off repeatable fleet operations.
-- **Requirements:** R16-R30; AE5-AE9
-- **Dependencies:** U1-U8; Phase 0 accepted; embedding gate accepted per covered brain
-- **Files:**
-  - Modify: `docs/guides/fork-release-operations.md`
-  - Modify: `docs/guides/observability-operator.md`
-  - Create: `docs/operations/observability-acceptance-report.md`
-  - Create: `scripts/verify-observability-deployment.ts`
-  - Test: `test/verify-observability-deployment.test.ts`
-- **Approach:** Build the observer from the same clean release discipline as GBrain. Validate private descriptors and read-only credentials without printing them. Roll out personal first, then AKH, and add future protected brains only after independent policy and credential checks. Run bounded fault injection on restored targets: stop worker renewal, stale one synthetic source, create a dead synthetic job, fail a deterministic Dream phase, reject an embedding identity, disable semantic retrieval, revoke one observer credential, and activate maintenance. Record immediate, 30-minute, and 24-hour content-free receipts.
-- **Test Scenarios:**
-  - Every injected failure changes the expected brain/capability/stage and no unrelated brain.
-  - Alerts fire and resolve within declared bounds.
-  - Observer restart, Prometheus restart, and one target outage preserve honest unknown/stale states.
-  - Previous and current GBrain binaries remain readable through the agreed compatibility window.
-  - No telemetry, receipt, dashboard, alert, or report contains sensitive configuration or knowledge content.
-- **Verification:** Deployment verifier, fault-injection matrix, canary schedule, dashboard review, alert delivery/resolve proof, privacy scan, rollback rehearsal, and 24-hour fleet receipt are green.
+  - Stopping one observer affects only its brain.
+  - Pausing a safe test schedule or seeding a failed test job produces the expected dashboard state and one alert.
+  - Backlog and missing-instrumentation panels match the underlying GBrain status evidence.
+  - Restarting Prometheus, Grafana, or an observer preserves honest stale/unknown transitions.
+  - A content scan of metrics, dashboards, alerts, and acceptance notes finds no protected material.
+- **Verification:** Both brains remain visible for 24 hours, known safe failure demonstrations alert and recover, and every expected recurring activity is either observed or explicitly marked with an instrumentation follow-up.
 
 ---
 
 ## Verification Contract
 
-| Gate | Command or proof | Applies to | Done signal |
-|---|---|---|---|
-| Type safety | `bun run typecheck` | U1-U6, U9 | No TypeScript errors |
-| Unit behavior | `bun test test/observability test/status-sections.test.ts test/minion-worker-heartbeat.test.ts` | U1-U8 | All capability, privacy, and projection fixtures pass |
-| Migration parity | `bun test test/migrations-registry.test.ts test/migration-in-process.serial.test.ts test/e2e/minion-worker-heartbeat-postgres.test.ts test/e2e/canary-idempotency-postgres.test.ts` | U2, U5 | Postgres and PGLite schemas/readers remain coherent |
-| Repository guards | `bun run verify` | All | Generated references, isolation, and repository guards pass |
-| Full repository gate | `bun run ci:local` | Before U9 | Complete unskipped CI passes on the clean candidate |
-| Metrics validity | `promtool check metrics < fixture` | U4 | Exposition parses with expected family types and bounded series |
-| Rule validity | `promtool check rules ops/observability/prometheus/*.yaml` | U7-U8 | Recording and alert rules parse |
-| Rule behavior | Prometheus rule-unit fixtures | U8 | Pending, firing, inhibited, recovery, and deduplication match R26 |
-| Dashboard contract | `bun test test/observability/grafana-provisioning.test.ts test/observability/dashboard-contract.test.ts` | U7 | Every capability/state has a valid query and panel |
-| Security/privacy | Content scanner plus descriptor permission tests | U1-U9 | No prohibited field or unsafe descriptor mode is present |
-| Deployed acceptance | `bun run scripts/verify-observability-deployment.ts --descriptor <private-path>` | U9 | Correct immutable observer/build/brain identities and fresh snapshots |
-| Fault injection | Acceptance matrix for AE5-AE9 | U9 | Each failure produces one correct bounded state and alert |
-| Observation | Immediate, 30-minute, and 24-hour receipts | U9 | No build drift, stale observer, missed canary, cross-brain effect, or alert leak |
+| Gate | Applies to | Done signal |
+|---|---|---|
+| Type safety | GBrain U1, U3, U4, U9 | `bun run typecheck` passes |
+| Focused behavior | GBrain U1, U3, U4 | Observability, status, source-health, queue, Dream, and embedding test cohorts pass |
+| Real database seam | GBrain U3 | The focused Postgres operational-snapshot test passes without running the memory-heavy full E2E suite |
+| Repository guards | GBrain changed surfaces | `bun run verify` and affected generated-reference guards pass |
+| Metrics validity | GBrain U4 | Golden exposition parses and respects the bounded-series/content contract |
+| Homelab configuration | AKH Homelab U7-U8 | Ansible templates render; Prometheus, Grafana dashboard, and alert provisioning tests pass |
+| Deployed smoke | U9 | Prometheus sees both observers; Grafana renders both brains; Mattermost receives and resolves one safe test alert |
+| Observation | U9 | 24 hours with no unexplained missing observer, missed expected work, cross-brain effect, or sensitive telemetry |
 
-The full repository gate remains authoritative. Focused tests accelerate iteration but cannot replace the final clean-commit gate. External tools such as `promtool` run from a pinned container or private operator toolchain recorded in the acceptance receipt.
+Full repository E2E is not a Phase 1A default gate. It is reserved for changes that touch shared database migrations, engine behavior, or release policy and must use the existing memory-bounded execution policy.
 
 ---
 
 ## Definition of Done
 
-- U1 is done when one versioned capability contract and exhaustive registry drive status JSON and test fixtures.
-- U2 is done when idle and active workers renew brain-local database leases, expired workers are detected, and host-local registry files are no longer treated as authoritative liveness.
-- U3 is done when every MVP collector uses existing evidence owners, emits bounded states and reasons, and returns honest unknown on collection failure.
-- U4 is done when each scheduled read-only observer atomically exports valid bounded OpenMetrics, exposes stale schedules honestly, and cannot read knowledge payloads or mutate a monitored brain.
-- U5 is done when canary definitions and receipts are versioned, target-bound, idempotent, private, and recoverable after interruption.
-- U6 is done when every MVP canary proves its deployed stages and each injected stage failure is distinguishable.
-- U7 is done when fleet and per-brain dashboards render all five states and all MVP capabilities from provisioned code.
-- U8 is done when alerts are actionable, deduplicated, maintenance-aware, content-free, and linked to tested runbooks.
-- U9 is done when every configured production brain passes identity, canary, fault-injection, privacy, rollback, and 24-hour observation acceptance.
-- Requirements R20-R30, the Phase 1 MVP portions of R16-R19, and acceptance examples AE5-AE9 are covered by passing tests or deployment receipts.
-- Experimental dependencies, abandoned collectors, duplicate SQL, temporary dashboards, synthetic knowledge, stale canary jobs, and unused migration scaffolding are removed before completion.
+- U1 is done when GBrain has one expected-work registry and one operational snapshot contract.
+- U3 is done when current GBrain evidence covers registered sources and recurring work without source-specific monitoring code or observer-specific SQL.
+- U4 is done when independently scoped native observers expose valid content-free metrics over Tailscale.
+- U7 is done when the existing Grafana on `akhserver01` shows fleet and detail status for personal and AKH.
+- U8 is done when sustained failures notify the existing Mattermost observability route and recover cleanly.
+- U9 is done when 24-hour acceptance proves every expected activity is observed or visibly lacks instrumentation.
+- Phase 1A does not claim semantic end-to-end proof; Phase 1C remains the owner of that acceptance.
+- Experimental collectors, duplicate queries, unused dashboard panels, real credentials, and abandoned deployment files are absent from the final changes.
 
 ---
 
-## Appendix
-
-### Existing Patterns to Reuse
-
-- `src/commands/status.ts` for additive machine-readable status and deadline-bounded sections.
-- `src/core/source-health.ts` for batched source metrics and shared evidence between commands.
-- `src/core/minions/queue.ts` for queue counts, retries, idempotency, and durable job outcomes.
-- `src/core/minions/worker-registry.ts` for local process diagnostics, but not fleet liveness authority.
-- `src/core/build-identity.ts` for content-free process and artifact receipts.
-- `src/core/search/embedding-identity.ts` and `src/core/search/telemetry.ts` for retrieval-stage evidence.
-- `scripts/verify-gbrain-mutation-target.ts` for target-bound mutating authorization.
-- `docs/guides/fork-release-operations.md` for immutable release, canary, rollback, and observation discipline.
-
-### Sources
+## Sources
 
 - `docs/brainstorms/2026-07-22-001-gbrain-knowledge-runtime-requirements.md`
 - `docs/roadmaps/2026-07-22-001-gbrain-knowledge-runtime-roadmap.md`
-- `docs/plans/2026-07-22-002-refactor-stabilize-managed-fork-plan.md`
-- `docs/plans/2026-07-22-003-refactor-rebuild-embedding-cohorts-plan.md`
 - `docs/operations/managed-fork-integration-report.md`
-- `docs/guides/queue-operations-runbook.md`
-- Prometheus exporter and OpenMetrics guidance: `https://prometheus.io/docs/instrumenting/writing_exporters/` and `https://prometheus.io/docs/specs/om/open_metrics_spec/`
+- `src/commands/status.ts`
+- `src/core/source-health.ts`
+- `src/core/minions/queue.ts`
+- `src/core/minions/worker-registry.ts`
+- `src/core/build-identity.ts`
+- `src/core/search/embedding-identity.ts`
+- `src/core/search/telemetry.ts`
+- AKH Homelab: `docs/solutions/architecture-patterns/shared-grafana-observability-platform-alloy-tailscale-authentik-2026-07-11.md`
+- AKH Homelab: `roles/plg-stack/templates/prometheus.yml.j2`
+- AKH Homelab: `roles/plg-stack/templates/alerting/rules.yml.j2`
