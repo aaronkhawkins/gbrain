@@ -5850,6 +5850,47 @@ export const MIGRATIONS: Migration[] = [
         WHERE outcome = 'failed';
     `,
   },
+  {
+    version: 129,
+    name: 'processing_receipt_attempt_safety',
+    idempotent: true,
+    sql: `
+      ALTER TABLE processing_receipts
+        ADD COLUMN IF NOT EXISTS attempt_token VARCHAR(64);
+      UPDATE processing_receipts
+         SET attempt_token = md5(
+           processor_key || ':' || processor_version || ':' || scope_id || ':' ||
+           input_fingerprint || ':' || attempt::text
+         )
+       WHERE attempt_token IS NULL;
+      ALTER TABLE processing_receipts
+        ALTER COLUMN attempt_token SET NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS processing_receipt_attempts (
+        receipt_id BIGINT NOT NULL REFERENCES processing_receipts(id) ON DELETE CASCADE,
+        attempt INTEGER NOT NULL CHECK (attempt >= 1),
+        attempt_token VARCHAR(64) NOT NULL,
+        outcome VARCHAR(16) NOT NULL
+          CHECK (outcome IN ('partial','failed')),
+        started_at TIMESTAMPTZ NOT NULL,
+        finished_at TIMESTAMPTZ,
+        input_count INTEGER NOT NULL DEFAULT 0 CHECK (input_count >= 0),
+        output_count INTEGER NOT NULL DEFAULT 0 CHECK (output_count >= 0),
+        backlog_count INTEGER CHECK (backlog_count IS NULL OR backlog_count >= 0),
+        reason_code VARCHAR(48),
+        lineage_kind VARCHAR(64),
+        lineage_id VARCHAR(128),
+        PRIMARY KEY (receipt_id, attempt),
+        UNIQUE (attempt_token)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_processing_receipt_attempts_failed
+        ON processing_receipt_attempts (finished_at DESC)
+        WHERE outcome = 'failed';
+
+      DROP INDEX IF EXISTS idx_processing_receipts_observer;
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

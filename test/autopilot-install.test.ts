@@ -154,4 +154,10 @@ describe('autopilot wrapper script — env source order (v0.36.1.x #966)', () =>
     expect(src).toMatch(/source\s+~\/\.zshenv/);
     expect(src).toMatch(/source\s+~\/\.zshrc/);
   });
+
+  test('scoped wrapper pins the selected GBRAIN_HOME after shell profiles load', async () => {
+    const src = readFileSync('src/commands/autopilot.ts', 'utf8');
+    expect(src).toContain("export GBRAIN_HOME='");
+    expect(src.indexOf('${brainHomeExport}exec')).toBeGreaterThan(src.indexOf('source ~/.zshrc'));
+  });
 });

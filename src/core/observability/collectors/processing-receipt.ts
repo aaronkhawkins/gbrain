@@ -32,25 +32,38 @@ export async function collectProcessingReceiptEvidence(
        FROM processing_registrations r
        LEFT JOIN LATERAL (
          SELECT p2.started_at, p2.outcome, p2.backlog_count
-           FROM processing_receipts p2
+          FROM processing_receipts p2
           WHERE p2.processor_key = r.processor_key
-          ORDER BY COALESCE(p2.finished_at, p2.started_at) DESC, p2.id DESC
+            AND p2.processor_version = r.processor_version
+          ORDER BY p2.started_at DESC, p2.id DESC
           LIMIT 1
        ) latest ON TRUE
        LEFT JOIN LATERAL (
          SELECT p3.finished_at
            FROM processing_receipts p3
           WHERE p3.processor_key = r.processor_key
+            AND p3.processor_version = r.processor_version
             AND p3.outcome IN ('completed','skipped')
           ORDER BY p3.finished_at DESC, p3.id DESC
           LIMIT 1
        ) success ON TRUE
        LEFT JOIN LATERAL (
          SELECT COUNT(*) AS recent_failures
-           FROM processing_receipts p4
-          WHERE p4.processor_key = r.processor_key
-            AND p4.outcome = 'failed'
-            AND COALESCE(p4.finished_at, p4.started_at) >= $1
+           FROM (
+             SELECT p4.finished_at
+               FROM processing_receipts p4
+              WHERE p4.processor_key = r.processor_key
+                AND p4.processor_version = r.processor_version
+                AND p4.outcome = 'failed'
+             UNION ALL
+             SELECT a.finished_at
+               FROM processing_receipt_attempts a
+               JOIN processing_receipts p5 ON p5.id = a.receipt_id
+              WHERE p5.processor_key = r.processor_key
+                AND p5.processor_version = r.processor_version
+                AND a.outcome = 'failed'
+           ) failed_attempts
+          WHERE failed_attempts.finished_at >= $1
        ) failures ON TRUE
       WHERE r.processor_key = ANY($2)
       ORDER BY r.processor_key`,

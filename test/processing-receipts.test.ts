@@ -49,6 +49,7 @@ describe('generic processing receipts', () => {
     expect(first.attempt).toBe(1);
     const complete = await finishProcessingReceipt(engine, {
       ...identity,
+      attemptToken: first.attempt_token,
       outcome: 'completed',
       inputCount: 2,
       outputCount: 1,
@@ -65,6 +66,7 @@ describe('generic processing receipts', () => {
     expect(String(replay.started_at)).toBe(String(complete.started_at));
     const replayFinish = await finishProcessingReceipt(engine, {
       ...identity,
+      attemptToken: replay.attempt_token,
       outcome: 'failed',
       inputCount: 999,
       reasonCode: 'late_replay',
@@ -73,15 +75,26 @@ describe('generic processing receipts', () => {
     expect(replayFinish.input_count).toBe(2);
 
     const failedIdentity = { ...identity, inputFingerprint: 'b'.repeat(64) };
-    await startProcessingReceipt(engine, failedIdentity);
+    const failed = await startProcessingReceipt(engine, failedIdentity);
     await finishProcessingReceipt(engine, {
       ...failedIdentity,
+      attemptToken: failed.attempt_token,
       outcome: 'failed',
       reasonCode: 'provider_timeout',
     });
     const retry = await startProcessingReceipt(engine, failedIdentity);
     expect(retry.outcome).toBe('running');
     expect(retry.attempt).toBe(2);
+    const archived = await engine.executeRaw<{ outcome: string }>(
+      'SELECT outcome FROM processing_receipt_attempts WHERE receipt_id = $1 ORDER BY attempt',
+      [retry.id],
+    );
+    expect(archived).toEqual([{ outcome: 'failed' }]);
+    await expect(finishProcessingReceipt(engine, {
+      ...failedIdentity,
+      attemptToken: failed.attempt_token,
+      outcome: 'completed',
+    })).rejects.toThrow('attempt is missing or stale');
   }, 30_000);
 
   test('rejects content-like identities and unbounded result values', async () => {
@@ -95,12 +108,18 @@ describe('generic processing receipts', () => {
       ...identity,
       scopeId: 'https://private.example/path',
     })).rejects.toThrow('invalid scope id');
-    await startProcessingReceipt(engine, identity);
+    const started = await startProcessingReceipt(engine, identity);
     await expect(finishProcessingReceipt(engine, {
       ...identity,
+      attemptToken: started.attempt_token,
       outcome: 'failed',
       reasonCode: 'raw error: secret',
     })).rejects.toThrow('invalid reason code');
+    await expect(startProcessingReceipt(engine, {
+      ...identity,
+      processorVersion: '2',
+      inputFingerprint: 'c'.repeat(64),
+    })).rejects.toThrow('registration/version is missing');
   }, 30_000);
 
   test('exports bounded observer evidence and failure state', async () => {
@@ -110,9 +129,10 @@ describe('generic processing receipts', () => {
       cadenceSeconds: 3600,
       runbook: 'missed-work',
     });
-    await startProcessingReceipt(engine, identity);
+    const started = await startProcessingReceipt(engine, identity);
     await finishProcessingReceipt(engine, {
       ...identity,
+      attemptToken: started.attempt_token,
       outcome: 'failed',
       reasonCode: 'provider_timeout',
       backlogCount: 3,
@@ -133,6 +153,44 @@ describe('generic processing receipts', () => {
       recent_failures: 1,
       force_state: 'failed',
       force_reason: 'recent_failures',
+    }));
+  }, 30_000);
+
+  test('does not attribute prior-version success to a newly registered version', async () => {
+    await registerProcessor(engine, {
+      key: identity.processorKey,
+      version: '1',
+      cadenceSeconds: 3600,
+      runbook: 'missed-work',
+    });
+    const started = await startProcessingReceipt(engine, identity);
+    await finishProcessingReceipt(engine, {
+      ...identity,
+      attemptToken: started.attempt_token,
+      outcome: 'completed',
+    });
+    await registerProcessor(engine, {
+      key: identity.processorKey,
+      version: '2',
+      cadenceSeconds: 3600,
+      runbook: 'missed-work',
+    });
+    const evidence = await collectProcessingReceiptEvidence([{
+      key: 'processor.fixture.expand',
+      kind: 'content_processor',
+      enabled: true,
+      required: false,
+      criticality: 'optional',
+      cadence_seconds: 3600,
+      grace_seconds: 300,
+      evidence_adapter: 'processing_receipt',
+      selector: identity.processorKey,
+      version: '2',
+    }], engine, { now: new Date() });
+    expect(evidence.get('processor.fixture.expand')).toEqual(expect.objectContaining({
+      last_attempt_at: null,
+      last_success_at: null,
+      force_state: 'unknown',
     }));
   }, 30_000);
 });

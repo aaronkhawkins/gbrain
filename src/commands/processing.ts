@@ -1,5 +1,4 @@
 import type { BrainEngine } from '../core/engine.ts';
-import { MinionQueue } from '../core/minions/queue.ts';
 import {
   finishProcessingReceipt,
   listProcessingRegistrations,
@@ -13,10 +12,9 @@ export const PROCESSING_HELP = `gbrain processing — generic external-processor
 Usage:
   gbrain processing register --key KEY --version V --cadence-seconds N --runbook KEY [--required] [--grace-seconds N] [--repair-job NAME]
   gbrain processing start --key KEY --version V --scope OPAQUE --fingerprint SHA256
-  gbrain processing finish --key KEY --version V --scope OPAQUE --fingerprint SHA256 --outcome completed|partial|failed|skipped [--input-count N] [--output-count N] [--backlog-count N] [--reason CODE] [--lineage-kind KIND] [--lineage-id OPAQUE]
+  gbrain processing finish --key KEY --version V --scope OPAQUE --fingerprint SHA256 --attempt-token OPAQUE --outcome completed|partial|failed|skipped [--input-count N] [--output-count N] [--backlog-count N] [--reason CODE] [--lineage-kind KIND] [--lineage-id OPAQUE]
   gbrain processing list
   gbrain processing repair plan --key KEY
-  gbrain processing repair dispatch --key KEY --yes
 
 This contract stores operational metadata only. Do not pass content, URLs,
 prompts, model output, raw errors, or credentials.
@@ -35,8 +33,6 @@ function intFlag(args: string[], name: string, fallback?: number): number | unde
   if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a non-negative integer`);
   return Number(raw);
 }
-
-const REPAIR_JOB_ALLOWLIST = new Set(['noop']);
 
 export async function runProcessing(
   engine: BrainEngine,
@@ -80,6 +76,7 @@ export async function runProcessing(
         processorVersion: flag(rest, '--version', true)!,
         scopeId: flag(rest, '--scope', true)!,
         inputFingerprint: flag(rest, '--fingerprint', true)!,
+        attemptToken: flag(rest, '--attempt-token', true)!,
         outcome: parseProcessingTerminalOutcome(flag(rest, '--outcome', true)!),
         inputCount: intFlag(rest, '--input-count'),
         outputCount: intFlag(rest, '--output-count'),
@@ -112,7 +109,8 @@ export async function runProcessing(
              SELECT p.id, p.outcome
                FROM processing_receipts p
               WHERE p.processor_key = r.processor_key
-              ORDER BY COALESCE(p.finished_at, p.started_at) DESC, p.id DESC
+                AND p.processor_version = r.processor_version
+              ORDER BY p.started_at DESC, p.id DESC
               LIMIT 1
            ) latest ON TRUE
           WHERE r.processor_key = $1`,
@@ -124,37 +122,19 @@ export async function runProcessing(
         ? null
         : { id: registration.id, outcome: registration.outcome };
       const repairJob = registration.repair_job_name;
-      const supported = repairJob != null
-        && REPAIR_JOB_ALLOWLIST.has(repairJob)
-        && (receipt?.outcome === 'failed' || receipt?.outcome === 'partial');
       const plan = {
         processor_key: key,
         runbook: registration.runbook,
         receipt_id: receipt?.id ?? null,
         outcome: receipt?.outcome ?? null,
-        dispatch_supported: supported,
-        repair_job: supported ? repairJob : null,
+        dispatch_supported: false,
+        repair_job: repairJob,
       };
       if (action === 'plan') {
         process.stdout.write(JSON.stringify(plan) + '\n');
         return { exitCode: 0 };
       }
-      if (action !== 'dispatch') throw new Error('repair action must be plan or dispatch');
-      if (!repairArgs.includes('--yes')) throw new Error('repair dispatch requires --yes');
-      if (!supported || !repairJob) throw new Error('registered repair has no supported handler');
-      const queue = new MinionQueue(engine);
-      const job = await queue.add(
-        repairJob,
-        { processor_key: key },
-        { idempotency_key: `processing-repair:${key}:${receipt!.id}` },
-        { allowProtectedSubmit: true },
-      );
-      await engine.executeRaw(
-        'UPDATE processing_receipts SET repair_job_id = $2 WHERE id = $1',
-        [receipt!.id, job.id],
-      );
-      process.stdout.write(JSON.stringify({ ...plan, job_id: job.id }) + '\n');
-      return { exitCode: 0 };
+      throw new Error('repair action must be plan');
     }
     throw new Error(`unknown processing subcommand: ${sub}`);
   } catch (error) {

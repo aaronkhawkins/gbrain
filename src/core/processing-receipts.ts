@@ -1,4 +1,5 @@
 import type { BrainEngine } from './engine.ts';
+import { randomUUID } from 'node:crypto';
 
 export const PROCESSING_OUTCOMES = ['running', 'completed', 'partial', 'failed', 'skipped'] as const;
 export type ProcessingOutcome = (typeof PROCESSING_OUTCOMES)[number];
@@ -45,6 +46,7 @@ export interface ProcessingReceiptIdentity {
 }
 
 export interface FinishProcessingReceiptInput extends ProcessingReceiptIdentity {
+  attemptToken: string;
   outcome: ProcessingTerminalOutcome;
   inputCount?: number;
   outputCount?: number;
@@ -61,6 +63,7 @@ export interface ProcessingReceiptRow {
   scope_id: string;
   input_fingerprint: string;
   attempt: number;
+  attempt_token: string;
   outcome: ProcessingOutcome;
   started_at: string;
   finished_at: string | null;
@@ -149,41 +152,67 @@ export async function startProcessingReceipt(
   input: ProcessingReceiptIdentity,
 ): Promise<ProcessingReceiptRow> {
   validateProcessingIdentity(input);
+  const attemptToken = randomUUID();
   const rows = await engine.executeRaw<ProcessingReceiptRow>(
     `INSERT INTO processing_receipts (
-       processor_key, processor_version, scope_id, input_fingerprint
-     ) VALUES ($1,$2,$3,$4)
+       processor_key, processor_version, scope_id, input_fingerprint, attempt_token
+     )
+     SELECT processor_key, processor_version, $3, $4, $5
+       FROM processing_registrations
+      WHERE processor_key = $1 AND processor_version = $2 AND enabled = TRUE
      ON CONFLICT (processor_key, processor_version, scope_id, input_fingerprint)
-     DO UPDATE SET
-       attempt = CASE
-         WHEN processing_receipts.outcome IN ('failed','partial')
-           THEN processing_receipts.attempt + 1
-         ELSE processing_receipts.attempt
-       END,
-       outcome = CASE
-         WHEN processing_receipts.outcome IN ('failed','partial') THEN 'running'
-         ELSE processing_receipts.outcome
-       END,
-       started_at = CASE
-         WHEN processing_receipts.outcome IN ('failed','partial') THEN CURRENT_TIMESTAMP
-         ELSE processing_receipts.started_at
-       END,
-       finished_at = CASE
-         WHEN processing_receipts.outcome IN ('failed','partial') THEN NULL
-         ELSE processing_receipts.finished_at
-       END
-     WHERE processing_receipts.outcome IN ('failed','partial')
+     DO NOTHING
      RETURNING *`,
-    [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint],
+    [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint, attemptToken],
   );
   if (rows[0]) return rows[0];
+  const retried = await engine.executeRaw<ProcessingReceiptRow>(
+    `WITH archived AS (
+       INSERT INTO processing_receipt_attempts (
+         receipt_id, attempt, attempt_token, outcome, started_at, finished_at,
+         input_count, output_count, backlog_count, reason_code, lineage_kind, lineage_id
+       )
+       SELECT id, attempt, attempt_token, outcome, started_at, finished_at,
+              input_count, output_count, backlog_count, reason_code, lineage_kind, lineage_id
+         FROM processing_receipts
+        WHERE processor_key = $1 AND processor_version = $2
+          AND scope_id = $3 AND input_fingerprint = $4
+          AND outcome IN ('failed','partial')
+       ON CONFLICT (receipt_id, attempt) DO NOTHING
+       RETURNING receipt_id, attempt
+     )
+     UPDATE processing_receipts p SET
+       attempt = p.attempt + 1,
+       attempt_token = $5,
+       outcome = 'running',
+       started_at = CURRENT_TIMESTAMP,
+       finished_at = NULL,
+       input_count = 0,
+       output_count = 0,
+       backlog_count = NULL,
+       reason_code = NULL,
+       lineage_kind = NULL,
+       lineage_id = NULL,
+       repair_job_id = NULL
+      FROM archived a
+     WHERE p.id = a.receipt_id AND p.attempt = a.attempt
+     RETURNING p.*`,
+    [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint, attemptToken],
+  );
+  if (retried[0]) return retried[0];
   const existing = await engine.executeRaw<ProcessingReceiptRow>(
-    `SELECT * FROM processing_receipts
-      WHERE processor_key = $1 AND processor_version = $2
-        AND scope_id = $3 AND input_fingerprint = $4`,
+    `SELECT p.* FROM processing_receipts p
+       JOIN processing_registrations r
+         ON r.processor_key = p.processor_key
+        AND r.processor_version = p.processor_version
+        AND r.enabled = TRUE
+      WHERE p.processor_key = $1 AND p.processor_version = $2
+        AND p.scope_id = $3 AND p.input_fingerprint = $4`,
     [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint],
   );
-  if (!existing[0]) throw new Error('processing receipt start did not persist');
+  if (!existing[0]) {
+    throw new Error('processor registration/version is missing or disabled');
+  }
   return existing[0];
 }
 
@@ -192,6 +221,7 @@ export async function finishProcessingReceipt(
   input: FinishProcessingReceiptInput,
 ): Promise<ProcessingReceiptRow> {
   validateProcessingIdentity(input);
+  assertMatch('attempt token', input.attemptToken, OPAQUE_RE);
   parseProcessingTerminalOutcome(input.outcome);
   if (input.reasonCode != null) assertMatch('reason code', input.reasonCode, REASON_RE);
   if (input.lineageKind != null) assertMatch('lineage kind', input.lineageKind, KEY_RE);
@@ -203,6 +233,7 @@ export async function finishProcessingReceipt(
        reason_code = $9, lineage_kind = $10, lineage_id = $11
      WHERE processor_key = $1 AND processor_version = $2
        AND scope_id = $3 AND input_fingerprint = $4
+       AND attempt_token = $12
        AND outcome = 'running'
      RETURNING *`,
     [
@@ -211,16 +242,21 @@ export async function finishProcessingReceipt(
       boundedInt('outputCount', input.outputCount),
       boundedInt('backlogCount', input.backlogCount, true),
       input.reasonCode ?? null, input.lineageKind ?? null, input.lineageId ?? null,
+      input.attemptToken,
     ],
   );
   if (rows[0]) return rows[0];
   const existing = await engine.executeRaw<ProcessingReceiptRow>(
     `SELECT * FROM processing_receipts
       WHERE processor_key = $1 AND processor_version = $2
-        AND scope_id = $3 AND input_fingerprint = $4`,
-    [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint],
+        AND scope_id = $3 AND input_fingerprint = $4
+        AND attempt_token = $5`,
+    [
+      input.processorKey, input.processorVersion, input.scopeId,
+      input.inputFingerprint, input.attemptToken,
+    ],
   );
-  if (!existing[0]) throw new Error('processing receipt was not started');
+  if (!existing[0]) throw new Error('processing receipt attempt is missing or stale');
   return existing[0];
 }
 
