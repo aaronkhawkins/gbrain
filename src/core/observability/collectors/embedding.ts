@@ -3,15 +3,15 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
 import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import type { CollectorOpts } from './index.ts';
 
 export async function collectEmbeddingEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  opts: { config?: GBrainConfig | null; now: Date },
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
 
@@ -46,8 +46,13 @@ export async function collectEmbeddingEvidence(
   }
 
   try {
-    const sources = await loadAllSources(engine, { includeArchived: false });
-    const metrics = await computeAllSourceMetrics(engine, sources, { probeContent: false });
+    const metrics = opts.context
+      ? await opts.context.getSourceMetrics()
+      : await computeAllSourceMetrics(
+        engine,
+        await loadAllSources(engine, { includeArchived: false }),
+        { probeContent: false },
+      );
     let totalChunks = 0;
     let embedded = 0;
     let backfillQueued = 0;

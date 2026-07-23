@@ -26,6 +26,15 @@ interface PhaseOutcome {
   reason: string | null;
 }
 
+interface NormalizedCycleJob {
+  status: string;
+  event_at: string | null;
+  source_id: string | null;
+  name: string;
+  outcomes: Map<string, PhaseOutcome>;
+  skip_reason: string | null;
+}
+
 type SkipClass = 'success' | 'deferred' | 'failure';
 
 const BENIGN_SKIP_REASONS = new Set([
@@ -74,37 +83,38 @@ function nestedReason(record: Record<string, unknown>): string | null {
   return typeof details?.reason === 'string' ? details.reason : null;
 }
 
-function phaseOutcomes(result: unknown): Map<string, PhaseOutcome> {
+function parseCycleResult(result: unknown): {
+  outcomes: Map<string, PhaseOutcome>;
+  skipReason: string | null;
+} {
   const out = new Map<string, PhaseOutcome>();
   const root = asRecord(result);
-  if (!root) return out;
+  if (!root) return { outcomes: out, skipReason: null };
   const report = asRecord(root.report) ?? root;
-  if (!Array.isArray(report.phases)) return out;
-  for (const value of report.phases) {
-    const record = asRecord(value);
-    if (!record) continue;
-    const name = typeof record.phase === 'string'
-      ? record.phase
-      : typeof record.name === 'string'
-        ? record.name
-        : null;
-    if (!name) continue;
-    out.set(name, {
-      status: typeof record.status === 'string' ? record.status : 'unknown',
-      finished_at: typeof record.finished_at === 'string' ? record.finished_at : null,
-      reason: nestedReason(record),
-    });
+  if (Array.isArray(report.phases)) {
+    for (const value of report.phases) {
+      const record = asRecord(value);
+      if (!record) continue;
+      const name = typeof record.phase === 'string'
+        ? record.phase
+        : typeof record.name === 'string'
+          ? record.name
+          : null;
+      if (!name) continue;
+      out.set(name, {
+        status: typeof record.status === 'string' ? record.status : 'unknown',
+        finished_at: typeof record.finished_at === 'string' ? record.finished_at : null,
+        reason: nestedReason(record),
+      });
+    }
   }
-  return out;
-}
-
-function jobLevelSkipReason(result: unknown): string | null {
-  const root = asRecord(result);
-  if (!root) return null;
-  const report = asRecord(root.report);
-  if (root.status === 'skipped') return nestedReason(report ?? root);
-  if (report?.status === 'skipped') return nestedReason(report);
-  return null;
+  const nestedReport = asRecord(root.report);
+  const skipReason = root.status === 'skipped'
+    ? nestedReason(nestedReport ?? root)
+    : nestedReport?.status === 'skipped'
+      ? nestedReason(nestedReport)
+      : null;
+  return { outcomes: out, skipReason };
 }
 
 function jobSourceId(data: unknown): string | null {
@@ -113,14 +123,17 @@ function jobSourceId(data: unknown): string | null {
   return typeof source === 'string' ? source : null;
 }
 
-function rowMatchesEntry(row: CycleJobRow, entry: ExpectedWorkEntry): boolean {
+function scopeKey(name: string, sourceId: string | null): string {
+  return `${name}\0${sourceId ?? '\0global'}`;
+}
+
+function entryScopeKey(entry: ExpectedWorkEntry): string {
   if (entry.scope?.type === 'source') {
-    return row.name === 'autopilot-cycle' &&
-      jobSourceId(row.data) === entry.scope.source_id;
+    return scopeKey('autopilot-cycle', entry.scope.source_id);
   }
   const phaseScope = PHASE_SCOPE[entry.selector as CyclePhase] ?? 'global';
-  if (phaseScope === 'global') return row.name === 'autopilot-global-maintenance';
-  return row.name === 'autopilot-cycle' && jobSourceId(row.data) === null;
+  if (phaseScope === 'global') return scopeKey('autopilot-global-maintenance', null);
+  return scopeKey('autopilot-cycle', null);
 }
 
 export function classifyDreamSkipReason(reason: string | null): SkipClass {
@@ -161,19 +174,34 @@ export async function collectDreamPhaseEvidence(
     return out;
   }
 
+  const rowsByScope = new Map<string, NormalizedCycleJob[]>();
+  for (const row of rows) {
+    const parsed = parseCycleResult(row.result);
+    const normalized: NormalizedCycleJob = {
+      status: row.status,
+      event_at: iso(row.finished_at) ?? iso(row.started_at),
+      source_id: jobSourceId(row.data),
+      name: row.name,
+      outcomes: parsed.outcomes,
+      skip_reason: parsed.skipReason,
+    };
+    const key = scopeKey(normalized.name, normalized.source_id);
+    const scoped = rowsByScope.get(key) ?? [];
+    scoped.push(normalized);
+    rowsByScope.set(key, scoped);
+  }
+
   for (const entry of entries) {
     const attempts: string[] = [];
     const successes: string[] = [];
     const failures: string[] = [];
     let deferredAttempt = false;
 
-    for (const row of rows) {
-      if (!rowMatchesEntry(row, entry)) continue;
-      const timestamp = iso(row.finished_at) ?? iso(row.started_at);
+    for (const row of rowsByScope.get(entryScopeKey(entry)) ?? []) {
+      const timestamp = row.event_at;
       if (!timestamp) continue;
 
-      const outcomes = phaseOutcomes(row.result);
-      const outcome = outcomes.get(entry.selector);
+      const outcome = row.outcomes.get(entry.selector);
       if (outcome) {
         const outcomeTimestamp = outcome.finished_at ?? timestamp;
         attempts.push(outcomeTimestamp);
@@ -184,7 +212,7 @@ export async function collectDreamPhaseEvidence(
         continue;
       }
 
-      const skipReason = jobLevelSkipReason(row.result);
+      const skipReason = row.skip_reason;
       if (skipReason) {
         attempts.push(timestamp);
         const classification = classifyDreamSkipReason(skipReason);
@@ -202,7 +230,7 @@ export async function collectDreamPhaseEvidence(
 
       // Historical results without phase detail are weak success evidence for
       // core phases only. Pack/opt-in phases remain unknown (R25).
-      if (outcomes.size === 0 && ['sync', 'extract', 'extract_facts', 'embed', 'orphans'].includes(entry.selector)) {
+      if (row.outcomes.size === 0 && ['sync', 'extract', 'extract_facts', 'embed', 'orphans'].includes(entry.selector)) {
         attempts.push(timestamp);
         successes.push(timestamp);
       }

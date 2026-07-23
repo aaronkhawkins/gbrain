@@ -5,6 +5,8 @@
 
 import type { BrainEngine } from '../../engine.ts';
 import type { GBrainConfig } from '../../config.ts';
+import { computeAllSourceMetrics, type SourceMetrics } from '../../source-health.ts';
+import { loadAllSources } from '../../sources-load.ts';
 import type {
   EvidenceAdapterId,
   ExpectedWorkEntry,
@@ -40,10 +42,26 @@ export interface CollectAllResult {
   partial: boolean;
 }
 
+export interface CollectorContext {
+  /**
+   * One lazy source-health read shared by every adapter in this snapshot.
+   * `probeContent: true` preserves ingestion's local commit-aware lag. The
+   * embedding adapter only consumes the count fields, which are identical for
+   * either probe mode.
+   */
+  getSourceMetrics: () => Promise<SourceMetrics[]>;
+}
+
+export interface CollectorOpts {
+  config?: GBrainConfig | null;
+  now: Date;
+  context?: CollectorContext;
+}
+
 export type AdapterFn = (
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  opts: { config?: GBrainConfig | null; now: Date },
+  opts: CollectorOpts,
 ) => Promise<Map<string, WorkEvidence | null>>;
 
 const ADAPTERS: Record<string, AdapterFn> = {
@@ -65,6 +83,19 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
   const evidence = new Map<string, WorkEvidence | null>();
   const warnings: ObservabilityWarningCode[] = [];
   let partial = false;
+  let sourceMetrics: Promise<SourceMetrics[]> | undefined;
+  const context: CollectorContext = {
+    getSourceMetrics: () => {
+      if (!sourceMetrics) {
+        sourceMetrics = (async () => {
+          if (!opts.engine) throw new Error('database unavailable');
+          const sources = await loadAllSources(opts.engine, { includeArchived: false });
+          return computeAllSourceMetrics(opts.engine, sources, { probeContent: true });
+        })();
+      }
+      return sourceMetrics;
+    },
+  };
 
   const warn = (code: ObservabilityWarningCode): void => {
     if (!warnings.includes(code)) warnings.push(code);
@@ -116,7 +147,7 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
 
     try {
       const result = await withTimeout(
-        adapter(entries, opts.engine, { config: opts.config, now }),
+        adapter(entries, opts.engine, { config: opts.config, now, context }),
         remaining,
         adapterId,
       );
