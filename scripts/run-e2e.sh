@@ -2,7 +2,7 @@
 # Run E2E tests ONE FILE AT A TIME.
 #
 # Bun's default is to run test files in parallel (each in its own worker).
-# Our E2E suite shares one Postgres database across all 13 files, and
+# Each E2E shard shares one Postgres database across its assigned files, and
 # `setupDB()` does TRUNCATE CASCADE + fixture import. When files run in
 # parallel, file A's TRUNCATE can race with file B's fixture import,
 # producing observed fails like "expected 16 pages, got 8", missing
@@ -80,9 +80,45 @@ mkdir -p "$E2E_TMP_HOME/.gbrain"
 for _e2e_var in $(env | grep -oE '^(CONDUCTOR_|MCP_|OPENCLAW_|GBRAIN_)[A-Za-z0-9_]*' | sort -u); do
   case "$_e2e_var" in
     GBRAIN_HOME) ;;  # required for HOME isolation (set above) — keep
+    GBRAIN_E2E_ALLOW_DB) ;;  # explicit destructive-test consent checked by setupDB()
+    GBRAIN_TEST_DB) ;;  # explicit non-local test-host consent checked by schema-drift tests
+    GBRAIN_PGBOUNCER_URL) ;;  # runner-owned pooled endpoint for pgbouncer-teardown.test.ts
+    GBRAIN_PGBOUNCER_DIRECT_URL) ;;  # runner-owned direct endpoint for the same test
     *) unset "$_e2e_var" || true ;;
   esac
 done
+
+# No-DB test seam proving the PgBouncer endpoints survive the hermetic scrub.
+# Report presence only so invoking the seam never prints connection credentials.
+if [ "${1:-}" = "--dry-run-pgbouncer-env" ]; then
+  if [ -n "${2:-}" ]; then
+    echo "usage: scripts/run-e2e.sh --dry-run-pgbouncer-env" >&2
+    exit 2
+  fi
+  printf 'pooled=%s direct=%s\n' \
+    "$([ -n "${GBRAIN_PGBOUNCER_URL:-}" ] && printf set || printf unset)" \
+    "$([ -n "${GBRAIN_PGBOUNCER_DIRECT_URL:-}" ] && printf set || printf unset)"
+  exit 0
+fi
+
+timeout_seconds_for_file() {
+  case "${1##*/}" in
+    mechanical.test.ts|skills.test.ts) printf '240\n' ;;
+    *) printf '180\n' ;;
+  esac
+}
+
+# Test seam for the exact outer-timeout policy. It uses the same function as
+# the runner loop, so unit coverage can pin both exceptions and the default
+# without launching a database-backed test.
+if [ "${1:-}" = "--dry-run-timeout" ]; then
+  if [ -z "${2:-}" ] || [ -n "${3:-}" ]; then
+    echo "usage: scripts/run-e2e.sh --dry-run-timeout <test-file>" >&2
+    exit 2
+  fi
+  timeout_seconds_for_file "$2"
+  exit 0
+fi
 
 # --dry-run-list: print the resolved file list (one per line) and exit. Used
 # by scripts/ci-local.sh to smoke-test the argv branching at startup.
@@ -167,10 +203,14 @@ for f in "${files[@]}"; do
   # the file wedges indefinitely. gtimeout/timeout SIGKILLs the file so the
   # suite advances. gtimeout (macOS via coreutils) preferred; timeout (Linux)
   # fallback; bare bun (no outer cap) if neither is installed.
+  # mechanical.test.ts is an intentionally broad 78-test integration journey;
+  # its measured healthy runtime is ~178s on the reference host, so give only
+  # that file 240s rather than weakening the hang guard for every E2E file.
+  FILE_TIMEOUT_SECONDS=$(timeout_seconds_for_file "$name")
   if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout 180"
+    TIMEOUT_CMD="gtimeout $FILE_TIMEOUT_SECONDS"
   elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout 180"
+    TIMEOUT_CMD="timeout $FILE_TIMEOUT_SECONDS"
   else
     TIMEOUT_CMD=""
   fi

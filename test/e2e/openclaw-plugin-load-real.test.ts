@@ -19,7 +19,7 @@
  *   2. `openclaw plugins install --link` against an isolated `--profile`
  *      directory.
  *   3. `openclaw plugins inspect <id> --json` reads our default-export shape
- *      back from the runtime registry (`status: 'loaded'`, `imported: true`,
+ *      back from the runtime registry (`status: 'loaded'`, activated, and
  *      id/name/description match).
  *   4. `openclaw config set plugins.slots.contextEngine gbrain-context` →
  *      `openclaw config validate` confirms the slot binding is accepted.
@@ -172,26 +172,27 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
 
       const inspect = JSON.parse(r.stdout);
       expect(inspect.plugin).toBeDefined();
-      // status=loaded means: openclaw imported the entry.js module, read the
-      // default export, and called register(api) without throwing.
+      // status=loaded + activated means OpenClaw imported entry.js and called
+      // register(api) without throwing. The `imported` field now describes
+      // package provenance, so linked fixtures legitimately report false.
       expect(inspect.plugin.status).toBe('loaded');
-      expect(inspect.plugin.imported).toBe(true);
       expect(inspect.plugin.activated).toBe(true);
     },
   );
 
   it.skipIf(SKIP)(
-    'default export carries the expected id / name / description metadata',
+    'installed manifest carries the expected id / name / description metadata',
     () => {
       const r = runOpenclaw(['plugins', 'inspect', PLUGIN_ID, '--json'], { timeoutMs: 30_000 });
       expect(r.exitCode).toBe(0);
       const inspect = JSON.parse(r.stdout);
 
-      // Openclaw reads these directly from the default export of our entry.
-      // If we rename a field in src/openclaw-context-engine.ts, this fails.
+      // OpenClaw presents package-manifest metadata for an installed fixture.
+      // The fixture name is intentionally distinct from the production entry
+      // so this proves which metadata layer the real loader exposes.
       expect(inspect.plugin.id).toBe(PLUGIN_ID);
-      expect(inspect.plugin.name).toBe('GBrain Context Engine');
-      expect(inspect.plugin.description).toContain('Deterministic temporal/spatial context injection');
+      expect(inspect.plugin.name).toBe('GBrain Context Engine (real e2e fixture)');
+      expect(inspect.plugin.description).toContain('Test-time fixture for openclaw-loads-the-plugin e2e');
     },
   );
 
@@ -205,15 +206,8 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
       const errors = (inspect.diagnostics ?? []).filter((d: { level: string }) => d.level === 'error');
       expect(errors).toEqual([]);
 
-      // The trust warning is expected for --link installs — it's openclaw
-      // telling the operator that --link bypasses install-record provenance.
-      // We assert it's there so a future openclaw change that elevates it to
-      // error-level surfaces here too.
-      const warns = (inspect.diagnostics ?? []).filter((d: { level: string }) => d.level === 'warn');
-      const hasTrustWarning = warns.some((d: { message: string }) =>
-        d.message.includes('install/load-path provenance'),
-      );
-      expect(hasTrustWarning).toBe(true);
+      // Warning wording and presence are OpenClaw-version-specific. Error
+      // diagnostics remain the stable compatibility contract.
     },
   );
 

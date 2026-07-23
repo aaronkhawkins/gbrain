@@ -336,7 +336,7 @@ export async function runPhaseSynthesizeConcepts(
         },
         supportingEvidence.length > 0
           ? `${narrative}\n\n## Supporting research\n\n${supportingEvidence
-              .map(({ source_id, slug }) => `- [[${slug}]] (source: ${source_id})`)
+              .map(({ source_id, slug }) => `- [[${source_id}:${slug}]]`)
               .join('\n')}`
           : narrative,
         '',

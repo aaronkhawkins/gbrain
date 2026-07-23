@@ -38,7 +38,10 @@ describe('zeroEntropyCompatFetch — shim structural shape', () => {
     // the cast and re-introducing the tsc TS2741 failure documented in
     // gateway.ts:556 comments.
     const src = await Bun.file(GATEWAY_PATH).text();
-    expect(src).toMatch(/\}\)\s*as unknown as typeof fetch;[\s\S]{0,200}async function resolveEmbeddingProvider/);
+    const zeFetchStart = src.indexOf('const zeroEntropyCompatFetch');
+    const nextCompatFetch = src.indexOf('const openAICompatAsymmetricFetch', zeFetchStart);
+    const block = src.slice(zeFetchStart, nextCompatFetch);
+    expect(block).toMatch(/\}\)\s*as unknown as typeof fetch;/);
   });
 
   test('URL rewrite: /embeddings → /models/embed (CDX1-F2)', async () => {
@@ -140,22 +143,20 @@ describe('zeroEntropyCompatFetch — OOM caps', () => {
 });
 
 describe('instantiateEmbedding wiring', () => {
-  test('recipe.id === "zeroentropyai" branch installs zeroEntropyCompatFetch', async () => {
+  test('zeroentropyai fallback installs zeroEntropyCompatFetch', async () => {
     const src = await Bun.file(GATEWAY_PATH).text();
-    // Pinned: the ternary at gateway.ts that picks the right fetch wrapper
-    // for openai-compat recipes. Without this branch, the shim is dead code.
-    expect(src).toMatch(/recipe\.id\s*===\s*['"]zeroentropyai['"]\s*\?[\s]*zeroEntropyCompatFetch/);
+    expect(src).toMatch(/case ['"]zeroentropyai['"]:\s*return zeroEntropyCompatFetch;/);
+    expect(src).toMatch(/compat\.fetch\s*\?\?\s*defaultOpenAICompatEmbeddingFetch\(recipe\.id\)/);
   });
 
   test('branch lives in the openai-compatible case of instantiateEmbedding', async () => {
     const src = await Bun.file(GATEWAY_PATH).text();
     const fnIdx = src.indexOf('function instantiateEmbedding(');
     const ocIdx = src.indexOf("case 'openai-compatible':", fnIdx);
-    const branchIdx = src.indexOf('zeroEntropyCompatFetch', ocIdx);
+    const branchIdx = src.indexOf('defaultOpenAICompatEmbeddingFetch(recipe.id)', ocIdx);
     expect(fnIdx).toBeGreaterThan(0);
     expect(ocIdx).toBeGreaterThan(0);
-    // Branch sits within ~2KB of the case opener (in the fetchWrapper
-    // ternary) — a sanity bound on where it lives.
+    // The openai-compatible case invokes the fallback selector directly.
     expect(branchIdx).toBeGreaterThan(ocIdx);
     expect(branchIdx - ocIdx).toBeLessThan(2000);
   });

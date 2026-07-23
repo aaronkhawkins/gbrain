@@ -13,6 +13,7 @@ import { runSlidingPool } from '../core/worker-pool.ts';
 import { isAborted, anySignal, AbortError } from '../core/abort-check.ts';
 import { type DbPacer, createDbPacer, createNoopPacer, observed } from '../core/db-pacer.ts';
 import {
+  PACE_MODES,
   resolvePaceMode,
   loadPaceModeConfig,
   readPaceEnv,
@@ -416,7 +417,36 @@ export function parsePaceArgs(
   return { ...(perCallMode !== undefined && { perCallMode }), ...(perCall && { perCall }) };
 }
 
+export function printEmbedHelp(): void {
+  const paceModes = PACE_MODES.map((mode, index) =>
+    index === PACE_MODES.length - 1 ? `or ${mode}` : mode,
+  ).join(', ');
+  slog(`Usage: gbrain embed [<slug>|--all|--stale|--slugs s1 s2 ...] [options]
+
+Generate or refresh text embeddings.
+
+Options:
+  --all                 Embed every chunk
+  --stale               Embed only chunks missing an embedding
+  --slugs <s1 s2 ...>   Embed the named pages
+  --source <id>         Restrict work to one source
+  --dry-run             Report pending work without model calls or writes
+  --batch-size <N>      Process 1-10000 pages per batch
+  --priority recent     Process recently updated pages first
+  --catch-up            Continue until no stale chunks remain
+  --background          Submit the work to the Minion queue
+  --pace[=<mode>]       Pace writes: ${paceModes}
+  --pace-max-concurrency <N>
+                        Cap concurrent embedding workers while pacing
+`);
+}
+
 export async function runEmbed(engine: BrainEngine, args: string[]): Promise<EmbedResult | undefined> {
+  if (args.includes('--help') || args.includes('-h')) {
+    printEmbedHelp();
+    return;
+  }
+
   // v0.36+ T7: --background submits via Minion queue, returns job_id to
   // stdout, exits. Same semantics in TTY and cron (D9).
   if (args.includes('--background')) {

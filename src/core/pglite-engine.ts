@@ -83,7 +83,9 @@ function tryLoadSnapshot(snapshotPath: string): Blob | null {
     const fs = require('node:fs') as typeof import('node:fs');
     const crypto = require('node:crypto') as typeof import('node:crypto');
     const { MIGRATIONS } = require('./migrate.ts') as typeof import('./migrate.ts');
-    const { PGLITE_SCHEMA_SQL } = require('./pglite-schema.ts') as typeof import('./pglite-schema.ts');
+    const { getPGLiteSchema } = require('./pglite-schema.ts') as typeof import('./pglite-schema.ts');
+    const gateway = require('./ai/gateway.ts') as typeof import('./ai/gateway.ts');
+    const defaults = require('./ai/defaults.ts') as typeof import('./ai/defaults.ts');
 
     if (!fs.existsSync(snapshotPath)) {
       if (!_snapshotWarnLogged) {
@@ -102,7 +104,16 @@ function tryLoadSnapshot(snapshotPath: string): Blob | null {
       }
       return null;
     }
-    const expectedHash = computeSnapshotSchemaHash(MIGRATIONS, PGLITE_SCHEMA_SQL, crypto);
+    let dimensions = defaults.DEFAULT_EMBEDDING_DIMENSIONS;
+    let model = defaults.DEFAULT_EMBEDDING_MODEL;
+    try {
+      dimensions = gateway.getEmbeddingDimensions();
+      model = gateway.getEmbeddingModel() || model;
+    } catch {
+      // An unconfigured gateway uses the same defaults as initSchema().
+    }
+    const runtimeSchema = getPGLiteSchema(dimensions, model);
+    const expectedHash = computeSnapshotSchemaHash(MIGRATIONS, runtimeSchema, crypto);
     const actualHash = fs.readFileSync(versionPath, 'utf8').trim();
     if (expectedHash !== actualHash) {
       if (!_snapshotWarnLogged) {

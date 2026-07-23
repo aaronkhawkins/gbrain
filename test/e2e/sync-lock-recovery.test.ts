@@ -115,7 +115,10 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
     expect(handle).not.toBeNull();
 
     try {
-      const result = runCli(['sync', '--repo', repoDir, '--full', '--yes']);
+      // Lock diagnostics are independent of embedding. Disable embedding so
+      // an operator-configured provider (or missing provider credential) cannot
+      // short-circuit before the lock-busy path this test exercises.
+      const result = runCli(['sync', '--repo', repoDir, '--full', '--yes', '--no-embed']);
       expect(result.code).not.toBe(0);
       const msg = result.stderr + result.stdout;
       expect(msg).toMatch(new RegExp(`pid ${process.pid}`));

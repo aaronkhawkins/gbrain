@@ -10,6 +10,11 @@ import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { runPhaseSynthesize } from '../src/core/cycle/synthesize.ts';
+import {
+  __setEmbedTransportForTests,
+  configureGateway,
+  resetGateway,
+} from '../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
 let schemaVersion: string;
@@ -18,12 +23,24 @@ beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({ database_url: '' });
   await engine.initSchema();
+  const dimensions = Number(await engine.getConfig('embedding_dimensions'));
+  configureGateway({
+    embedding_model: 'openai:text-embedding-3-large',
+    embedding_dimensions: dimensions,
+    env: { OPENAI_API_KEY: 'sk-synthesize-timeout-test' },
+  });
+  __setEmbedTransportForTests(async ({ values }: any) => ({
+    embeddings: values.map(() => new Array(dimensions).fill(0)),
+    usage: { tokens: 0 },
+  }) as any);
   // resetPgliteState truncates `config`, wiping the `version` row that
   // MinionQueue.ensureSchema checks. Capture it so beforeEach can restore.
   schemaVersion = (await engine.getConfig('version')) ?? '7';
 }, 60_000);
 
 afterAll(async () => {
+  __setEmbedTransportForTests(null);
+  resetGateway();
   await engine.disconnect();
 });
 

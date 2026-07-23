@@ -61,6 +61,7 @@ describe('extract_atoms yieldDuringPhase throttle (T3)', () => {
     const yieldFn = async () => { yieldTimestamps.push(Date.now()); };
     await runPhaseExtractAtoms(engine, {
       sourceId: 'default',
+      dryRun: true,
       _transcripts: [
         { filePath: '/tmp/a', content: 'a', contentHash: 'a1'.repeat(8) },
         { filePath: '/tmp/b', content: 'b', contentHash: 'b2'.repeat(8) },

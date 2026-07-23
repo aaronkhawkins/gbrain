@@ -4,14 +4,34 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setupDB, teardownDB, hasDatabase, getEngine } from './helpers.ts';
 import { runRecall } from '../../src/commands/recall.ts';
 
 const RUN = hasDatabase();
 const d = RUN ? describe : describe.skip;
+let isolatedHome: string;
+let previousGbrainHome: string | undefined;
 
-beforeAll(async () => { if (RUN) await setupDB(); });
-afterAll(async () => { if (RUN) await teardownDB(); });
+beforeAll(async () => {
+  if (!RUN) return;
+  // runRecall reads the file plane to detect thin-client mode. The E2E runner
+  // intentionally reuses one isolated HOME across files, so a prior config
+  // fixture must not change this test from local to remote recall.
+  isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-recall-e2e-'));
+  previousGbrainHome = process.env.GBRAIN_HOME;
+  process.env.GBRAIN_HOME = isolatedHome;
+  await setupDB();
+});
+afterAll(async () => {
+  if (!RUN) return;
+  await teardownDB();
+  if (previousGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = previousGbrainHome;
+  rmSync(isolatedHome, { recursive: true, force: true });
+});
 
 d('gbrain recall --today (Postgres)', () => {
   test('renders markdown with kind icons', async () => {

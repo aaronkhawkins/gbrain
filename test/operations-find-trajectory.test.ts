@@ -143,7 +143,7 @@ describe('find_trajectory MCP op — visibility filter (R6 / D-CDX-1)', () => {
     const local  = await op.handler(mkCtx({ remote: false }), { entity_slug: 'optraj-vis' }) as any;
     expect(local.points.length).toBe(2);
 
-    const remote = await op.handler(mkCtx({ remote: true  }), { entity_slug: 'optraj-vis' }) as any;
+    const remote = await op.handler(mkCtx({ remote: true, sourceId: 'default' }), { entity_slug: 'optraj-vis' }) as any;
     expect(remote.points.length).toBe(1);
     expect(remote.points[0].value).toBe(99999);
   });
@@ -151,13 +151,13 @@ describe('find_trajectory MCP op — visibility filter (R6 / D-CDX-1)', () => {
 
 describe('find_trajectory MCP op — source scoping (D-CDX-6)', () => {
   test('federated sourceIds from auth.allowedSources narrows scope', async () => {
-    await insertTyped({ source_id: 'optraj-A', entity_slug: 'optraj-fed', metric: 'mrr', value: 1, valid_from: new Date('2026-01-15') });
-    await insertTyped({ source_id: 'optraj-B', entity_slug: 'optraj-fed', metric: 'mrr', value: 2, valid_from: new Date('2026-04-12') });
-    await insertTyped({ source_id: 'optraj-C', entity_slug: 'optraj-fed', metric: 'mrr', value: 3, valid_from: new Date('2026-07-08') });
+    await insertTyped({ source_id: 'optraj-a', entity_slug: 'optraj-fed', metric: 'mrr', value: 1, valid_from: new Date('2026-01-15') });
+    await insertTyped({ source_id: 'optraj-b', entity_slug: 'optraj-fed', metric: 'mrr', value: 2, valid_from: new Date('2026-04-12') });
+    await insertTyped({ source_id: 'optraj-c', entity_slug: 'optraj-fed', metric: 'mrr', value: 3, valid_from: new Date('2026-07-08') });
 
     const op = operationsByName['find_trajectory'];
     const ctx = mkCtx({
-      auth: { allowedSources: ['optraj-A', 'optraj-B'] } as any,
+      auth: { allowedSources: ['optraj-a', 'optraj-b'] } as any,
     });
     const result = await op.handler(ctx, { entity_slug: 'optraj-fed' }) as any;
     expect(result.points.length).toBe(2);
@@ -165,11 +165,11 @@ describe('find_trajectory MCP op — source scoping (D-CDX-6)', () => {
   });
 
   test('scalar ctx.sourceId narrows to that single source', async () => {
-    await insertTyped({ source_id: 'optraj-X', entity_slug: 'optraj-scalar', metric: 'mrr', value: 100, valid_from: new Date('2026-01-15') });
-    await insertTyped({ source_id: 'optraj-Y', entity_slug: 'optraj-scalar', metric: 'mrr', value: 200, valid_from: new Date('2026-01-15') });
+    await insertTyped({ source_id: 'optraj-x', entity_slug: 'optraj-scalar', metric: 'mrr', value: 100, valid_from: new Date('2026-01-15') });
+    await insertTyped({ source_id: 'optraj-y', entity_slug: 'optraj-scalar', metric: 'mrr', value: 200, valid_from: new Date('2026-01-15') });
 
     const op = operationsByName['find_trajectory'];
-    const ctx = mkCtx({ sourceId: 'optraj-X' });
+    const ctx = mkCtx({ sourceId: 'optraj-x' });
     const result = await op.handler(ctx, { entity_slug: 'optraj-scalar' }) as any;
     expect(result.points.length).toBe(1);
     expect(result.points[0].value).toBe(100);

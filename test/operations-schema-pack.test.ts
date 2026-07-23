@@ -163,7 +163,10 @@ describe('schema_stats', () => {
         `INSERT INTO pages (slug, source_id, source_path, type, title, compiled_truth, timeline, content_hash)
          VALUES ('a', 'default', 'people/alice.md', 'person', 'a', '', '', '')`,
       );
-      const result = await operationsByName.schema_stats!.handler(ctxOf(), {}) as Record<string, unknown>;
+      const result = await operationsByName.schema_stats!.handler(
+        ctxOf({ sourceId: 'default' }),
+        {},
+      ) as Record<string, unknown>;
       expect((result.aggregate as { total_pages: number }).total_pages).toBe(1);
       expect(result.schema_version).toBe(1);
     });
@@ -228,7 +231,10 @@ describe('schema_review_orphans', () => {
       `INSERT INTO pages (slug, source_id, source_path, type, title, compiled_truth, timeline, content_hash)
        VALUES ('orphan-1', 'default', 'unknown/page.md', '', 'o', '', '', '')`,
     );
-    const result = await operationsByName.schema_review_orphans!.handler(ctxOf(), {}) as Record<string, unknown>;
+    const result = await operationsByName.schema_review_orphans!.handler(
+      ctxOf({ sourceId: 'default' }),
+      {},
+    ) as Record<string, unknown>;
     expect(result.orphan_count).toBeGreaterThanOrEqual(1);
   });
 
@@ -240,7 +246,10 @@ describe('schema_review_orphans', () => {
         [`o${i}`, `unknown/o${i}.md`],
       );
     }
-    const result = await operationsByName.schema_review_orphans!.handler(ctxOf(), { limit: 2 }) as Record<string, unknown>;
+    const result = await operationsByName.schema_review_orphans!.handler(
+      ctxOf({ sourceId: 'default' }),
+      { limit: 2 },
+    ) as Record<string, unknown>;
     expect(result.orphan_count).toBe(2);
   });
 });

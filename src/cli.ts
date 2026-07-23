@@ -245,12 +245,19 @@ async function main() {
     return;
   }
 
-  // v0.42 self-upgrade: ride this invocation as an update heartbeat. Cache-read-
-  // only, fail-open, never blocks. Skips the update path's own commands + sets
-  // GBRAIN_SKIP_STARTUP_HOOKS for their children. Runs for every real command.
-  maybeEmitUpdateMarker(command);
-
   const subArgs = args.slice(1);
+  const helpRequested = hasHelpFlag(subArgs);
+
+  // Help must not consume an update breadcrumb, emit an update marker, spawn a
+  // cache refresher, or mark short-lived process mode. Self-help CLI commands
+  // still reach their handler below so they retain their detailed usage text;
+  // DB-free dispatch for the affected embed path is enforced there.
+  if (!helpRequested) {
+    // v0.42 self-upgrade: ride this invocation as an update heartbeat. Cache-read-
+    // only, fail-open, never blocks. Skips the update path's own commands + sets
+    // GBRAIN_SKIP_STARTUP_HOOKS for their children. Runs for every real command.
+    maybeEmitUpdateMarker(command);
+  }
 
   // DX alias: `ask` is a natural-language alias for `query`
   if (command === 'ask') {
@@ -263,7 +270,7 @@ async function main() {
   // (the `pipeline_error: [chat(...)] The operation was aborted.` class in
   // ingest_log). Daemons keep the in-process queue: their event loop
   // outlives the work. See src/core/facts/cli-process-mode.ts.
-  if (!['serve', 'jobs', 'autopilot'].includes(command)) {
+  if (!helpRequested && !['serve', 'jobs', 'autopilot'].includes(command)) {
     const { markShortLivedCliProcess } = await import('./core/facts/cli-process-mode.ts');
     markShortLivedCliProcess();
   }
@@ -1511,6 +1518,14 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'sync' && (args.includes('--help') || args.includes('-h'))) {
     const { runSync } = await import('./commands/sync.ts');
     await runSync(null as any, args);
+    return;
+  }
+
+  // Help must be a pure operation. Connecting here can apply pending schema
+  // migrations before the embed handler has a chance to print its usage.
+  if (command === 'embed' && hasHelpFlag(args)) {
+    const { printEmbedHelp } = await import('./commands/embed.ts');
+    printEmbedHelp();
     return;
   }
 

@@ -252,7 +252,9 @@ directions of compatibility, owner, proof, and retirement condition.
 ## U8 release and deployment gate
 
 - Status: release tooling and content-free process receipts are implemented;
-  deployment is blocked before version allocation and selection.
+  the repository stabilization gate and `0.42.64.1` allocation are complete.
+  Live selection and both deployment observation gates remain explicitly
+  deferred to the embedding data gate rather than being claimed here.
 - Discovery: two Postgres deployment descriptors are required. The observed
   live entrypoints report source/upstream identity at the pre-integration fork
   version rather than an immutable managed artifact. No verified
@@ -294,8 +296,9 @@ directions of compatibility, owner, proof, and retirement condition.
   be captured privately before quiescence. Neither existing source is eligible
   for write canaries; a separate disposable repository-backed source and
   checkpoint are still required.
-- Semantic compatibility stop: both deployments are at schema v122 and neither
-  has a v2 page embedding signature. The canary inventory is 10,652 pages
+- Semantic compatibility stop: the pre-rehearsal inventory found both
+  deployments at schema v122 and neither had a v2 page embedding signature.
+  The canary inventory was 10,652 pages
   (8,703 legacy signatures, 1,949 NULL, 0 v2) across two stored chunk models.
   The protected inventory is 117 pages (109 legacy, 8 NULL, 0 v2) across one
   stored chunk model. U4 correctly fails semantic retrieval closed for these
@@ -309,6 +312,140 @@ directions of compatibility, owner, proof, and retirement condition.
   Deployment is therefore blocked on a separately approved bounded
   provenance/re-embedding migration or a reviewed immutable-evidence
   acceptance policy; lexical-only degradation is not an acceptable cutover.
+- Authorized embedding migration: the operator subsequently approved the
+  separate bounded cohort-rebuild plan and selected the local Nemotron
+  2048-dimensional identity for all text embeddings in every managed brain.
+  That approval supersedes Phase 0's original no-re-embedding constraint only
+  through the restore-tested gates in
+  `docs/plans/2026-07-22-003-refactor-rebuild-embedding-cohorts-plan.md`.
+  Image and multimodal embeddings remain a separate model cohort.
+- Personal clone rehearsal: a restored content-free clone migrated from schema
+  v122 to v124. The candidate fast Doctor score was 95 with no blocking checks.
+  Compiled previous `0.42.59.0` and candidate `0.42.64.0` readers both opened
+  the migrated clone successfully. The authorized clone-only Nemotron rebuild
+  completed 10,333 chunks across 8,704 pages; SQL verified 10,333 non-NULL
+  embeddings and zero missing rows. Full candidate Doctor exited zero with
+  overall 75, brain checks 85, and brain score 83; embedding coverage was
+  100%, staleness and missing counts were zero, the provider returned 2,048
+  dimensions in 158 ms, and the database reported aligned `halfvec(2048)`
+  chunk and fact columns. A hybrid query completed in 1.28 seconds and returned
+  results. The remaining warnings concern empty timeline coverage, salience
+  weights, a fixture path, and advisory prompt caching; none is blocking.
+  Subsequent wire-contract testing found that this rehearsal's indexed NIM
+  requests omitted `input_type=passage`; query requests correctly sent
+  `input_type=query`. NVIDIA requires passage mode for indexed content and
+  documents that the underlying omission default is query mode, so the 10,333
+  rebuilt vectors are rejected as the wrong cohort and must be rebuilt after
+  the transport fix. The rehearsal also exposed that `embed --all/--stale`
+  rebuilds content chunks only: 51 facts and three active takes still require
+  a bounded document-embedding backfill, and query-cache rows require explicit
+  invalidation before they can be regenerated query-side. Phase 0 deployment
+  acceptance therefore requires one resumable text-cohort rebuild path for
+  chunks, facts, and takes plus query-cache invalidation, with per-surface
+  identity and coverage receipts. The run still proves migration mechanics, provider
+  reachability, hybrid query execution, and previous-reader compatibility, but
+  it does not satisfy the embedding, live-cutover, company, semantic-quality,
+  or observation-window gates.
+- Corrected clone rebuild: an explicitly selected clone was subsequently
+  rebuilt with passage-mode vectors for all 10,333 chunks, 51 facts, and three
+  active takes. Vector coverage is complete, so another wholesale embedding
+  run is not warranted. The signature backfill nevertheless left a subset of
+  otherwise embedded pages unstamped. Until that backfill defect is fixed and
+  the identity gate admits every intended page, the clone remains a failed
+  acceptance candidate rather than proof of a complete cohort migration.
+- Live schema incident: invoking the compiled candidate's `embed --help`
+  unexpectedly connected before rendering help and applied the personal live
+  schema migrations from v122 to v124. A pre-migration snapshot exists. No
+  vector, configuration, or knowledge-content mutation occurred; compiled
+  previous and candidate readers both work at v124, and the immediate live
+  fast Doctor score was 95 with no blockers. This is a process defect and
+  acceptance event, not a successful cutover. Live selection and writes remain
+  blocked, and the CLI connect-before-help behavior requires explicit
+  disposition before the final release gate. The candidate now short-circuits
+  `embed --help` before engine connection and skips startup-marker side
+  effects for every help spelling. A compiled-binary matrix exercised
+  `--help`, `-h`, and representative global-flag placements against a
+  configured disposable database intentionally behind the current migration
+  head. All five invocations left its schema/version sentinel, config file,
+  update cache, and upgrade breadcrumb unchanged.
+- Live embedding target-selection incident: a later clone-rehearsal command
+  inherited a temporary file-plane target that had drifted back to the live
+  personal database, so the corrected passage-mode rebuild initially ran
+  there rather than on the clone. The operator stopped the old services and
+  repaired the resulting partial cohort: 10,333 of 10,333 chunks, 51 of 51
+  facts, and three of three active takes now carry the intended document-mode
+  embedding; 21 query-cache rows were cleared and a query-side canary
+  regenerated one. Content-signature and stale/missing checks are clean, the
+  provider and `halfvec(2048)` widths align, Doctor reports no blockers, and a
+  hybrid canary returned relevant results. This is evidence of repaired live
+  state, not deployment acceptance. The pre-candidate daemons were stopped
+  and remain paused until an immutable candidate is selected.
+- Mandatory mutation preflight: no further destructive cohort operation may
+  rely on a config path, URL override, or opaque release receipt alone. The
+  rebuild plan must add a fail-closed target gate that resolves the effective
+  URL through the same precedence rules as runtime, connects read-only,
+  compares an explicitly expected database identity (database plus
+  host/port-derived opaque fingerprint), verifies schema/source/count bounds,
+  rejects file-plane/environment disagreement, and consumes a one-time allow
+  token naming that exact target. This gate is required before clone,
+  personal, or protected rebuild/cutover work resumes.
+- Repository gate: the focused non-live release/build-identity/verifier/status/
+  supervisor/upgrade suite passes 70 of 70 tests, and TypeScript type checking
+  and all 31 repository verification checks pass. The first broad disposable
+  real-Postgres E2E run was not green: 148 of 161 files and 1,018 tests passed,
+  while 13 files and 17 tests failed. Isolation reduced that set to nine real
+  fixture/runner failures; eight are now individually green (engine parity,
+  extraction discovery, OpenClaw loading, half-vector redirect handling,
+  schema drift, OAuth serving, sync-lock recovery, and type unification).
+  The mechanical file subsequently passed 78 of 78 tests in 177.85 seconds
+  under its explicit 240-second file cap; the skills file passed three of
+  three under the same bounded policy. Residual isolated E2E verification
+  passed 90 of 90 tests across eight files, while the focused facts/type
+  rerun passed five of five. Directly affected Phase 0 files also pass:
+  phase ordering five of five, Dream four of four, and facts recall one of one.
+  The first authoritative four-shard container gate cleared gitleaks, static
+  guards, the compiled-WASM semantic-chunk guard, TypeScript, and snapshot
+  construction, but never entered E2E. Three 256-file unit workers were
+  OOM-killed with exit 137 because four Bun processes also used Bun's default
+  intra-process concurrency; the fourth completed 3,665 tests with 3,655
+  passes and ten failures. All 162 selected E2E files therefore remain
+  unexecuted by that gate. The harness now caps each already-parallel Bun
+  worker at concurrency one. Focused, sequential reproduction showed seven of
+  the ten failures were concurrency/environment interference: source health
+  passed 28 of 28, replay evaluation five of five, facts-engine 14 of 14,
+  synthesis-timeout one of one, and filesystem validation three of three. The
+  remaining three schema-operation failures were stale fixtures that created
+  an unbound remote caller after the source-scope guard became fail-closed;
+  binding those fixtures to their seeded `default` source restored that file
+  to 23 of 23. It also renders the runner command without
+  Bash 5.2 pattern-replacement semantics, which had rewritten `2>&1` and
+  diverted shard errors into a worktree file, and compiles the WASM guard
+  entirely on `/tmp` to avoid Docker Desktop cross-filesystem rename failure.
+  `GBRAIN_CI_SHARD_JOBS` now validates an explicit range of one through four
+  before side effects and defaults to one; the four unit/E2E cohorts therefore
+  remain isolated without being concurrent unless the operator opts in.
+  Nine focused runner-policy tests, shell syntax, command-rendering semantics,
+  host/container WASM execution, and diff checks pass. A subsequent unit-only
+  diagnostic was stopped without completing a shard after the tree advanced
+  and its direct Docker invocation omitted the worktree Git-directory mount;
+  it entered no E2E and is not acceptance evidence. That run nevertheless
+  measured 4.39 GiB for one Bun worker, validating the sequential default.
+  Final repository acceptance used the explicitly memory-bounded,
+  change-focused gate agreed for this managed fork. The formerly failing
+  sequential cohort completed with 3,757 passes, three intentional skips, and
+  zero failures across 257 files. A focused regression set covering the
+  earlier fixture failures completed with 327 passes before the last
+  embedding-cohort fixture fix; that file then completed seven of seven.
+  The changed real-Postgres and compiled E2E set completed 13 of 13 files with
+  163 passes, zero failures, and one intentional platform skip. Repository
+  guards, secret scanning, compiled-WASM behavior, PGLite snapshot generation,
+  and TypeScript also passed. During acceptance, a real race was found in
+  reflex-event telemetry: a dynamic import could let teardown drain before a
+  pending write registered. The event sink is now registered synchronously,
+  its 22-test regression file passes, and the complete sequential cohort
+  confirms the fix. The earlier all-files container run is retained as
+  diagnostic evidence, not a false green claim; running every untouched test
+  file is no longer the Phase 0 exit criterion.
 - Release authority: build and exact-byte cross-prefix install are
   non-selecting. Verify, select, and rollback share
   manifest/checksum/compiled-identity checks. Manifest v2 binds the
@@ -326,17 +463,40 @@ directions of compatibility, owner, proof, and retirement condition.
 |---|---|---|---|
 | Schema v122 | Candidate migrates only after restore-tested clone coverage | Previous reader must be exercised against the migrated clone | Restore-required until proven |
 | Schema v123 | Candidate repairs the oversized-safe trigger path idempotently | Previous reader must be exercised against the repaired clone | Restore-required until proven |
-| Schema v124/final head | Candidate native | Not assumed | Roll-forward-only unless clone proof succeeds |
+| Schema v124/final head | Candidate native | Personal previous compiled reader passed on the migrated clone; company remains unproven | Personal reader-compatible on clone; company restore-required; roll-forward after accepted writes |
 | Config shapes | Additive provider/task keys retain existing readers | Older code may ignore additive keys; private snapshot still required | Backward-compatible reader, restore-required writer |
 | Queue envelopes | Legacy facts payload normalizes to v1 | v1 additive fields are ignored by the previous handler | Backward-compatible; future versions quarantine-required |
 | Facts/generated pages/chunks/links/timelines/provenance | Candidate reads existing rows and canonical files | Candidate-created source-aware/generated outputs need previous-reader clone proof | Restore-required before writes, roll-forward after writes |
-| Embedding metadata | Full v2 identity is accepted; legacy/unknown fails semantic closed | Previous code cannot be trusted to enforce candidate identity | Quarantine-required; no production re-embedding |
+| Embedding metadata | Full v2 identity is accepted; legacy/unknown fails semantic closed | Previous code cannot be trusted to enforce candidate identity | Resumable chunks/facts/takes rebuild plus query-cache invalidation required under the separately approved cohort plan; vector jobs remain quarantined until every surface in each brain passes |
 | Status JSON | Additive build/runtime fields preserve existing fields | Previous consumers may ignore additions | Backward-compatible |
 
-The prior compiled artifact on a migrated clone has not been exercised because
-no immutable prior artifact or safe test database was available. That missing
-proof blocks canary and deployment. No live scheduler, worker, queue, source,
-database, configuration, release selector, or vector was changed.
+The personal prior compiled artifact has now been exercised successfully
+against the migrated restored clone. The equivalent protected-deployment clone,
+immutable prior release selection/rollback, and both live observation gates
+remain unproven and block deployment. No live scheduler, worker, queue, source,
+or configuration record was changed. No release selector or managed service
+definition was mutated, and no candidate service was deployed. Live database
+state did change in the two incidents disclosed above: the accidental personal
+schema migration from v122 to v124 and the mistaken-target embedding rebuild,
+which was followed by the documented complete live embedding repair.
+
+### Phase 0 exit-gate status
+
+| Exit criterion | Status | Remaining proof |
+|---|---|---|
+| Behavior ledger resolves every selected overlap | Pass | Final closure commit is recorded after merge |
+| Memory-bounded stabilization gate, including changed Postgres and compiled coverage | Pass | 3,757 unit passes plus 163 changed-path E2E passes; no failures |
+| Coherent repository version and changelog | Pass | Fork baseline allocated as `0.42.64.1` |
+| Personal embedding and semantic deployment acceptance | Data gate | Complete the resumable cohort and semantic-winning canaries under the target guard |
+| Protected deployment compatibility and paths | Data gate | Provision and restore a protected clone, then run independent canaries and observation |
+| Layered rollback coordinates | Data gate | Preserve the existing personal snapshot and add protected restore/selection receipts before live mutation |
+| Content-free integration report can seed Phase 1 | Pass | Phase 1 must display data-gate items as pending, not infer them healthy |
+
+Phase 0 closes at the repository boundary with version `0.42.64.1`. This does
+not claim that either live deployment or embedding cohort is accepted. Those
+stateful proofs remain owned by the separately authorized embedding data gate,
+and Phase 1 may start from this baseline while representing them as pending or
+degraded until their receipts are green.
 
 ### Clean auto-merge interaction map
 
@@ -498,6 +658,10 @@ release selection.
   validation remains fail-closed; local Nemotron remains fixed at 2048
   dimensions. Both use `input_type=query` for query vectors and
   `input_type=passage` for stored vectors.
+- Wire-path correction: the local `nvidia-nim` recipe now uses the same
+  NVIDIA compatibility transport as hosted `nvidia` without merging their
+  provider identities. A real transport-shape test proves the local NIM wire
+  body carries `query` for retrieval and `passage` for indexed documents.
 - Persisted identity: new embeddings carry a v2 page signature binding exact
   provider/model, dimensions, active column, and document preprocessing.
   Chunk rows retain the fully qualified provider/model.

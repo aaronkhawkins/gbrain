@@ -117,6 +117,16 @@ export async function setupDB(): Promise<PostgresEngine> {
   await db.connect({ database_url: DATABASE_URL });
   await db.initSchema();
 
+  // Preserve the migration marker across the data reset. `config` is part of
+  // ALL_TABLES so tests get clean runtime settings, but deleting its `version`
+  // row makes PostgresEngine assume schema v1 and replay every migration on
+  // every describe block. A brand-new database still reports v1 here and
+  // therefore gets the full migration chain exactly once.
+  const versionRows = await db.getConnection().unsafe(
+    `SELECT value FROM config WHERE key = 'version' LIMIT 1`,
+  ) as Array<{ value: string }>;
+  const schemaVersion = versionRows[0]?.value ?? '1';
+
   // Truncate all data tables (preserves schema + extensions).
   // Some tables (e.g. v0.28 takes/synthesis_evidence) only exist after
   // migrations run via engine.connect() below, so skip non-existent tables.
@@ -130,11 +140,11 @@ export async function setupDB(): Promise<PostgresEngine> {
     }
   }
 
-  // Re-seed config (initSchema inserts default config rows)
+  // Re-seed the migration marker removed by truncating config.
   await conn.unsafe(`
-    INSERT INTO config (key, value) VALUES ('schema_version', '1')
-    ON CONFLICT (key) DO NOTHING
-  `);
+    INSERT INTO config (key, value) VALUES ('version', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `, [schemaVersion]);
 
   engine = new PostgresEngine();
   await engine.connect({ database_url: DATABASE_URL });

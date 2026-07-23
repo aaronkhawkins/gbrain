@@ -12,7 +12,7 @@ import { join } from 'node:path';
 describe('build identity', () => {
   test('the pinned fork reports a four-part release version', () => {
     expect(VERSION).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
-    expect(VERSION).toBe('0.42.64.0');
+    expect(VERSION).toBe('0.42.64.1');
   });
 
   test('source/upstream fallback is explicit and safe', () => {

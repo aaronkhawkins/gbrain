@@ -27,7 +27,6 @@ import { configureGateway } from '../../src/core/ai/gateway.ts';
 import type { ChunkInput } from '../../src/core/types.ts';
 
 let engine: PGLiteEngine;
-
 const DIM = 1536;
 
 /** Unit vector with cosine-similarity `cos` against basis direction 0. */

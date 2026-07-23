@@ -107,4 +107,28 @@ describe('self-upgrade marker on a real invocation', () => {
     });
     expect(r.stderr.toString()).not.toContain('UPGRADE_AVAILABLE');
   });
+
+  test('per-command help is observational and leaves startup-hook state untouched', () => {
+    writeCache(`UPGRADE_AVAILABLE ${VERSION} 0.99.0`);
+    const breadcrumb = join(gbrainDir, 'just-upgraded-from');
+    writeFileSync(breadcrumb, '0.42.0\n');
+
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    delete env.NODE_ENV;
+    delete env.GBRAIN_SKIP_STARTUP_HOOKS;
+    env.GBRAIN_HOME = home;
+    env.GBRAIN_SELF_UPGRADE_MODE = 'notify';
+    const r = Bun.spawnSync(['bun', 'src/cli.ts', 'embed', '--help'], {
+      cwd: repoRoot,
+      env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).toContain('Usage: gbrain embed');
+    expect(r.stderr.toString()).not.toContain('UPGRADE_AVAILABLE');
+    expect(r.stderr.toString()).not.toContain('JUST_UPGRADED');
+    expect(existsSync(breadcrumb)).toBe(true);
+  });
 });

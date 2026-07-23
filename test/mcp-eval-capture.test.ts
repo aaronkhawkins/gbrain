@@ -92,6 +92,7 @@ function makeCtx(overrides: Partial<OperationContext> = {}): OperationContext {
     logger: console,
     dryRun: false,
     remote: true,
+    sourceId: 'default',
     ...overrides,
   } as OperationContext;
 }

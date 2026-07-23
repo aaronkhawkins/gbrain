@@ -16,10 +16,18 @@ describe.skipIf(skip)('facts-fence escaped-pipe reconciliation on Postgres', () 
     engine = new PostgresEngine();
     await engine.connect({ database_url: databaseUrl! });
     await engine.initSchema();
+    await engine.executeRaw(
+      'DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug = $2',
+      ['default', slug],
+    );
   });
 
   afterAll(async () => {
     if (engine) {
+      await engine.executeRaw(
+        'DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug = $2',
+        ['default', slug],
+      );
       await engine.executeRaw('DELETE FROM pages WHERE slug = $1', [slug]);
       await engine.disconnect();
     }

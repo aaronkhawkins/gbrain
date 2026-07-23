@@ -2,6 +2,31 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.64.1] - 2026-07-23
+
+### Changed
+
+- Stabilized the managed fork on the selected upstream baseline while
+  preserving local NVIDIA NIM embeddings, source-scoped Dream and Minion
+  behavior, durable facts work, and machine-readable build receipts.
+- Added a fail-closed, one-time mutation-target approval gate for embedding
+  cohort rebuilds.
+- Made local CI memory-bounded by default and gave database-backed E2E files
+  explicit outer time limits.
+
+### Fixed
+
+- `gbrain embed --help` is observational and cannot connect to or migrate a
+  configured brain.
+- PGLite snapshots are accepted only when their embedding model, dimensions,
+  and generated schema match the active runtime.
+- Reflex telemetry is registered synchronously so CLI teardown cannot miss a
+  newly delivered event.
+- Local NVIDIA embedding requests preserve provider identity and use the
+  provider-compatible transport.
+
+No new schema migrations.
+
 ## [0.42.64.0] - 2026-07-20
 
 ### Fixed

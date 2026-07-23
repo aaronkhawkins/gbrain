@@ -163,6 +163,28 @@ describe('CLI dispatch integration', () => {
     }
   });
 
+  test('embed --help prints usage without connecting or applying migrations', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-cli-help-'));
+    try {
+      const proc = Bun.spawn(['bun', 'run', 'src/cli.ts', 'embed', '--help'], {
+        cwd: repoRoot,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: isolatedEnv(home),
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+
+      expect(stdout).toContain('Usage: gbrain embed');
+      expect(stderr).not.toContain('No brain configured');
+      expect(existsSync(join(home, '.gbrain', 'config.json'))).toBe(false);
+      expect(exitCode).toBe(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('doctor --help short-circuits CLI-only dispatch without diagnostics', async () => {
     const home = mkdtempSync(join(tmpdir(), 'gbrain-cli-help-'));
     try {

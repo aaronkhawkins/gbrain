@@ -28,12 +28,14 @@ function writeFakeGit(): void {
   mkdirSync(FAKE_GIT_DIR, { recursive: true });
   // Mode file controls fake-git behavior: "ok" = exit 0, "fail" = exit 1.
   writeFileSync(FAKE_GIT_MODE, 'ok');
-  // Per-invocation argv goes into argv.log (one JSON array per line).
+  // Per-invocation argv uses an ASCII unit separator so the harness has no
+  // runtime dependency on jq or another PATH-resolved encoder.
   writeFileSync(FAKE_GIT_LOG, '');
-  const script = `#!/usr/bin/env bash
+  const script = `#!/bin/bash
 # Fake git for git-remote.test.ts
-{ printf '['; for arg in "$@"; do printf '%s,' "$(printf '%s' "$arg" | jq -Rs .)"; done; printf 'null]\\n'; } >> "${FAKE_GIT_LOG}"
-mode=$(cat "${FAKE_GIT_MODE}" 2>/dev/null || echo ok)
+printf '%s\\037' "$@" >> "${FAKE_GIT_LOG}"
+printf '\\n' >> "${FAKE_GIT_LOG}"
+mode=$(<"${FAKE_GIT_MODE}")
 case "$mode" in
   fail) exit 1 ;;
   url-drift) echo "https://github.com/different/url" ;;
@@ -52,10 +54,7 @@ function readArgvLog(): string[][] {
   return raw
     .split('\n')
     .filter(Boolean)
-    .map(line => {
-      const arr = JSON.parse(line) as (string | null)[];
-      return arr.filter((x): x is string => x !== null);
-    });
+    .map(line => line.split('\x1f').filter(Boolean));
 }
 
 function clearArgvLog(): void {

@@ -556,6 +556,23 @@ Personal receives its own go/no-go record and observation window. Company starts
 
 ---
 
+## Closure decision — 2026-07-23
+
+Phase 0 closes at the repository boundary on the `0.42.64.1` managed-fork
+baseline. The accepted gate is memory-bounded and change-focused: repository
+guards and typecheck, the affected unit cohort, and changed compiled and
+real-Postgres E2E paths must pass. The integration report records the exact
+counts and the diagnostic, non-green all-files attempt; no untouched test is
+silently reported as passing.
+
+Live embedding rebuilds, immutable service selection, protected-brain restore
+proof, and deployment observation remain mandatory but move to the separately
+authorized embedding data gate. Phase 1 implementation may begin from the
+merged baseline while those capabilities report pending/degraded. Semantic
+canaries cannot report healthy until the relevant brain's data gate is green.
+
+---
+
 ## System-Wide Impact
 
 ```mermaid

@@ -10,13 +10,15 @@
 #   bash scripts/ci-local.sh --no-pull    # skip docker compose pull (offline / debug)
 #   bash scripts/ci-local.sh --clean      # nuke named volumes for cold debug
 #   bash scripts/ci-local.sh --no-shard   # debug: run E2E sequentially against postgres-1 only
+#   GBRAIN_CI_SHARD_JOBS=1 ...            # cap concurrent shard workers (default 1)
 #
-# 4-way E2E sharding: 4 pgvector services on host ports 5434-5437. The 36 E2E
-# files split N/4 per shard; shards run in parallel. Within a shard, files run
-# sequentially (TRUNCATE CASCADE no-race property documented in run-e2e.sh).
-# Wall-time on a 16-core host: ~6 min sequential -> ~1.5-2 min sharded.
+# 4-way E2E sharding: 4 pgvector services on host ports 5434-5437. The E2E
+# files split N/4 per shard; up to GBRAIN_CI_SHARD_JOBS shards run in parallel.
+# Within a shard, files run sequentially (TRUNCATE CASCADE no-race property
+# documented in run-e2e.sh).
 #
-# Stronger than PR CI: PR CI runs only Tier 1's 2 files; this runs all 36.
+# Stronger than PR CI: PR CI runs only Tier 1's selected files; this runs all
+# E2E files discovered at execution time.
 
 set -euo pipefail
 
@@ -28,6 +30,7 @@ DIFF=0
 NO_PULL=0
 CLEAN=0
 NO_SHARD=0
+DRY_RUN_SHARD_JOBS=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -35,12 +38,26 @@ for arg in "$@"; do
     --no-pull) NO_PULL=1 ;;
     --clean) CLEAN=1 ;;
     --no-shard) NO_SHARD=1 ;;
+    --dry-run-shard-jobs) DRY_RUN_SHARD_JOBS=1 ;;
     *)
-      echo "Usage: $0 [--diff] [--no-pull] [--clean] [--no-shard]" >&2
+      echo "Usage: $0 [--diff] [--no-pull] [--clean] [--no-shard] [--dry-run-shard-jobs]" >&2
       exit 1
       ;;
   esac
 done
+
+CI_SHARD_JOBS="${GBRAIN_CI_SHARD_JOBS:-1}"
+if ! printf '%s' "$CI_SHARD_JOBS" | grep -qE '^[1-4]$'; then
+  echo "[ci-local] ERROR: GBRAIN_CI_SHARD_JOBS must be an integer from 1 through 4 (got '$CI_SHARD_JOBS')." >&2
+  exit 2
+fi
+
+# No-side-effect policy seam used by the focused test. Exit before installing
+# traps, probing Docker, scanning secrets, or starting database services.
+if [ "$DRY_RUN_SHARD_JOBS" = "1" ]; then
+  printf '%s\n' "$CI_SHARD_JOBS"
+  exit 0
+fi
 
 cleanup() {
   echo ""
@@ -178,8 +195,8 @@ fi
 echo "[ci-local] Smoke OK ($SMOKE_NO_ARGS files no-arg, 1 single-arg, ${SHARD_TOTAL}=4-shard total)."
 
 # Step 4: build the runner-side command.
-# Tier 1: 4-shard parallel UNIT + E2E. Each shard runs ~46 unit files + ~9
-# E2E files against postgres-N. Guards + typecheck run ONCE before fan-out.
+# Tier 1: bounded parallel UNIT + E2E over four disjoint shard cohorts. Each
+# cohort uses postgres-N. Guards + typecheck run ONCE before fan-out.
 # --no-shard runs the legacy unsharded flow (debug aid).
 if [ "$NO_SHARD" = "1" ]; then
   if [ "$DIFF" = "1" ]; then
@@ -190,7 +207,7 @@ bash scripts/check-trailing-newline.sh
 bash scripts/check-wasm-embedded.sh
 bun run typecheck
 echo "[runner] unit (unsharded, DATABASE_URL unset)"
-env -u DATABASE_URL bash scripts/run-unit-shard.sh
+env -u DATABASE_URL bash scripts/run-unit-shard.sh --max-concurrency=1
 echo "[runner] e2e (unsharded, --diff selected)"
 SELECTED=$(bun run scripts/select-e2e.ts)
 if [ -z "$SELECTED" ]; then
@@ -209,7 +226,7 @@ bash scripts/check-trailing-newline.sh
 bash scripts/check-wasm-embedded.sh
 bun run typecheck
 echo "[runner] unit (unsharded, DATABASE_URL unset)"
-env -u DATABASE_URL bash scripts/run-unit-shard.sh
+env -u DATABASE_URL bash scripts/run-unit-shard.sh --max-concurrency=1
 echo "[runner] e2e (unsharded)"
 DATABASE_URL=postgresql://postgres:postgres@postgres-1:5432/gbrain_test \
 GBRAIN_PGBOUNCER_URL=postgresql://postgres:postgres@pgbouncer:5432/gbrain_pgbouncer \
@@ -218,7 +235,11 @@ bash scripts/run-e2e.sh'
   fi
 else
   # Tier 1 sharded path. Each shard runs unit+E2E sequentially against its
-  # own postgres-N. Shards run in parallel via xargs -P4.
+  # own postgres-N. At most CI_SHARD_JOBS run concurrently. Keep Bun's
+  # intra-process test concurrency at 1: the four processes are already the
+  # concurrency layer, and allowing each Bun process to fan out again exceeds
+  # Docker Desktop's standard 8 GiB allocation (workers are OOM-killed with
+  # exit 137 before E2E begins).
   if [ "$DIFF" = "1" ]; then
     DIFF_E2E_PREP='SELECTED=$(bun run scripts/select-e2e.ts)
 if [ -z "$SELECTED" ]; then
@@ -227,7 +248,7 @@ else
   echo "$SELECTED" | tr " " "\n" | grep -v "^$" > /tmp/e2e-selected.txt
 fi'
   else
-    # Empty file -> run-e2e.sh uses default glob (all 36 E2E files).
+    # Empty file -> run-e2e.sh uses the default glob for all E2E files.
     DIFF_E2E_PREP='> /tmp/e2e-selected.txt'
   fi
   RUN_PHASES_CMD="echo \"[runner] guards + typecheck (run once before sharding)\"
@@ -236,24 +257,20 @@ bash scripts/check-progress-to-stdout.sh
 bash scripts/check-trailing-newline.sh
 bash scripts/check-wasm-embedded.sh
 bun run typecheck
-echo \"[runner] Tier 3: building PGLite snapshot fixture (cached across reruns)\"
-if [ ! -f test/fixtures/pglite-snapshot.tar ] || [ ! -f test/fixtures/pglite-snapshot.version ]; then
-  bun run build:pglite-snapshot
-else
-  echo \"[runner] snapshot fixture exists; engine will validate hash at load time\"
-fi
+echo \"[runner] Tier 3: rebuilding embedding-identity-bound PGLite snapshot fixture\"
+bun run build:pglite-snapshot
 export GBRAIN_PGLITE_SNAPSHOT=test/fixtures/pglite-snapshot.tar
 echo \"[runner] resolving E2E file selection (--diff aware)\"
 ${DIFF_E2E_PREP}
 mkdir -p /tmp/shard-logs
-echo \"[runner] Tier 1: 4-shard parallel unit + E2E (xargs -P4)\"
+echo \"[runner] Tier 1: four unit + E2E cohorts (${CI_SHARD_JOBS} concurrent shard job(s))\"
 set +e
-printf '%s\\n' 1 2 3 4 | xargs -P4 -I{} sh -c '
+printf '%s\\n' 1 2 3 4 | xargs -P${CI_SHARD_JOBS} -I{} sh -c '
   shard=\$1
   log=/tmp/shard-logs/shard-\${shard}.log
   echo \"[shard \${shard}] start\" > \$log
   echo \"[shard \${shard}] unit phase (SHARD=\${shard}/4, DATABASE_URL unset)\" >> \$log
-  env -u DATABASE_URL SHARD=\${shard}/4 bash scripts/run-unit-shard.sh >> \$log 2>&1
+  env -u DATABASE_URL SHARD=\${shard}/4 bash scripts/run-unit-shard.sh --max-concurrency=1 >> \$log 2>&1
   unit_exit=\$?
   if [ \$unit_exit -ne 0 ]; then
     echo \"[shard \${shard}] UNIT FAILED (exit=\$unit_exit)\" >> \$log
@@ -325,7 +342,13 @@ fi
 __RUN_PHASES__
 EOF
 )
-INNER_CMD="${INNER_CMD/__RUN_PHASES__/$RUN_PHASES_CMD}"
+# Do not use Bash's ${value/pattern/replacement} form here. On Bash 5.2+
+# with patsub_replacement enabled, each `&` in RUN_PHASES_CMD (for example
+# the `&` in `2>&1`) expands to the matched placeholder. That silently turns
+# shard redirections into files such as `__RUN_PHASES__1` in the worktree.
+INNER_PREFIX="${INNER_CMD%%__RUN_PHASES__*}"
+INNER_SUFFIX="${INNER_CMD#*__RUN_PHASES__}"
+INNER_CMD="${INNER_PREFIX}${RUN_PHASES_CMD}${INNER_SUFFIX}"
 
 # Conductor / git-worktree support: when `.git` is a file (not a directory),
 # it points at a host gitdir outside the bind-mount. Without remounting that

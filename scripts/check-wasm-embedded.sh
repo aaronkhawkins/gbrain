@@ -17,15 +17,20 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-OUT_BIN="$(mktemp /tmp/gbrain-wasm-check.XXXXXX)"
-trap 'rm -f "$OUT_BIN"' EXIT
+TMP_DIR="$(mktemp -d /tmp/gbrain-wasm-check.XXXXXX)"
+OUT_BIN="$TMP_DIR/chunker-smoketest"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Build a minimal smoketest binary that imports the chunker. We compile this
 # instead of the full gbrain CLI so the failure mode is laser-focused on
 # chunker + WASM path resolution, not unrelated CLI wiring.
-bun build --compile --outfile "$OUT_BIN" scripts/chunker-smoketest.ts >/dev/null 2>&1
+#
+# Compile from the same filesystem as OUT_BIN. Bun creates its intermediate
+# executable relative to the current directory and renames it into place.
+# Renaming from a Docker Desktop bind mount into /tmp fails with ENOENT even
+# though both paths are visible in the container.
+cd "$TMP_DIR"
+bun build --compile --outfile "$OUT_BIN" "$REPO_ROOT/scripts/chunker-smoketest.ts"
 
 # Run it and capture JSON output.
 OUTPUT="$("$OUT_BIN" 2>&1)"

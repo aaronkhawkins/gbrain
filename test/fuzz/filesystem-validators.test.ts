@@ -12,11 +12,11 @@
  * outside the dir, which is exactly the contract we want to fuzz.
  */
 
-import { describe, test, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import fc from 'fast-check';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { validateUploadPath } from '../../src/core/operations.ts';
 
@@ -46,15 +46,20 @@ describe('validateUploadPath fuzz (fs-backed)', () => {
   test('arbitrary relative paths: never wedges, never escapes confinement', () => {
     fc.assert(
       fc.property(fc.string({ minLength: 0, maxLength: 200 }), (relPath) => {
+        let validated: string;
         try {
-          validateUploadPath(confinementDir, relPath);
+          validated = validateUploadPath(resolve(confinementDir, relPath), confinementDir);
         } catch {
           /* throwing is the expected behavior for traversal / invalid input */
+          return;
         }
-        // The contract: function returns without throwing OR throws. Either is fine.
-        // What we're ruling out: process crash, infinite loop (caught by fast-check
-        // run timeout), or silent path-escape (which would be a security bug — the
-        // ACTUAL behavior is a throw on any escape attempt).
+        const fromRoot = relative(confinementDir, validated);
+        expect(fromRoot).not.toBe('');
+        expect(
+          fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot),
+        ).toBe(false);
+        // Invalid inputs may throw. Every successful result must remain strictly
+        // inside the confinement directory.
       }),
       { numRuns: NUM_RUNS },
     );
@@ -75,7 +80,7 @@ describe('validateUploadPath fuzz (fs-backed)', () => {
       fc.property(traversalProbe, (probe) => {
         let threw = false;
         try {
-          validateUploadPath(confinementDir, probe);
+          validateUploadPath(resolve(confinementDir, probe), confinementDir);
         } catch {
           threw = true;
         }
@@ -114,7 +119,7 @@ describe('validateUploadPath fuzz (fs-backed)', () => {
       symlinkSync(tmpdir(), linkPath);
       let threw = false;
       try {
-        validateUploadPath(confinementDir, 'evil-link');
+        validateUploadPath(linkPath, confinementDir);
       } catch {
         threw = true;
       }

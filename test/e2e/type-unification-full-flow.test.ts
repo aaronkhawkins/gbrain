@@ -18,6 +18,7 @@ import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import { runUnifyTypes } from '../../src/core/schema-pack/unify-types-handler.ts';
 import { runAllOnboardChecks } from '../../src/core/onboard/checks.ts';
 import { _resetPackCacheForTests } from '../../src/core/schema-pack/registry.ts';
+import { _resetPackLocatorForTests } from '../../src/core/schema-pack/load-active.ts';
 
 let engine: PGLiteEngine;
 
@@ -34,6 +35,11 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetPgliteState(engine);
   _resetPackCacheForTests();
+  _resetPackLocatorForTests();
+  // The E2E runner reuses one isolated HOME across files. Pin the starting
+  // pack in the engine plane so a preceding file's config fixture cannot make
+  // this migration test begin on an already-current pack.
+  await engine.setConfig('schema_pack', 'gbrain-base');
 });
 
 function ctxOf() {

@@ -10,11 +10,12 @@ origin: docs/brainstorms/2026-07-22-001-gbrain-knowledge-runtime-requirements.md
 
 ## Summary
 
-Rebuild the personal and AKH Software embedding projections from canonical
-knowledge using each brain's independently configured provider, model,
-dimensions, and source boundaries. Rehearse the complete migration on restored
-Postgres copies before changing either live brain, then cut over and verify the
-brains sequentially.
+Rebuild the personal and AKH Software text-embedding projections from canonical
+knowledge using the shared local Nemotron text model while preserving each
+brain's independent credentials, database, configuration, and source
+boundaries. Rehearse the complete migration on restored Postgres copies before
+changing either live embedding cohort, then cut over and verify the brains
+sequentially.
 
 ---
 
@@ -37,26 +38,30 @@ corruption.
 - R3. Preserve hard brain boundaries: personal and AKH use independent
   credentials, databases, configuration, backups, receipts, and cutover
   decisions.
-- R4. Recompute every embedded chunk and page signature from the brain's
-  effective provider/model/dimensions/preprocessing identity; never relabel an
-  existing vector.
+- R4. Standardize every brain's text-semantic embedding surfaces on
+  `nvidia-nim:nvidia/nemotron-3-embed-1b`, 2048 dimensions, and the compatible
+  preprocessing/storage identity; never relabel an existing vector.
 - R5. Keep lexical retrieval available during a rebuild and enable semantic
   ranking only after the complete cohort passes identity checks.
 - R6. Prove semantic retrieval with held queries where the expected vector
   branch contributes the winning result, not cache or lexical fallback.
 - R7. Preserve pre-migration artifacts and a tested rollback coordinate until
   the observation window closes.
+- R8. Apply the Nemotron text-embedding standard to future employment and
+  confidential-service brain provisioning without weakening their independent
+  database and access boundaries.
 
 ---
 
 ## Scope Boundaries
 
-- Do not copy personal model configuration into AKH or otherwise change the
-  company route as part of this migration.
 - Do not merge the personal and company databases or expose one brain's
   credentials, source identities, or content to the other.
 - Do not delete or normalize canonical knowledge to improve embedding metrics.
 - Do not resume broad Dream or backlog work during clone rehearsal or cutover.
+- Do not route image or multimodal vectors through the text-only Nemotron
+  model; their 1024-dimensional columns remain owned by the vision embedding
+  route.
 
 ---
 
@@ -68,9 +73,11 @@ corruption.
 - Rehearse against restored Postgres databases rather than a PGLite surrogate;
   vector types, HNSW indexes, RLS, triggers, and migration behavior are
   engine-specific.
-- Process personal first and AKH only after personal acceptance. The smaller
-  AKH corpus does not justify weakening its independent security and restore
-  gates.
+- Process personal first and AKH only after personal acceptance. AKH changes
+  from mixed 768/1536-dimensional text spaces to Nemotron 2048, but its smaller
+  corpus does not justify weakening its independent security and restore gates.
+- Standardize page chunks, facts, takes, and query-cache vectors; leave
+  image/multimodal columns outside this text-model migration.
 - Stop on any mixed model, dimension, column, preprocessing, or signature
   cohort. A partial rebuild remains lexical-only and resumes from the explicit
   backfill path.
@@ -177,8 +184,8 @@ the new cohort before company work begins.
 
 - U4. **Rehearse, cut over, and observe AKH independently**
 
-**Goal:** Rebuild the AKH cohort with its existing effective embedding
-configuration without inheriting personal settings.
+**Goal:** Migrate every AKH text embedding surface from its mixed legacy widths
+to the shared Nemotron 2048-dimensional identity.
 
 **Requirements:** R1-R7
 
@@ -190,12 +197,15 @@ configuration without inheriting personal settings.
 **Approach:**
 - Repeat U1-U3 with AKH-specific credentials, backup, restored target,
   configuration receipt, source scope, and semantic query set.
-- Keep company route configuration read-only; stop if its effective identity is
-  internally inconsistent rather than repairing it implicitly.
+- Clear text-derived vectors, change compatible text columns and HNSW indexes
+  to the Nemotron 2048-dimensional storage identity, update the AKH embedding
+  configuration, and recompute rather than cast or relabel vectors.
+- Preserve the separate image/multimodal columns and their model identity.
 
 **Test scenarios:**
-- Happy path: the independent AKH clone and live cohort rebuild completely with
-  its configured model and dimensions.
+- Happy path: the independent AKH clone and live cohort rebuild every text
+  surface with Nemotron 2048 while image/multimodal column definitions remain
+  unchanged.
 - Error path: lack of restore-target privileges, route drift, source leakage,
   or mixed embedding identity blocks company cutover.
 - Security: no personal configuration or corpus data appears in AKH receipts,
@@ -203,7 +213,40 @@ configuration without inheriting personal settings.
 
 **Verification:**
 - AKH passes its own immediate and observation-window gates, with no dependency
-  on personal credentials or model settings.
+  on personal credentials or corpus data.
+
+- U5. **Make Nemotron the future brain text-embedding default**
+
+**Goal:** Ensure employment, confidential-service, and later hard-boundary
+brains start with the same local text-embedding capability instead of drifting
+back to paid or mixed providers.
+
+**Requirements:** R3, R4, R8
+
+**Dependencies:** U4
+
+**Files:**
+- Modify: `docs/architecture/brains-and-sources.md`
+- Modify: `docs/guides/fork-release-operations.md`
+
+**Approach:**
+- Document Nemotron 2048 as the managed provisioning default for text
+  embeddings while requiring a unique database, credentials, configuration,
+  and receipt set per brain.
+- Keep model selection explicit in each brain's configuration so a shared
+  runtime does not become a shared data boundary.
+
+**Test scenarios:**
+- Happy path: a new isolated brain initializes every text-semantic column with
+  the managed Nemotron identity.
+- Security: provisioning a new brain neither reuses another brain's database
+  credentials nor grants cross-brain source access.
+- Edge case: an unavailable Nemotron endpoint leaves the new brain lexical-only
+  rather than silently falling back to a different embedding space.
+
+**Verification:**
+- Provisioning guidance and checks reject mixed text-embedding identities while
+  preserving separate vision embedding configuration.
 
 ---
 
@@ -215,6 +258,7 @@ configuration without inheriting personal settings.
 | Semantic retrieval is enabled on a partial cohort | Fail closed until every eligible page and chunk matches the exact v2 identity. |
 | Backup exists but cannot restore | Restore and validate before any live vector mutation. |
 | AKH application credentials cannot create a clone | Require a separately provisioned administrative restore target; do not reuse personal infrastructure. |
+| A text column retains its old 768/1536 width | Inventory every vector column and fail cutover until chunks, facts, takes, and query cache share the accepted Nemotron identity. |
 | Provider/model changes during rebuild | Bind the effective configuration receipt at start and stop on drift. |
 
 ---

@@ -1295,6 +1295,20 @@ const openAICompatAsymmetricFetch = (async (input: RequestInfo | URL, init?: Req
   return fetch(typeof input === 'string' ? input : input.toString(), baseInit);
 }) as unknown as typeof fetch;
 
+function defaultOpenAICompatEmbeddingFetch(recipeId: string): typeof fetch {
+  switch (recipeId) {
+    case 'voyage':
+      return voyageCompatFetch;
+    case 'zeroentropyai':
+      return zeroEntropyCompatFetch;
+    case 'nvidia':
+    case 'nvidia-nim':
+      return nvidiaCompatFetch;
+    default:
+      return openAICompatAsymmetricFetch;
+  }
+}
+
 async function resolveEmbeddingProvider(modelStr: string): Promise<{ model: any; recipe: Recipe; modelId: string }> {
   const { parsed, recipe } = resolveRecipe(modelStr);
   assertTouchpoint(recipe, 'embedding', parsed.modelId, getExtendedModelsForProvider(parsed.providerId));
@@ -1356,14 +1370,7 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
       // input_type was threaded, so symmetric deployments see zero wire
       // change.
       const fetchWrapper =
-        compat.fetch ??
-        (recipe.id === 'voyage'
-          ? voyageCompatFetch
-          : recipe.id === 'zeroentropyai'
-          ? zeroEntropyCompatFetch
-          : recipe.id === 'nvidia'
-          ? nvidiaCompatFetch
-          : openAICompatAsymmetricFetch);
+        compat.fetch ?? defaultOpenAICompatEmbeddingFetch(recipe.id);
       const client = createOpenAICompatible({
         name: recipe.id,
         baseURL: compat.baseURL,

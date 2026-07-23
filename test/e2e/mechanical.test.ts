@@ -1315,7 +1315,7 @@ describeE2E('E2E: Doctor Command', () => {
     GBRAIN_HOME: gbrainHome,
   });
 
-  test('gbrain doctor exits 0 on healthy DB', () => {
+  test('gbrain doctor --fast exits 0 on healthy infrastructure', () => {
     // Init first so config exists for CLI. Pin --embedding-model explicitly
     // so the spawned doctor doesn't pick a different default (e.g. ZE-1280d
     // when ZEROENTROPY_API_KEY is in env) that mismatches the 1536d schema
@@ -1328,7 +1328,11 @@ describeE2E('E2E: Doctor Command', () => {
       cwd: cliCwd, env: cliEnv(), timeout: 15_000,
     });
     const result = Bun.spawnSync({
-      cmd: ['bun', 'run', 'src/cli.ts', 'doctor'],
+      // The imported mechanical fixture intentionally has no embeddings and
+      // sparse links/timelines, so a full capability Doctor correctly grades
+      // it unhealthy. --fast is the infrastructure/schema happy path this
+      // mechanical test is responsible for.
+      cmd: ['bun', 'run', 'src/cli.ts', 'doctor', '--fast'],
       cwd: cliCwd,
       env: cliEnv(),
       timeout: 15_000,

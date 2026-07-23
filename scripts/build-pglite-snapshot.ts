@@ -24,10 +24,19 @@ import * as crypto from "node:crypto";
 
 import { PGLiteEngine, computeSnapshotSchemaHash } from "../src/core/pglite-engine.ts";
 import { MIGRATIONS } from "../src/core/migrate.ts";
-import { PGLITE_SCHEMA_SQL } from "../src/core/pglite-schema.ts";
+import { getPGLiteSchema } from "../src/core/pglite-schema.ts";
+import {
+  configureGateway,
+  getEmbeddingDimensions,
+  getEmbeddingModel,
+} from "../src/core/ai/gateway.ts";
 
 function computeSchemaHash(): string {
-  return computeSnapshotSchemaHash(MIGRATIONS, PGLITE_SCHEMA_SQL, crypto);
+  return computeSnapshotSchemaHash(
+    MIGRATIONS,
+    getPGLiteSchema(getEmbeddingDimensions(), getEmbeddingModel()),
+    crypto,
+  );
 }
 
 async function main() {
@@ -35,6 +44,14 @@ async function main() {
   const versionPath = "test/fixtures/pglite-snapshot.version";
   mkdirSync(dirname(fixturePath), { recursive: true });
 
+  // Most legacy unit fixtures intentionally use OpenAI/1536 through the test
+  // preload. Build that cohort explicitly so it gets the fast path; tests that
+  // configure another model or width safely fall back to normal initSchema.
+  configureGateway({
+    embedding_model: "openai:text-embedding-3-large",
+    embedding_dimensions: 1536,
+    env: { ...process.env, OPENAI_API_KEY: process.env.OPENAI_API_KEY || "sk-snapshot-build" },
+  });
   const schemaHash = computeSchemaHash();
   console.log(`[build-pglite-snapshot] schema hash: ${schemaHash.slice(0, 16)}...`);
   console.log(`[build-pglite-snapshot] booting PGLite (in-memory)...`);
