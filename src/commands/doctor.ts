@@ -3227,17 +3227,34 @@ export async function computeConversationFormatCoverageCheck(
   const { readConversationBodyForParsing } = await import('../core/conversation-parser/body.ts');
   const { parseConversation } = await import('../core/conversation-parser/parse.ts');
 
-  const sampled: import('../core/types.ts').Page[] = [];
+  const eligibleByType: import('../core/types.ts').Page[][] = [];
   for (const type of CONVERSATION_FORMAT_COVERAGE_TYPES) {
     const pages = await engine.listPages({
       limit: 50,
       type: type as import('../core/types.ts').PageType,
     });
-    sampled.push(...pages);
+    eligibleByType.push(pages.filter(isConversationParserEligible));
   }
-  const eligible = sampled
-    .filter(isConversationParserEligible)
-    .slice(0, CONVERSATION_FORMAT_COVERAGE_SAMPLE_LIMIT);
+
+  // Interleave page types instead of concatenating them before applying the
+  // global cap. With six full 50-page type samples, concatenation caused the
+  // final two types to be excluded entirely by the 200-page limit.
+  const eligible: import('../core/types.ts').Page[] = [];
+  for (
+    let pageIndex = 0;
+    eligible.length < CONVERSATION_FORMAT_COVERAGE_SAMPLE_LIMIT;
+    pageIndex++
+  ) {
+    let added = false;
+    for (const pages of eligibleByType) {
+      const page = pages[pageIndex];
+      if (page === undefined) continue;
+      eligible.push(page);
+      added = true;
+      if (eligible.length === CONVERSATION_FORMAT_COVERAGE_SAMPLE_LIMIT) break;
+    }
+    if (!added) break;
+  }
 
   if (eligible.length === 0) {
     return {

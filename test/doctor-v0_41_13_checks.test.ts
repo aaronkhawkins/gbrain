@@ -104,11 +104,12 @@ function coveragePage(
   slug: string,
   body: string,
   frontmatter: Record<string, unknown> = {},
+  type: Page['type'] = 'conversation',
 ): Page {
   return {
     id: 1,
     slug,
-    type: 'conversation',
+    type,
     title: slug,
     compiled_truth: body,
     timeline: '',
@@ -160,5 +161,43 @@ describe('conversation_format_coverage eligibility', () => {
     const check = await computeConversationFormatCoverageCheck(engine);
     expect(check.status).toBe('ok');
     expect(check.message).toContain('No eligible conversation-type pages');
+  });
+
+  test('samples later conversation types when earlier types fill their 50-page caps', async () => {
+    const types = [
+      'conversation',
+      'meeting',
+      'slack',
+      'email',
+      'imessage',
+      'imessage-daily',
+    ] as const;
+    const pagesByType = new Map<string, Page[]>(
+      types.map((type, typeIndex) => [
+        type,
+        Array.from({ length: 50 }, (_, pageIndex) => {
+          const isLaterType = typeIndex >= 4;
+          return coveragePage(
+            `${type}/page-${pageIndex + 1}`,
+            isLaterType
+              ? 'unknown raw turn layout'
+              : '**Alice** (2024-03-15 9:00 AM): hello',
+            {},
+            type,
+          );
+        }),
+      ]),
+    );
+    const engine = {
+      listPages: async ({ type, limit }: { type?: string; limit?: number }) =>
+        (pagesByType.get(type ?? '') ?? []).slice(0, limit),
+    } as unknown as BrainEngine;
+
+    const check = await computeConversationFormatCoverageCheck(engine);
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('66/200 conversation pages');
+    expect(check.message).toContain('imessage/page-1');
+    expect(check.message).toContain('imessage-daily/page-1');
   });
 });
