@@ -84,11 +84,29 @@ function readObservability(config?: GBrainConfig | null): NonNullable<GBrainConf
 
 /** Derive per-brain HMAC material without ever exporting the DB locator. */
 export function deriveSourceLabelKey(config?: GBrainConfig | null): string | null {
-  const locator = config?.database_url ?? config?.database_path;
-  if (!locator) return null;
+  const configuredBrainId = config?.observability?.brain_id;
+  let identity: string | null = null;
+  if (configuredBrainId && /^[A-Za-z0-9._-]{1,64}$/.test(configuredBrainId)) {
+    identity = `brain:${configuredBrainId}`;
+  } else if (config?.database_path) {
+    identity = `pglite:${config.database_path}`;
+  } else if (config?.database_url) {
+    try {
+      const locator = new URL(config.database_url);
+      identity = [
+        'postgres',
+        locator.hostname.toLowerCase(),
+        locator.port,
+        locator.pathname,
+      ].join(':');
+    } catch {
+      return null;
+    }
+  }
+  if (!identity) return null;
   return createHash('sha256')
     .update('gbrain-observability-label-key-v1\0')
-    .update(locator)
+    .update(identity)
     .digest('hex');
 }
 
@@ -123,7 +141,10 @@ export async function discoverRegistryInput(
   const allowedSources = allowedSourceSet(scope);
   if (engine) {
     try {
-      const sources = await loadAllSources(engine, { includeArchived: false });
+      const sources = await loadAllSources(engine, {
+        includeArchived: false,
+        sourceIds: scope.sourceIds ?? (scope.sourceId ? [scope.sourceId] : undefined),
+      });
       for (const s of sources) {
         if (allowedSources && !allowedSources.has(s.id)) continue;
         sourceIds.push(s.id);
@@ -254,6 +275,8 @@ export async function buildOperationalSnapshot(
         config,
         now,
         timeoutMs: opts.collectTimeoutMs ?? observability.observer?.collect_timeout_ms ?? 15_000,
+        sourceId: opts.sourceId,
+        sourceIds: opts.sourceIds,
         onCollectorError: opts.onCollectorError,
       });
       evidenceByKey = collected.evidence;

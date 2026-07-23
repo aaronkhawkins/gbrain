@@ -7,7 +7,11 @@ import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import type { CollectorOpts } from './index.ts';
-import { toIsoTimestampStrict, unavailableEvidence } from './helpers.ts';
+import {
+  sourceIdsForScope,
+  toIsoTimestampStrict,
+  unavailableEvidence,
+} from './helpers.ts';
 
 export async function collectIngestionSourceEvidence(
   entries: ExpectedWorkEntry[],
@@ -25,8 +29,15 @@ export async function collectIngestionSourceEvidence(
     if (opts.context) {
       metrics = await opts.context.getSourceMetrics();
     } else {
-      const sources = await loadAllSources(engine, { includeArchived: false });
-      metrics = await computeAllSourceMetrics(engine, sources, { probeContent: true });
+      const sourceIds = sourceIdsForScope(opts);
+      const sources = await loadAllSources(engine, {
+        includeArchived: false,
+        sourceIds,
+      });
+      metrics = await computeAllSourceMetrics(engine, sources, {
+        probeContent: true,
+        sourceIds,
+      });
     }
   } catch {
     for (const e of entries) out.set(e.key, unavailableEvidence('evidence_unavailable'));

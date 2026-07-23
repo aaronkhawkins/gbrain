@@ -259,6 +259,64 @@ describe('Minion evidence recovery and bounded history', () => {
 });
 
 describe('generic fact and link evidence', () => {
+  test('remote grants constrain every source-backed runtime query', async () => {
+    const calls: Array<{ sql: string; params?: unknown[] }> = [];
+    const engine = {
+      executeRaw: async (sql: string, params?: unknown[]) => {
+        calls.push({ sql, params });
+        return [];
+      },
+    } as unknown as BrainEngine;
+    const registry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      enabledDreamPhases: ['sync'],
+      includeInfrastructure: false,
+      observability: {
+        external_work: [{
+          key: 'processor.entities.alpha',
+          kind: 'content_processor',
+          evidence: {
+            adapter: 'extract_rollup',
+            selector: 'entity-extractor',
+            source_id: 'alpha',
+          },
+        }],
+      },
+    });
+    const opts = { now: NOW, sourceIds: ['alpha'] };
+
+    await collectDreamPhaseEvidence(
+      registry.filter((entry) => entry.evidence_adapter === 'dream_phase'),
+      engine,
+      opts,
+    );
+    await collectMinionJobEvidence(
+      registry.filter((entry) => entry.evidence_adapter === 'minion_job'),
+      engine,
+      opts,
+    );
+    await collectExtractRollupEvidence(
+      registry.filter((entry) => entry.evidence_adapter === 'extract_rollup'),
+      engine,
+      opts,
+    );
+
+    expect(calls).toHaveLength(4);
+    expect(calls[0]?.sql).toContain(
+      `COALESCE(data->>'source_id', data->>'sourceId') = ANY($1::text[])`,
+    );
+    expect(calls[0]?.params).toEqual([['alpha']]);
+    for (const call of calls.slice(1, 3)) {
+      expect(call.sql).toContain(
+        `COALESCE(data->>'source_id', data->>'sourceId') = ANY($2::text[])`,
+      );
+      expect(call.params?.[1]).toEqual(['alpha']);
+    }
+    expect(calls[3]?.sql).toContain('source_id = ANY($2::text[])');
+    expect(calls[3]?.params?.[1]).toEqual(['alpha']);
+  });
+
   test('facts use the engine-owned pending-fact counter', async () => {
     const entry = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],

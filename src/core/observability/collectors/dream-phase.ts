@@ -7,12 +7,13 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
 import { PHASE_SCOPE, type CyclePhase } from '../../cycle.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import type { CollectorOpts } from './index.ts';
 import {
   newestIso,
   parseJsonRecord,
+  sourceIdsForScope,
   toIsoTimestamp,
   unavailableEvidence,
 } from './helpers.ts';
@@ -139,7 +140,7 @@ function outcomeClass(outcome: PhaseOutcome): SkipClass {
 export async function collectDreamPhaseEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  opts: { config?: GBrainConfig | null; now: Date },
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
@@ -149,13 +150,18 @@ export async function collectDreamPhaseEvidence(
 
   let rows: CycleJobRow[];
   try {
+    const sourceIds = sourceIdsForScope(opts);
     rows = await engine.executeRaw<CycleJobRow>(
       `SELECT finished_at, started_at, status, result, data, name
        FROM minion_jobs
        WHERE name IN ('autopilot-cycle', 'autopilot-global-maintenance')
+         ${sourceIds
+           ? `AND COALESCE(data->>'source_id', data->>'sourceId') = ANY($1::text[])`
+           : ''}
          AND status IN ('completed', 'failed', 'dead')
        ORDER BY COALESCE(finished_at, started_at) DESC NULLS LAST
        LIMIT 100`,
+      sourceIds ? [sourceIds] : undefined,
     );
   } catch {
     for (const entry of entries) out.set(entry.key, unavailableEvidence('evidence_unavailable'));

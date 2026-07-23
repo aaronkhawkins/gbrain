@@ -2,10 +2,51 @@ import { describe, expect, test } from 'bun:test';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import {
   buildOperationalSnapshot,
+  deriveSourceLabelKey,
   discoverRegistryInput,
 } from '../../src/core/observability/snapshot.ts';
 
 describe('operational registry discovery failures', () => {
+  test('configured brain identity keeps source labels stable across database URL rotation', () => {
+    const first = deriveSourceLabelKey({
+      engine: 'postgres',
+      database_url: 'postgres://old-user:old-secret@old-pool.example.com:5432/postgres?sslmode=require',
+      observability: { brain_id: 'customer-brain' },
+    });
+    const rotated = deriveSourceLabelKey({
+      engine: 'postgres',
+      database_url: 'postgres://new-user:new-secret@new-pool.example.net:6432/postgres?sslmode=verify-full',
+      observability: { brain_id: 'customer-brain' },
+    });
+    const otherBrain = deriveSourceLabelKey({
+      engine: 'postgres',
+      database_url: 'postgres://new-user:new-secret@new-pool.example.net:6432/postgres?sslmode=verify-full',
+      observability: { brain_id: 'other-brain' },
+    });
+
+    expect(first).toBe(rotated);
+    expect(first).not.toBe(otherBrain);
+    expect(first).not.toContain('old-secret');
+  });
+
+  test('database locator fallback excludes rotating credentials and URL options', () => {
+    const first = deriveSourceLabelKey({
+      engine: 'postgres',
+      database_url: 'postgres://old-user:old-secret@db.example.com:5432/customer?sslmode=require',
+    });
+    const rotated = deriveSourceLabelKey({
+      engine: 'postgres',
+      database_url: 'postgres://new-user:new-secret@db.example.com:5432/customer?sslmode=verify-full',
+    });
+    const otherDatabase = deriveSourceLabelKey({
+      engine: 'postgres',
+      database_url: 'postgres://new-user:new-secret@db.example.com:5432/other?sslmode=verify-full',
+    });
+
+    expect(first).toBe(rotated);
+    expect(first).not.toBe(otherDatabase);
+  });
+
   test('a source discovery failure is partial and preserves an unknown source axis', async () => {
     const engine = {
       kind: 'postgres',
