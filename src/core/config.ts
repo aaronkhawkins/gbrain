@@ -189,6 +189,39 @@ export interface GBrainConfig {
   /** Max pointers injected per turn (default 3). File-plane only. */
   retrieval_reflex_max_pointers?: number;
   /**
+   * Phase 1A operational observer (file-plane). Per-brain bind, work-policy
+   * overrides, and external-work declarations. Never stores credentials.
+   * Shape: src/core/observability/types.ts ObservabilityConfig.
+   */
+  observability?: {
+    brain_id?: string;
+    observer?: {
+      bind?: string;
+      port?: number;
+      refresh_ms?: number;
+      collect_timeout_ms?: number;
+      allow_public_bind?: boolean;
+    };
+    work?: Record<string, {
+      enabled?: boolean;
+      required?: boolean;
+      criticality?: 'required' | 'optional';
+      cadence_seconds?: number | null;
+      grace_seconds?: number;
+      backlog_warn?: number;
+      backlog_fail?: number;
+      repair_runbook?: string;
+    }>;
+    external_work?: Array<{
+      key: string;
+      kind?: string;
+      enabled?: boolean;
+      required?: boolean;
+      criticality?: 'required' | 'optional';
+      note?: string;
+    }>;
+  };
+  /**
    * v0.43 (#2095) — how many recent turns the reflex extracts entities from
    * (default 4). 1 reproduces the legacy current-turn-only behavior (and the
    * legacy slug+title suppression). File-plane / env

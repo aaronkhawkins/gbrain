@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  GBrain operational observer (Phase 1A).
+
+  Instantiate once per hard-boundary brain. Never share GBRAIN_HOME or
+  credentials across brains.
+
+  Replace placeholders before install:
+    {{LABEL}}         e.g. ai.gbrain.observer.personal
+    {{GBRAIN_BIN}}    absolute path to gbrain binary
+    {{GBRAIN_HOME}}   absolute path to this brain's config home
+    {{BIND}}          private Tailscale/loopback address (not 0.0.0.0)
+    {{PORT}}          distinct per-brain port
+    {{LOG_DIR}}       absolute log directory for this brain
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{LABEL}}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{GBRAIN_BIN}}</string>
+    <string>observe</string>
+    <string>serve</string>
+    <string>--bind</string>
+    <string>{{BIND}}</string>
+    <string>--port</string>
+    <string>{{PORT}}</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GBRAIN_HOME</key>
+    <string>{{GBRAIN_HOME}}</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>{{LOG_DIR}}/observer.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG_DIR}}/observer.stderr.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

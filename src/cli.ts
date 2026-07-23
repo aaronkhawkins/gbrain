@@ -55,7 +55,7 @@ export function bigintToStringReplacer(_key: string, value: unknown): unknown {
 }
 
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'observe', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch', 'reindex-search-vector']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -83,6 +83,8 @@ const CLI_ONLY_SELF_HELP = new Set([
   'maintain',
   // v0.43 (#2095): watch ships WATCH_HELP (flags + the stdin-turn protocol).
   'watch',
+  // Phase 1A — observe ships OBSERVE_HELP (serve/snapshot flags).
+  'observe',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
   // short-circuit fired before runSync could print its own usage block.
@@ -332,6 +334,33 @@ async function main() {
   if (command === 'sources' && subArgs[0] === 'pull' && subArgs.includes('--path')) {
     const { runPull } = await import('./commands/sources-harden.ts');
     await runPull(null, subArgs.slice(1));
+    return;
+  }
+
+  // Phase 1A: `gbrain observe` uses probeOnly engine (never migrates). Must
+  // run before handleCliOnly, which connects with the full migration path.
+  if (command === 'observe') {
+    if (hasHelpFlag(subArgs) || subArgs.length === 0) {
+      const { runObserve } = await import('./commands/observe.ts');
+      const result = await runObserve(null, subArgs.length === 0 ? ['--help'] : subArgs);
+      setCliExitVerdict(result.exitCode);
+      return;
+    }
+    let observeEngine: BrainEngine | null = null;
+    try {
+      observeEngine = await connectEngine({ probeOnly: true });
+    } catch (err) {
+      console.error(
+        `gbrain observe: engine unavailable (${(err as Error).message}); continuing with degraded/unknown snapshot.`,
+      );
+    }
+    try {
+      const { runObserve } = await import('./commands/observe.ts');
+      const result = await runObserve(observeEngine, subArgs);
+      setCliExitVerdict(result.exitCode);
+    } finally {
+      if (observeEngine) await finishCliTeardown({ engine: observeEngine });
+    }
     return;
   }
 
@@ -1853,6 +1882,15 @@ async function handleCliOnly(command: string, args: string[]) {
         const { runStatus } = await import('./commands/status.ts');
         const result = await runStatus(engine, args);
         // #2084 inner-exit sweep: a mid-switch exit skips the finally teardown.
+        setCliExitVerdict(result.exitCode);
+        break;
+      }
+      // Phase 1A — also reachable via the pre-switch probeOnly path above.
+      // Kept here so --help-less dispatch through the generic switch stays
+      // consistent if the early return is bypassed in tests.
+      case 'observe': {
+        const { runObserve } = await import('./commands/observe.ts');
+        const result = await runObserve(engine, args);
         setCliExitVerdict(result.exitCode);
         break;
       }

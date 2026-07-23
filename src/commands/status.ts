@@ -63,7 +63,7 @@ import {
 
 const SCHEMA_VERSION = 1 as const;
 
-const VALID_SECTIONS = ['build', 'sync', 'cycle', 'research', 'locks', 'workers', 'queue', 'autopilot'] as const;
+const VALID_SECTIONS = ['build', 'sync', 'cycle', 'research', 'locks', 'workers', 'queue', 'autopilot', 'operational'] as const;
 type Section = (typeof VALID_SECTIONS)[number];
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,11 @@ export interface StatusReport {
   workers?: WorkerSummary | { local_only_remote: true };
   queue?: QueueCounts | { local_only_remote: true };
   autopilot?: AutopilotStatus | { local_only_remote: true };
+  /**
+   * Phase 1A additive operational projection (schema still v1).
+   * Content-free expected-work snapshot; never replaces Doctor scores.
+   */
+  operational?: import('../core/observability/types.ts').OperationalSnapshot | { local_only_remote: true };
   warnings?: string[];
   /** #1984: true when a --deadline-ms budget elided one or more sections. */
   partial?: boolean;
@@ -443,6 +448,25 @@ async function buildLocalReport(
   if (want('autopilot')) {
     report.autopilot = buildAutopilotStatus();
   }
+  if (want('operational')) {
+    try {
+      report.operational = await withSectionDeadline(
+        (async () => {
+          const { buildOperationalSnapshot } = await import('../core/observability/snapshot.ts');
+          const { loadConfig } = await import('../core/config.ts');
+          return buildOperationalSnapshot({
+            engine,
+            config: loadConfig(),
+            collectTimeoutMs: remaining() ?? 15_000,
+          });
+        })(),
+        remaining(),
+        () => markStale('operational'),
+      );
+    } catch (err) {
+      warnings.push(`operational section failed: ${(err as Error).message}`);
+    }
+  }
   if (staleSections.length > 0) report.stale_sections = staleSections;
   if (warnings.length > 0) report.warnings = warnings;
   return report;
@@ -516,6 +540,9 @@ async function buildThinClientReport(
   if (want('workers')) report.workers = { local_only_remote: true };
   if (want('queue')) report.queue = { local_only_remote: true };
   if (want('autopilot')) report.autopilot = { local_only_remote: true };
+  // Operational snapshot is host-local + brain-DB; thin-client MCP path does
+  // not yet expose a remote operational op (Phase 1A local observers only).
+  if (want('operational')) report.operational = { local_only_remote: true };
   if (warnings.length > 0) report.warnings = warnings;
   return report;
 }
@@ -537,6 +564,30 @@ function renderHuman(report: StatusReport): string {
     lines.push(`⚠ partial snapshot — stale sections: ${(report.stale_sections ?? []).join(', ')} (--deadline-ms budget hit)`);
   }
   lines.push('');
+
+  if (report.operational && !('local_only_remote' in report.operational)) {
+    const op = report.operational;
+    lines.push('Operational:');
+    lines.push(`  brain=${op.brain}  state=${op.state}  items=${op.items.length}`);
+    const attention = op.items.filter((i) =>
+      i.enabled && (i.state === 'failed' || i.state === 'degraded' || i.state === 'unknown'),
+    );
+    if (attention.length === 0) {
+      lines.push('  (all enabled items healthy or disabled)');
+    } else {
+      for (const i of attention.slice(0, 12)) {
+        lines.push(`  ${i.state.padEnd(9)} ${i.key}${i.reason ? `  (${i.reason})` : ''}`);
+      }
+      if (attention.length > 12) {
+        lines.push(`  … +${attention.length - 12} more (see --json or gbrain observe snapshot)`);
+      }
+    }
+    lines.push('');
+  } else if (report.operational && 'local_only_remote' in report.operational) {
+    lines.push('Operational:');
+    lines.push('  local-only — N/A on remote brain');
+    lines.push('');
+  }
 
   if (report.build) {
     const b = report.build;
