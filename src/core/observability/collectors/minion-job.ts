@@ -28,11 +28,11 @@ interface JobEvidenceRow {
   data: unknown;
 }
 
-interface BacklogRow {
+interface BacklogAggregateRow {
   name: string;
-  data: unknown;
-  status: string;
-  created_at: string | Date | null;
+  source_id: string | null;
+  backlog_count: string | number;
+  oldest_created_at: string | Date | null;
 }
 
 interface NormalizedAttempt {
@@ -42,6 +42,7 @@ interface NormalizedAttempt {
 }
 
 interface NormalizedBacklog {
+  count: number;
   created_ms: number | null;
 }
 
@@ -89,15 +90,12 @@ export async function collectMinionJobEvidence(
   if (names.length === 0) return out;
 
   let attempts: JobEvidenceRow[];
-  let backlogRows: BacklogRow[];
+  let backlogRows: BacklogAggregateRow[];
   try {
     attempts = await engine.executeRaw<JobEvidenceRow>(
-      `WITH requested_names(name) AS (
-         SELECT UNNEST($1::text[])
-       )
-       SELECT recent.name, recent.status, recent.created_at, recent.started_at,
+      `SELECT recent.name, recent.status, recent.created_at, recent.started_at,
               recent.finished_at, recent.updated_at, recent.data
-       FROM requested_names requested
+       FROM UNNEST($1::text[]) AS requested(name)
        CROSS JOIN LATERAL (
          SELECT name, status, created_at, started_at, finished_at, updated_at, data
          FROM minion_jobs
@@ -108,16 +106,21 @@ export async function collectMinionJobEvidence(
        ) recent`,
       [names],
     );
-    backlogRows = await engine.executeRaw<BacklogRow>(
-      `SELECT name, data, status, created_at
+    backlogRows = await engine.executeRaw<BacklogAggregateRow>(
+      `SELECT name,
+              COALESCE(data->>'source_id', data->>'sourceId') AS source_id,
+              COUNT(*)::bigint AS backlog_count,
+              MIN(created_at) AS oldest_created_at
        FROM minion_jobs
        WHERE name = ANY($1::text[])
-         AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')`,
+         AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')
+       GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
       [names],
     );
   } catch {
     // Engine parity fallback: bounded per-name reads avoid FILTER/window
-    // dependencies on older embedded Postgres builds.
+    // dependencies on older embedded Postgres builds while retaining
+    // database-side backlog aggregation.
     try {
       attempts = [];
       backlogRows = [];
@@ -131,11 +134,15 @@ export async function collectMinionJobEvidence(
            LIMIT ${MINION_ATTEMPT_HISTORY_LIMIT}`,
           [name],
         ));
-        backlogRows.push(...await engine.executeRaw<BacklogRow>(
-          `SELECT name, data, status, created_at
+        backlogRows.push(...await engine.executeRaw<BacklogAggregateRow>(
+          `SELECT name,
+                  COALESCE(data->>'source_id', data->>'sourceId') AS source_id,
+                  COUNT(*)::bigint AS backlog_count,
+                  MIN(created_at) AS oldest_created_at
            FROM minion_jobs
            WHERE name = $1
-             AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')`,
+             AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')
+           GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
           [name],
         ));
       }
@@ -165,22 +172,22 @@ export async function collectMinionJobEvidence(
     });
     attemptsByScope.set(key, list);
   }
-  const backlogByScope = new Map<string, NormalizedBacklog[]>();
+  const backlogByScope = new Map<string, NormalizedBacklog>();
   for (const row of backlogRows) {
-    if (!['waiting', 'active', 'delayed', 'waiting-children', 'paused'].includes(row.status)) continue;
-    const createdAt = toIsoTimestamp(row.created_at);
-    const key = scopeKey(row.name, jobSourceId(row.data));
-    const list = backlogByScope.get(key) ?? [];
-    list.push({
+    const count = Number(row.backlog_count);
+    if (!Number.isFinite(count) || count <= 0) continue;
+    const createdAt = toIsoTimestamp(row.oldest_created_at);
+    const key = scopeKey(row.name, row.source_id);
+    backlogByScope.set(key, {
+      count,
       created_ms: createdAt ? new Date(createdAt).getTime() : null,
     });
-    backlogByScope.set(key, list);
   }
 
   for (const entry of entries) {
     const key = entryScopeKey(entry);
     const scopedAttempts = attemptsByScope.get(key) ?? [];
-    const scopedBacklog = backlogByScope.get(key) ?? [];
+    const scopedBacklog = backlogByScope.get(key);
     const lastAttempt = newestIso(scopedAttempts.map((row) => row.event_at));
     const successful = scopedAttempts.filter((row) => row.status === 'completed');
     const lastSuccess = newestIso(successful.map((row) => row.event_at));
@@ -193,16 +200,13 @@ export async function collectMinionJobEvidence(
       return time > successMs && time >= failureCutoffMs;
     });
     const unsupersededDead = unsupersededFailures.some((row) => row.status === 'dead');
-    const oldestPendingMs = scopedBacklog.reduce<number | null>((oldest, row) => {
-      const value = row.created_ms;
-      if (value === null) return oldest;
-      return oldest === null || value < oldest ? value : oldest;
-    }, null);
+    const oldestPendingMs = scopedBacklog?.created_ms ?? null;
     const oldestPendingAge = oldestPendingMs === null
       ? null
       : Math.max(0, Math.floor((opts.now.getTime() - oldestPendingMs) / 1000));
 
-    if (scopedAttempts.length === 0 && scopedBacklog.length === 0) {
+    const backlogCount = scopedBacklog?.count ?? 0;
+    if (scopedAttempts.length === 0 && backlogCount === 0) {
       out.set(
         entry.key,
         unavailableEvidence('evidence_unavailable', {
@@ -216,12 +220,12 @@ export async function collectMinionJobEvidence(
     out.set(entry.key, {
       last_attempt_at: lastAttempt,
       last_success_at: lastSuccess,
-      backlog_items: scopedBacklog.length,
+      backlog_items: backlogCount,
       oldest_pending_age_seconds: oldestPendingAge,
       recent_failures: unsupersededFailures.length,
       ...(unsupersededDead
         ? { force_state: 'failed' as const, force_reason: 'dead' as const }
-        : scopedBacklog.length > 0 && (oldestPendingAge ?? 0) > 3600
+        : backlogCount > 0 && (oldestPendingAge ?? 0) > 3600
           ? { force_state: 'degraded' as const, force_reason: 'stalled' as const }
           : unsupersededFailures.length > 0
             ? { force_state: 'degraded' as const, force_reason: 'recent_failures' as const }

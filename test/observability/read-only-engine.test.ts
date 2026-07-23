@@ -28,9 +28,10 @@ describe('withObserverReadOnlyEngine', () => {
       await expect(readonlyEngine!.executeRaw('INSERT INTO config(key, value) VALUES ($1, $2)')).rejects.toThrow(
         /read-only/,
       );
-    });
+    }, { statementTimeoutMs: 275 });
 
     expect(statements[0]).toMatch(/SET TRANSACTION READ ONLY/i);
+    expect(statements[1]).toMatch(/SET LOCAL statement_timeout = '275ms'/i);
     expect(statements).toContain('SELECT 1');
   });
 

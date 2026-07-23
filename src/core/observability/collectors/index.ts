@@ -49,9 +49,8 @@ export interface CollectAllResult {
 export interface CollectorContext {
   /**
    * One lazy source-health read shared by every adapter in this snapshot.
-   * `probeContent: true` preserves ingestion's local commit-aware lag. The
-   * embedding adapter only consumes the count fields, which are identical for
-   * either probe mode.
+   * Observer collection uses the durable database content watermark. Live Git
+   * probes are synchronous and belong only on interactive local commands.
    */
   getSourceMetrics: () => Promise<SourceMetrics[]>;
 }
@@ -60,6 +59,8 @@ export interface CollectorOpts {
   config?: GBrainConfig | null;
   now: Date;
   context?: CollectorContext;
+  /** Adapter deadline; async probes should stop promptly when aborted. */
+  signal?: AbortSignal;
 }
 
 export type AdapterFn = (
@@ -88,18 +89,18 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
   const warnings: ObservabilityWarningCode[] = [];
   let partial = false;
   let sourceMetrics: Promise<SourceMetrics[]> | undefined;
-  const context: CollectorContext = {
+  const contextFor = (engine: BrainEngine | null): CollectorContext => ({
     getSourceMetrics: () => {
       if (!sourceMetrics) {
         sourceMetrics = (async () => {
-          if (!opts.engine) throw new Error('database unavailable');
-          const sources = await loadAllSources(opts.engine, { includeArchived: false });
-          return computeAllSourceMetrics(opts.engine, sources, { probeContent: true });
+          if (!engine) throw new Error('database unavailable');
+          const sources = await loadAllSources(engine, { includeArchived: false });
+          return computeAllSourceMetrics(engine, sources, { probeContent: false });
         })();
       }
       return sourceMetrics;
     },
-  };
+  });
 
   const warn = (code: ObservabilityWarningCode): void => {
     if (!warnings.includes(code)) warnings.push(code);
@@ -142,9 +143,19 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
     }
 
     try {
+      const controller = new AbortController();
+      const adapterEngine = opts.engine
+        ? withAbortSignal(opts.engine, controller.signal)
+        : null;
       const result = await withTimeout(
-        adapter(entries, opts.engine, { config: opts.config, now, context }),
+        adapter(entries, adapterEngine, {
+          config: opts.config,
+          now,
+          context: contextFor(adapterEngine),
+          signal: controller.signal,
+        }),
         remaining,
+        controller,
       );
       if (result === 'timeout') {
         partial = true;
@@ -174,17 +185,43 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
 async function withTimeout<T>(
   p: Promise<T>,
   ms: number,
+  controller: AbortController,
 ): Promise<T | 'timeout'> {
-  if (ms <= 0) return 'timeout';
+  if (ms <= 0) {
+    controller.abort();
+    return 'timeout';
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       p,
       new Promise<'timeout'>((resolve) => {
-        timer = setTimeout(() => resolve('timeout'), ms);
+        timer = setTimeout(() => {
+          resolve('timeout');
+          controller.abort();
+        }, ms);
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Preserve the full engine API while enforcing the collector deadline on
+ * every raw query issued by an adapter or a helper it calls.
+ */
+function withAbortSignal(engine: BrainEngine, signal: AbortSignal): BrainEngine {
+  return new Proxy(engine, {
+    get(target, property) {
+      if (property === 'executeRaw') {
+        return <T = Record<string, unknown>>(
+          sql: string,
+          params?: unknown[],
+        ): Promise<T[]> => target.executeRaw<T>(sql, params, { signal });
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }

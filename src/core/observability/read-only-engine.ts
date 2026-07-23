@@ -41,12 +41,22 @@ function restrictedFacade(engine: BrainEngine): BrainEngine {
 export async function withObserverReadOnlyEngine<T>(
   engine: BrainEngine | null,
   fn: (engine: BrainEngine | null) => Promise<T>,
+  opts?: { statementTimeoutMs?: number },
 ): Promise<T> {
   if (!engine) return fn(null);
 
   if (engine.kind === 'postgres') {
     return engine.transaction(async (tx) => {
       await tx.executeRaw('SET TRANSACTION READ ONLY');
+      if (opts?.statementTimeoutMs !== undefined &&
+          Number.isFinite(opts.statementTimeoutMs) &&
+          opts.statementTimeoutMs > 0) {
+        const timeoutMs = Math.max(
+          1,
+          Math.min(2_147_483_647, Math.floor(opts.statementTimeoutMs)),
+        );
+        await tx.executeRaw(`SET LOCAL statement_timeout = '${timeoutMs}ms'`);
+      }
       return fn(restrictedFacade(tx));
     });
   }
