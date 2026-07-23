@@ -62,6 +62,15 @@ describe('generic processing receipts', () => {
     expect(replay.id).toBe(first.id);
     expect(replay.outcome).toBe('completed');
     expect(replay.attempt).toBe(1);
+    expect(String(replay.started_at)).toBe(String(complete.started_at));
+    const replayFinish = await finishProcessingReceipt(engine, {
+      ...identity,
+      outcome: 'failed',
+      inputCount: 999,
+      reasonCode: 'late_replay',
+    });
+    expect(replayFinish.outcome).toBe('completed');
+    expect(replayFinish.input_count).toBe(2);
 
     const failedIdentity = { ...identity, inputFingerprint: 'b'.repeat(64) };
     await startProcessingReceipt(engine, failedIdentity);

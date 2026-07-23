@@ -2,6 +2,8 @@ import type { BrainEngine } from './engine.ts';
 
 export const PROCESSING_OUTCOMES = ['running', 'completed', 'partial', 'failed', 'skipped'] as const;
 export type ProcessingOutcome = (typeof PROCESSING_OUTCOMES)[number];
+export const PROCESSING_TERMINAL_OUTCOMES = ['completed', 'partial', 'failed', 'skipped'] as const;
+export type ProcessingTerminalOutcome = (typeof PROCESSING_TERMINAL_OUTCOMES)[number];
 
 const KEY_RE = /^[a-z][a-z0-9._-]{0,63}$/;
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
@@ -43,7 +45,7 @@ export interface ProcessingReceiptIdentity {
 }
 
 export interface FinishProcessingReceiptInput extends ProcessingReceiptIdentity {
-  outcome: Exclude<ProcessingOutcome, 'running'>;
+  outcome: ProcessingTerminalOutcome;
   inputCount?: number;
   outputCount?: number;
   backlogCount?: number | null;
@@ -89,6 +91,13 @@ export function validateProcessingIdentity(input: ProcessingReceiptIdentity): vo
   assertMatch('processor version', input.processorVersion, VERSION_RE);
   assertMatch('scope id', input.scopeId, OPAQUE_RE);
   assertMatch('input fingerprint', input.inputFingerprint, FINGERPRINT_RE);
+}
+
+export function parseProcessingTerminalOutcome(raw: string): ProcessingTerminalOutcome {
+  if (!PROCESSING_TERMINAL_OUTCOMES.includes(raw as ProcessingTerminalOutcome)) {
+    throw new Error('invalid processing outcome');
+  }
+  return raw as ProcessingTerminalOutcome;
 }
 
 export async function registerProcessor(
@@ -163,10 +172,19 @@ export async function startProcessingReceipt(
          WHEN processing_receipts.outcome IN ('failed','partial') THEN NULL
          ELSE processing_receipts.finished_at
        END
+     WHERE processing_receipts.outcome IN ('failed','partial')
      RETURNING *`,
     [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint],
   );
-  return rows[0]!;
+  if (rows[0]) return rows[0];
+  const existing = await engine.executeRaw<ProcessingReceiptRow>(
+    `SELECT * FROM processing_receipts
+      WHERE processor_key = $1 AND processor_version = $2
+        AND scope_id = $3 AND input_fingerprint = $4`,
+    [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint],
+  );
+  if (!existing[0]) throw new Error('processing receipt start did not persist');
+  return existing[0];
 }
 
 export async function finishProcessingReceipt(
@@ -174,9 +192,7 @@ export async function finishProcessingReceipt(
   input: FinishProcessingReceiptInput,
 ): Promise<ProcessingReceiptRow> {
   validateProcessingIdentity(input);
-  if (!(['completed', 'partial', 'failed', 'skipped'] as const).includes(input.outcome)) {
-    throw new Error('invalid processing outcome');
-  }
+  parseProcessingTerminalOutcome(input.outcome);
   if (input.reasonCode != null) assertMatch('reason code', input.reasonCode, REASON_RE);
   if (input.lineageKind != null) assertMatch('lineage kind', input.lineageKind, KEY_RE);
   if (input.lineageId != null) assertMatch('lineage id', input.lineageId, OPAQUE_RE);
@@ -187,6 +203,7 @@ export async function finishProcessingReceipt(
        reason_code = $9, lineage_kind = $10, lineage_id = $11
      WHERE processor_key = $1 AND processor_version = $2
        AND scope_id = $3 AND input_fingerprint = $4
+       AND outcome = 'running'
      RETURNING *`,
     [
       input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint,
@@ -196,8 +213,15 @@ export async function finishProcessingReceipt(
       input.reasonCode ?? null, input.lineageKind ?? null, input.lineageId ?? null,
     ],
   );
-  if (!rows[0]) throw new Error('processing receipt was not started');
-  return rows[0];
+  if (rows[0]) return rows[0];
+  const existing = await engine.executeRaw<ProcessingReceiptRow>(
+    `SELECT * FROM processing_receipts
+      WHERE processor_key = $1 AND processor_version = $2
+        AND scope_id = $3 AND input_fingerprint = $4`,
+    [input.processorKey, input.processorVersion, input.scopeId, input.inputFingerprint],
+  );
+  if (!existing[0]) throw new Error('processing receipt was not started');
+  return existing[0];
 }
 
 export async function listProcessingRegistrations(

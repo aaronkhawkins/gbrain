@@ -118,8 +118,9 @@ export function renderOpenMetrics(snapshot: OperationalSnapshot): string {
       item.repair_runbook ?? 'none',
       64,
     );
+    const version = assertLabel('version', item.version ?? 'none', 32);
     lines.push(
-      `gbrain_expected_work_info{brain="${escapeLabel(brain)}",work="${escapeLabel(work)}",kind="${escapeLabel(kind)}",required="${item.required ? 'true' : 'false'}",enabled="${item.enabled ? 'true' : 'false'}",runbook="${escapeLabel(runbook)}"} 1`,
+      `gbrain_expected_work_info{brain="${escapeLabel(brain)}",work="${escapeLabel(work)}",kind="${escapeLabel(kind)}",required="${item.required ? 'true' : 'false'}",enabled="${item.enabled ? 'true' : 'false'}",runbook="${escapeLabel(runbook)}",version="${escapeLabel(version)}"} 1`,
     );
     lines.push(...stateGaugeLines('gbrain_expected_work_state', { brain, work }, item.state));
 

@@ -5828,6 +5828,28 @@ export const MIGRATIONS: Migration[] = [
         WHERE outcome = 'running';
     `,
   },
+  {
+    version: 128,
+    name: 'processing_receipt_observer_indexes',
+    idempotent: true,
+    sql: `
+      CREATE INDEX IF NOT EXISTS idx_processing_receipts_latest
+        ON processing_receipts (
+          processor_key,
+          (COALESCE(finished_at, started_at)) DESC,
+          id DESC
+        );
+      CREATE INDEX IF NOT EXISTS idx_processing_receipts_success
+        ON processing_receipts (processor_key, finished_at DESC, id DESC)
+        WHERE outcome IN ('completed','skipped');
+      CREATE INDEX IF NOT EXISTS idx_processing_receipts_failed
+        ON processing_receipts (
+          processor_key,
+          (COALESCE(finished_at, started_at)) DESC
+        )
+        WHERE outcome = 'failed';
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

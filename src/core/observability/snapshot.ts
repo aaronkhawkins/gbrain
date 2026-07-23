@@ -215,15 +215,19 @@ export async function discoverRegistryInput(
   let globalFloorMinutes = AUTOPILOT_GLOBAL_FLOOR_MINUTES;
   let registeredProcessors: RegistryInput['registeredProcessors'] = [];
   if (engine) {
-    try {
-      const raw = await engine.getConfig(AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY);
+    const [floorResult, processorsResult] = await Promise.allSettled([
+      engine.getConfig(AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY),
+      listProcessingRegistrations(engine),
+    ]);
+    if (floorResult.status === 'fulfilled') {
+      const raw = floorResult.value;
       const parsed = Number.parseInt(raw ?? '', 10);
       if (Number.isFinite(parsed) && parsed >= 1) globalFloorMinutes = parsed;
-    } catch {
+    } else {
       // The scheduler registration still exists; use its native default.
     }
-    try {
-      registeredProcessors = (await listProcessingRegistrations(engine)).map((row) => ({
+    if (processorsResult.status === 'fulfilled') {
+      registeredProcessors = processorsResult.value.map((row) => ({
         key: row.processor_key,
         version: row.processor_version,
         enabled: row.enabled,
@@ -234,8 +238,8 @@ export async function discoverRegistryInput(
         backlog_fail: row.backlog_fail,
         runbook: row.runbook,
       }));
-    } catch {
-      // Older schemas have no generic processor registry.
+    } else {
+      discoveryFailures.push('processors');
     }
   }
 
@@ -413,6 +417,7 @@ export function serializeOperationalSnapshot(snapshot: OperationalSnapshot): str
       repair_runbook: i.repair_runbook,
       required: i.required,
       enabled: i.enabled,
+      ...(i.version ? { version: i.version } : {}),
     })),
   };
   if (snapshot.build) clean.build = snapshot.build;

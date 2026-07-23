@@ -42,7 +42,7 @@ describe('renderOpenMetrics', () => {
     expect(text).toContain('gbrain_brain_state{brain="personal",state="healthy"} 0');
     expect(text).toContain('gbrain_expected_work_state{brain="personal",work="minion.autopilot-cycle",state="failed"} 1');
     expect(text).toContain(
-      'gbrain_expected_work_info{brain="personal",work="minion.autopilot-cycle",kind="minion",required="true",enabled="true",runbook="missed-work"} 1',
+      'gbrain_expected_work_info{brain="personal",work="minion.autopilot-cycle",kind="minion",required="true",enabled="true",runbook="missed-work",version="none"} 1',
     );
     expect(text).toContain('gbrain_expected_work_backlog_items{');
     expect(text).toContain('gbrain_expected_work_reason{');

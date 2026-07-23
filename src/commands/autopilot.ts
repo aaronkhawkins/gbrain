@@ -1274,10 +1274,10 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
       installSystemd(wrapperPath, repoPath);
       break;
     case 'ephemeral-container':
-      installEphemeralContainer(wrapperPath, home, repoPath, { injectBootstrap, noInject });
+      installEphemeralContainer(wrapperPath, repoPath, { injectBootstrap, noInject });
       break;
     case 'linux-cron':
-      installCrontab(wrapperPath, home);
+      installCrontab(wrapperPath);
       break;
     default: {
       console.error(`Unknown --target "${forcedTarget}". Allowed: macos, linux-systemd, ephemeral-container, linux-cron.`);
@@ -1290,14 +1290,19 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
 // assert ThrottleInterval/KeepAlive shape without an installed daemon.
 export function generateLaunchdPlist(
   wrapperPath: string,
-  _home: string,
-  identity: AutopilotInstallIdentity = resolveAutopilotInstallIdentity(),
+  home: string,
+  identity?: AutopilotInstallIdentity,
 ): string {
+  const resolvedIdentity = identity ?? {
+    ...resolveAutopilotInstallIdentity(),
+    stdoutPath: join(home, '.gbrain', 'autopilot.log'),
+    stderrPath: join(home, '.gbrain', 'autopilot.err'),
+  };
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>${escapeXml(identity.launchdLabel)}</string>
+  <key>Label</key><string>${escapeXml(resolvedIdentity.launchdLabel)}</string>
   <key>ProgramArguments</key><array>
     <string>${escapeXml(wrapperPath)}</string>
   </array>
@@ -1313,8 +1318,8 @@ export function generateLaunchdPlist(
     floor; launchd would have applied a default of 10s if unset.
   -->
   <key>ThrottleInterval</key><integer>60</integer>
-  <key>StandardOutPath</key><string>${escapeXml(identity.stdoutPath)}</string>
-  <key>StandardErrorPath</key><string>${escapeXml(identity.stderrPath)}</string>
+  <key>StandardOutPath</key><string>${escapeXml(resolvedIdentity.stdoutPath)}</string>
+  <key>StandardErrorPath</key><string>${escapeXml(resolvedIdentity.stderrPath)}</string>
 </dict>
 </plist>`;
 }
@@ -1473,7 +1478,6 @@ function installSystemd(wrapperPath: string, repoPath: string) {
 
 function installEphemeralContainer(
   wrapperPath: string,
-  home: string,
   repoPath: string,
   opts: { injectBootstrap: boolean; noInject: boolean },
 ) {
@@ -1544,7 +1548,7 @@ echo \$! > '${safePidPath}'
   console.log('  Uninstall: gbrain autopilot --uninstall');
 }
 
-function installCrontab(wrapperPath: string, _home: string) {
+function installCrontab(wrapperPath: string) {
   const identity = resolveAutopilotInstallIdentity();
   // Linux/WSL without systemd — crontab runs the wrapper every 5 minutes.
   const safeWrapperPath = wrapperPath.replace(/'/g, "'\\''");

@@ -5,7 +5,7 @@ import {
   listProcessingRegistrations,
   registerProcessor,
   startProcessingReceipt,
-  type ProcessingOutcome,
+  parseProcessingTerminalOutcome,
 } from '../core/processing-receipts.ts';
 
 export const PROCESSING_HELP = `gbrain processing — generic external-processor receipts
@@ -36,13 +36,7 @@ function intFlag(args: string[], name: string, fallback?: number): number | unde
   return Number(raw);
 }
 
-const REPAIR_JOB_ALLOWLIST = new Set([
-  'noop',
-  'autopilot-cycle',
-  'embed',
-  'extract-conversation-facts',
-  'ingest_capture',
-]);
+const REPAIR_JOB_ALLOWLIST = new Set(['noop']);
 
 export async function runProcessing(
   engine: BrainEngine,
@@ -86,7 +80,7 @@ export async function runProcessing(
         processorVersion: flag(rest, '--version', true)!,
         scopeId: flag(rest, '--scope', true)!,
         inputFingerprint: flag(rest, '--fingerprint', true)!,
-        outcome: flag(rest, '--outcome', true)! as Exclude<ProcessingOutcome, 'running'>,
+        outcome: parseProcessingTerminalOutcome(flag(rest, '--outcome', true)!),
         inputCount: intFlag(rest, '--input-count'),
         outputCount: intFlag(rest, '--output-count'),
         backlogCount: intFlag(rest, '--backlog-count'),
@@ -104,14 +98,40 @@ export async function runProcessing(
     if (sub === 'repair') {
       const [action, ...repairArgs] = rest;
       const key = flag(repairArgs, '--key', true)!;
-      const registration = (await listProcessingRegistrations(engine))
-        .find((row) => row.processor_key === key);
+      const repairRows = await engine.executeRaw<{
+        processor_key: string;
+        runbook: string;
+        repair_job_name: string | null;
+        id: number;
+        outcome: string;
+      }>(
+        `SELECT r.processor_key, r.runbook, r.repair_job_name,
+                latest.id, latest.outcome
+           FROM processing_registrations r
+           LEFT JOIN LATERAL (
+             SELECT p.id, p.outcome
+               FROM processing_receipts p
+              WHERE p.processor_key = r.processor_key
+              ORDER BY COALESCE(p.finished_at, p.started_at) DESC, p.id DESC
+              LIMIT 1
+           ) latest ON TRUE
+          WHERE r.processor_key = $1`,
+        [key],
+      );
+      const registration = repairRows[0] ?? null;
       if (!registration) throw new Error('processor is not registered');
+      const receipt = registration.id == null
+        ? null
+        : { id: registration.id, outcome: registration.outcome };
       const repairJob = registration.repair_job_name;
-      const supported = repairJob != null && REPAIR_JOB_ALLOWLIST.has(repairJob);
+      const supported = repairJob != null
+        && REPAIR_JOB_ALLOWLIST.has(repairJob)
+        && (receipt?.outcome === 'failed' || receipt?.outcome === 'partial');
       const plan = {
         processor_key: key,
         runbook: registration.runbook,
+        receipt_id: receipt?.id ?? null,
+        outcome: receipt?.outcome ?? null,
         dispatch_supported: supported,
         repair_job: supported ? repairJob : null,
       };
@@ -126,17 +146,12 @@ export async function runProcessing(
       const job = await queue.add(
         repairJob,
         { processor_key: key },
-        { idempotency_key: `processing-repair:${key}` },
+        { idempotency_key: `processing-repair:${key}:${receipt!.id}` },
         { allowProtectedSubmit: true },
       );
       await engine.executeRaw(
-        `UPDATE processing_receipts SET repair_job_id = $2
-          WHERE id = (
-            SELECT id FROM processing_receipts
-             WHERE processor_key = $1
-             ORDER BY COALESCE(finished_at, started_at) DESC, id DESC LIMIT 1
-          )`,
-        [key, job.id],
+        'UPDATE processing_receipts SET repair_job_id = $2 WHERE id = $1',
+        [receipt!.id, job.id],
       );
       process.stdout.write(JSON.stringify({ ...plan, job_id: job.id }) + '\n');
       return { exitCode: 0 };

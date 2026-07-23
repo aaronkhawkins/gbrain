@@ -126,7 +126,7 @@ export function minionWorkKey(
     : base;
 }
 
-export type DiscoveryAxis = 'sources' | 'dream_phases';
+export type DiscoveryAxis = 'sources' | 'dream_phases' | 'processors';
 
 export interface RegistryInput {
   /** Registered source ids from the brain DB. */
@@ -341,6 +341,7 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
       backlog_warn: processor.backlog_warn ?? undefined,
       backlog_fail: processor.backlog_fail ?? undefined,
       repair_runbook: processor.runbook,
+      version: processor.version,
     }, obs.work?.[key]));
   }
 
@@ -526,6 +527,7 @@ function evaluateWorkItemPolicy(
     repair_runbook: entry.repair_runbook ?? null,
     required: entry.required,
     enabled: entry.enabled,
+    ...(entry.version ? { version: entry.version } : {}),
   };
 
   if (!entry.enabled) {
@@ -707,6 +709,7 @@ export function assertExportableSnapshot(snapshot: {
     reason: string | null;
     kind?: string;
     repair_runbook?: string | null;
+    version?: string;
   }>;
   warnings?: string[];
 }): void {
@@ -735,6 +738,11 @@ export function assertExportableSnapshot(snapshot: {
     ) {
       throw new Error(
         `operational snapshot: invalid repair runbook ${JSON.stringify(item.repair_runbook)}`,
+      );
+    }
+    if (item.version != null && !/^[A-Za-z0-9._-]{1,32}$/.test(item.version)) {
+      throw new Error(
+        `operational snapshot: invalid work version ${JSON.stringify(item.version)}`,
       );
     }
   }

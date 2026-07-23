@@ -87,6 +87,8 @@ export interface ExpectedWorkEntry {
   backlog_fail?: number;
   /** Bounded runbook id, not free-form prose in metrics. */
   repair_runbook?: string;
+  /** Bounded implementation version for registered external processors. */
+  version?: string;
 }
 
 /**
@@ -121,6 +123,7 @@ export interface WorkObservation {
   repair_runbook: string | null;
   required: boolean;
   enabled: boolean;
+  version?: string;
 }
 
 export interface OperationalSnapshot {

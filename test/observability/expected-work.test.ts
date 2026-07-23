@@ -96,6 +96,7 @@ describe('buildExpectedWorkRegistry', () => {
       selector: 'fixture.expand',
       backlog_warn: 10,
       backlog_fail: 100,
+      version: '1',
     }));
   });
 
