@@ -18,15 +18,18 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 
-import { detectInstallTarget } from '../src/commands/autopilot.ts';
+import {
+  detectInstallTarget,
+  resolveAutopilotInstallIdentity,
+} from '../src/commands/autopilot.ts';
 
 let tmp: string;
 const envSnapshot: Record<string, string | undefined> = {};
 
 function envKeys() {
-  return ['HOME', 'RENDER', 'RAILWAY_ENVIRONMENT', 'FLY_APP_NAME', 'OPENCLAW_HOME'] as const;
+  return ['HOME', 'GBRAIN_HOME', 'RENDER', 'RAILWAY_ENVIRONMENT', 'FLY_APP_NAME', 'OPENCLAW_HOME'] as const;
 }
 
 beforeEach(() => {
@@ -77,6 +80,59 @@ describe('detectInstallTarget', () => {
   // Note: direct testing of linux-systemd / linux-cron requires mocking
   // existsSync + execSync which is awkward in-process. Those branches are
   // exercised by the E2E test (Task 14) against a stubbed host.
+});
+
+describe('resolveAutopilotInstallIdentity', () => {
+  test('preserves the legacy default service while keeping artifacts under the default brain home', () => {
+    delete process.env.GBRAIN_HOME;
+
+    expect(resolveAutopilotInstallIdentity()).toEqual({
+      launchdLabel: 'com.gbrain.autopilot',
+      wrapperPath: join(homedir(), '.gbrain', 'autopilot-run.sh'),
+      stdoutPath: join(homedir(), '.gbrain', 'autopilot.log'),
+      stderrPath: join(homedir(), '.gbrain', 'autopilot.err'),
+      plistPath: join(tmp, 'Library', 'LaunchAgents', 'com.gbrain.autopilot.plist'),
+      systemdUnitName: 'gbrain-autopilot.service',
+      systemdUnitPath: join(tmp, '.config', 'systemd', 'user', 'gbrain-autopilot.service'),
+      ephemeralStartScriptPath: join(homedir(), '.gbrain', 'start-autopilot.sh'),
+      bootstrapMarker: '# gbrain:autopilot v0.11.0',
+    });
+  });
+
+  test('isolates every install artifact when GBRAIN_HOME selects another brain', () => {
+    process.env.GBRAIN_HOME = join(tmp, 'second-brain-home');
+
+    const identity = resolveAutopilotInstallIdentity();
+
+    expect(identity.launchdLabel).toMatch(/^com\.gbrain\.autopilot\.[a-f0-9]{12}$/);
+    expect(identity.launchdLabel).not.toBe('com.gbrain.autopilot');
+    expect(identity.wrapperPath).toBe(join(tmp, 'second-brain-home', '.gbrain', 'autopilot-run.sh'));
+    expect(identity.stdoutPath).toBe(join(tmp, 'second-brain-home', '.gbrain', 'autopilot.log'));
+    expect(identity.stderrPath).toBe(join(tmp, 'second-brain-home', '.gbrain', 'autopilot.err'));
+    expect(identity.plistPath).toBe(
+      join(tmp, 'Library', 'LaunchAgents', `${identity.launchdLabel}.plist`),
+    );
+    expect(identity.systemdUnitName).toBe(`${identity.launchdLabel}.service`);
+    expect(identity.systemdUnitPath).toBe(
+      join(tmp, '.config', 'systemd', 'user', `${identity.launchdLabel}.service`),
+    );
+    expect(identity.ephemeralStartScriptPath).toBe(
+      join(tmp, 'second-brain-home', '.gbrain', 'start-autopilot.sh'),
+    );
+    expect(identity.bootstrapMarker).toMatch(/^# gbrain:autopilot v0\.11\.0 [a-f0-9]{12}$/);
+  });
+
+  test('different GBRAIN_HOME values cannot resolve to the same service artifacts', () => {
+    process.env.GBRAIN_HOME = join(tmp, 'brain-a');
+    const first = resolveAutopilotInstallIdentity();
+    process.env.GBRAIN_HOME = join(tmp, 'brain-b');
+    const second = resolveAutopilotInstallIdentity();
+
+    expect(first.launchdLabel).not.toBe(second.launchdLabel);
+    expect(first.plistPath).not.toBe(second.plistPath);
+    expect(first.wrapperPath).not.toBe(second.wrapperPath);
+    expect(first.stdoutPath).not.toBe(second.stdoutPath);
+  });
 });
 
 // v0.36.1.x (cherry-pick #966): the autopilot wrapper script must source
