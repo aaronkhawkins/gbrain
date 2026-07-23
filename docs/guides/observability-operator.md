@@ -17,7 +17,6 @@ Phase 1A does **not** prove semantic end-to-end retrieval (Phase 1C) and does **
 ```
 per-brain: gbrain observe serve  →  /metrics (OpenMetrics)
                                     /healthz
-                                    /snapshot.json
 central:   Prometheus scrapes over Tailscale
            Grafana fleet + detail dashboards
            Grafana-managed alerts → Mattermost
@@ -53,7 +52,14 @@ In `$GBRAIN_HOME/config.json`:
       "collect_timeout_ms": 15000
     },
     "work": {
-      "minion.autopilot-cycle": { "cadence_seconds": 3600, "grace_seconds": 900 }
+      "minion.autopilot-cycle.<source-id>": {
+        "cadence_seconds": 3600,
+        "grace_seconds": 900
+      },
+      "minion.maintain": {
+        "cadence_seconds": 86400,
+        "grace_seconds": 3600
+      }
     },
     "external_work": [
       { "key": "legacy_processor", "required": false }
@@ -63,6 +69,9 @@ In `$GBRAIN_HOME/config.json`:
 ```
 
 - `brain_id` must match `[A-Za-z0-9._-]{1,64}` (opaque metric label).
+- Source-scoped Minion work keys end in the registry's sanitized opaque source
+  segment: `minion.<job-name>.<source-id>`. Overrides match the full generated
+  key exactly. Global work such as `minion.maintain` has no source suffix.
 - Only numeric loopback and Tailscale addresses (`100.64.0.0/10`,
   `fd7a:115c:a1e0::/48`) are accepted by default. Any other bind requires the
   explicit unsafe `allow_public_bind: true` override.
@@ -121,6 +130,8 @@ Absence of evidence is **never** healthy.
 - [Backlog](../runbooks/observability/backlog.md)
 - [Embedding](../runbooks/observability/embedding.md)
 
-## Homelab
+## External monitoring deployment
 
-Prometheus scrape targets, Grafana dashboards, and Mattermost alert routing live in the `akh-homelab` repository (`roles/plg-stack`). Deploy those independently after observers are listening.
+Prometheus scrape targets, Grafana dashboards, and Mattermost alert routing
+live in the deployment-local observability repository. Deploy those
+independently after observers are listening.

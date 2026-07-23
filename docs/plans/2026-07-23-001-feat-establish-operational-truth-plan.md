@@ -13,10 +13,10 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** Give Aaron one reliable Grafana view showing whether every configured brain and every expected recurring GBrain activity is working, with Mattermost notification when a sustained failure occurs.
+- **Objective:** Give the operator one reliable Grafana view showing whether every configured brain and every expected recurring GBrain activity is working, with Mattermost notification when a sustained failure occurs.
 - **First delivery:** Phase 1A is an operational scoreboard built from existing GBrain evidence. It does not require synthetic transactions, a new canary framework, or a new general monitoring agent.
 - **Architecture boundary:** GBrain owns the operational meaning and emits a content-free snapshot. Prometheus transports and retains metrics; Grafana displays them; Grafana-managed alerting notifies.
-- **Deployment:** One native GBrain observer process runs per brain on the GBrain host. Prometheus and Grafana remain on `akhserver01` and are provisioned through the `akh-homelab` repository.
+- **Deployment:** One native GBrain observer process runs per brain on the GBrain host. Prometheus and Grafana remain on the observability host and are provisioned through the deployment-local observability repository.
 - **Stop conditions:** Stop if metrics expose knowledge content or credentials, a collector bypasses GBrain domain services with duplicated SQL, one observer can access multiple protected brains, or Grafana/Prometheus starts defining health independently of GBrain.
 
 ---
@@ -69,7 +69,7 @@ Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows th
 
 - R17. Grafana must provide a fleet overview and per-brain drill-down, while exported telemetry excludes knowledge content, source URLs, credentials, prompts, responses, and raw errors.
 - R26. Each brain must run an independently configured native GBrain observer; no observer may load credentials for another hard-boundary brain.
-- R27. Prometheus on `akhserver01` must scrape each observer over the tailnet and retain only bounded, content-free time series.
+- R27. Prometheus on the observability host must scrape each observer over the tailnet and retain only bounded, content-free time series.
 - R28. Grafana-managed alerting must notify the existing Mattermost observability route for missed cadence, repeated failure, stalled/dead work, growing backlog, embedding mismatch, or missing observer after configured hold periods.
 - R29. Dashboard state must remain visible during planned maintenance even when notifications are suppressed.
 
@@ -90,14 +90,14 @@ Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows th
   - **Trigger:** The observer refresh interval elapses or Prometheus scrapes an observer.
   - **Actors:** A5, A6, A7, A9
   - **Steps:** The per-brain observer loads that brain’s expected-work registry; GBrain collectors read existing domain evidence; GBrain produces one content-free snapshot; the observer exposes OpenMetrics; Prometheus scrapes it; Grafana renders fleet and detail views; sustained actionable states notify Mattermost.
-  - **Outcome:** Aaron can identify the affected brain, activity, stage, backlog, age, and repair path without manually running Doctor or exposing knowledge content.
+  - **Outcome:** The operator can identify the affected brain, activity, stage, backlog, age, and repair path without manually running Doctor or exposing knowledge content.
   - **Covered by:** R16-R17, R20-R32
 
 ### Acceptance Examples
 
 - AE5. **Covers R16-R17, R20-R32.** Given a required Dream cycle or exact Minion job has no successful run inside its cadence and grace window, the affected work item becomes failed, the brain becomes degraded or failed according to criticality, Grafana shows its last attempt and backlog, and one Mattermost alert links to repair guidance.
 - AE6. **Covers R18, R33.** Semantic end-to-end canary proof remains visibly unavailable until Phase 1C; healthy database and embedding component metrics do not claim that the canary passed.
-- AE7. **Covers R17, R26-R29.** Given the AKH observer stops, Prometheus reports only AKH as unavailable, the personal brain remains visible, and no database credential or protected content crosses the boundary.
+- AE7. **Covers R17, R26-R29.** Given the second-brain observer stops, Prometheus reports only that brain as unavailable, the personal brain remains visible, and no database credential or protected content crosses the boundary.
 - AE8. **Covers R30-R32.** Given a registered source remains healthy but one enabled Dream enhancement stops, the dashboard shows source intake as current and that enhancement as late instead of collapsing the entire source-to-knowledge path into one healthy pipeline.
 - AE9. **Covers R22, R30-R32.** Given a transcript processor is configured but has no durable GBrain receipt, the dashboard reports `unknown / instrumentation_missing` and identifies instrumentation as the next action rather than silently omitting the processor.
 
@@ -105,7 +105,7 @@ Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows th
 
 - One Grafana fleet dashboard shows every configured brain and expected recurring work item.
 - Every work item shows state, last success, next due, and relevant backlog/failure evidence.
-- Personal and AKH observers run independently and can fail independently.
+- Personal and second-brain observers run independently and can fail independently.
 - Missed schedules, failed jobs, stalled backlogs, embedding problems, and missing observers produce bounded Mattermost alerts.
 - Registered sources and recurring enhancements appear through generic GBrain contracts rather than workflow-specific monitoring code.
 - No dashboard query or Prometheus rule contains GBrain database SQL or reimplements state calculation.
@@ -118,8 +118,8 @@ Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows th
 - Native expected-work registry, capability snapshot, and bounded state semantics.
 - Adapters over existing GBrain status, source, Minion, Dream, embedding, retrieval, and host-local evidence.
 - Native per-brain OpenMetrics observer endpoint.
-- Personal and AKH production observer deployment.
-- Grafana fleet and brain-detail dashboards on `akhserver01`.
+- Personal and second-brain production observer deployment.
+- Grafana fleet and brain-detail dashboards on the observability host.
 - Grafana-managed Mattermost alerts and short repair runbooks.
 - Backlog and “needs attention” panels that support manual brain destashing.
 - Automatic discovery of registered sources and enabled recurring work, plus explicit `instrumentation_missing` results for legacy paths outside those contracts.
@@ -154,7 +154,7 @@ Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows th
 
 - KTD1. **GBrain owns state calculation.** (session-settled: user-approved — chosen over an external monitoring agent interpreting database tables: the system must use GBrain as a runtime, not merely as storage.) Collectors and the expected-work evaluator live in GBrain. External systems consume the resulting snapshot only.
 - KTD2. **The observer is a native GBrain process, not a separate brain-aware agent.** (session-settled: user-approved — chosen over adding a custom database-polling service: the first delivery should be unobtrusive and reuse GBrain’s configuration and evidence.) Each process starts with one `GBRAIN_HOME`, loads one brain configuration, computes snapshots through GBrain services, opens database work in read-only sessions, and exposes only read-only health and metrics endpoints.
-- KTD3. **Prometheus directly scrapes per-brain observers over Tailscale.** This matches the existing central Prometheus model on `akhserver01` and avoids adding Pushgateway, remote-write, or a Mac-specific metrics relay. Each observer binds only to the configured tailnet address and a distinct port.
+- KTD3. **Prometheus directly scrapes per-brain observers over Tailscale.** This matches the existing central Prometheus model on the observability host and avoids adding Pushgateway, remote-write, or a Mac-specific metrics relay. Each observer binds only to the configured tailnet address and a distinct port.
 - KTD4. **Expected work is discovered from GBrain registrations first.** `IngestionSource` registrations supply source identity and health; the active pack supplies enabled Dream phases; the scheduler and Minion registry supply recurring jobs and cadence. Per-brain configuration may override criticality, cadence, grace, or thresholds and may describe a legacy external path, but it does not manually duplicate normal GBrain registrations. Grafana never decides what “late” means.
 - KTD5. **Reuse evidence owners before adding persistence.** `status`, source health, `minion_jobs`, Dream results, build receipts, embedding identity, search telemetry, and brain-isolated supervisor/autopilot files remain authoritative. Phase 1A adds a normalization layer, not duplicate SQL or new receipt tables.
 - KTD6. **Use aggregate state plus work-item detail, not a new score.** A brain rolls up required items deterministically, while Grafana retains each item’s individual state and reason. Doctor’s score remains an interactive heuristic and is not exported as operational truth.
@@ -169,12 +169,12 @@ Product Contract preservation: R16-R18 remain authoritative. Phase 1A narrows th
 flowchart LR
     subgraph host["GBrain host"]
       pconfig["Personal GBRAIN_HOME"] --> pobserver["gbrain observe serve<br/>personal port"]
-      aconfig["AKH GBRAIN_HOME"] --> aobserver["gbrain observe serve<br/>AKH port"]
+      aconfig["Second-brain GBRAIN_HOME"] --> aobserver["gbrain observe serve<br/>second-brain port"]
       pbrain["Personal DB + local runtime evidence"] --> pobserver
-      abrain["AKH DB + local runtime evidence"] --> aobserver
+      abrain["Second-brain DB + local runtime evidence"] --> aobserver
     end
 
-    pobserver -->|"content-free /metrics over Tailscale"| prometheus["Prometheus<br/>akhserver01"]
+    pobserver -->|"content-free /metrics over Tailscale"| prometheus["Prometheus<br/>observability host"]
     aobserver -->|"content-free /metrics over Tailscale"| prometheus
     prometheus --> grafana["Grafana fleet + detail dashboards"]
     grafana --> alerts["Grafana-managed alerting"]
@@ -195,7 +195,7 @@ Prometheus never receives database credentials. The observer process is the only
 | Managed GBrain fork | Generic source/pass discovery, expected-work evaluation, operational snapshots, `gbrain observe`, and OpenMetrics | Upstream releases are merged into the fork and verified; the deployed runtime is built from the fork rather than overwritten by a vanilla upstream install. |
 | GBrain plugins and skillpacks | Particular source adapters, processors, and domain-specific enhancement definitions | Loaded through existing `IngestionSource`, pack-phase, and Minion extension seams; they can evolve without editing observability core. |
 | Per-brain `GBRAIN_HOME` | Enabled plugins/packs, schedules, policy overrides, brain identity, and credentials | Private deployment state survives code upgrades and remains separate for each hard-boundary brain. |
-| `akh-homelab` | Prometheus targets, Grafana dashboards, alert rules, and Mattermost routing | Deployed independently through the existing Ansible-managed observability stack. |
+| Deployment-local observability repository | Prometheus targets, Grafana dashboards, alert rules, and Mattermost routing | Deployed independently through the existing Ansible-managed observability stack. |
 
 The managed fork is intentionally responsible for the reusable capability. Keeping all observability outside GBrain would recreate GBrain’s state model elsewhere. Keeping source-specific logic in core would make upstream integration unnecessarily conflict-prone. The split above preserves both runtime ownership and upgradeability.
 
@@ -211,7 +211,7 @@ The managed fork is intentionally responsible for the reusable capability. Keepi
 | Retrieval | existing embedding identity and search telemetry | Component-level retrieval state; canary result remains unavailable |
 | Doctor | selected pure diagnostic helpers and remediation text | Bounded reason-to-runbook mapping; no score reuse |
 | Host processes | brain-isolated worker registry, supervisor audit, autopilot PID | Freshness mapping and observer self-status |
-| Fleet UI | existing Prometheus, Grafana, and Mattermost route in `akh-homelab` | GBrain scrape targets, dashboards, recording/alert rules |
+| Fleet UI | existing Prometheus, Grafana, and Mattermost route in the deployment-local observability repository | GBrain scrape targets, dashboards, recording/alert rules |
 
 ### State Semantics
 
@@ -251,7 +251,7 @@ flowchart LR
     p1b --> p1c["Phase 1C<br/>end-to-end canaries"]
 ```
 
-Phase 1A is complete when Aaron no longer needs to ask an assistant to discover routine operational failures. Phase 1B fills evidence gaps surfaced by the dashboard. Phase 1C proves paths that cannot be established from component and durable-work evidence alone.
+Phase 1A is complete when the operator no longer needs to ask an assistant to discover routine operational failures. Phase 1B fills evidence gaps surfaced by the dashboard. Phase 1C proves paths that cannot be established from component and durable-work evidence alone.
 
 ---
 
@@ -351,39 +351,39 @@ The U-ID gaps preserve stable identifiers from the earlier revision: former U2 m
   - Repeated scrapes return cached snapshots and do not rerun expensive collection.
 - **Verification:** Golden OpenMetrics parses with the pinned Prometheus tooling, endpoint tests prove brain isolation, and content scanning finds no prohibited data.
 
-### U7. Provision the fleet dashboard on akhserver01
+### U7. Provision the fleet dashboard on the observability host
 
 - **Goal:** Make the scoreboard visible in the existing Grafana instance.
 - **Requirements:** R17, R22, R27, R30; KTD3, KTD6, KTD8
 - **Dependencies:** U4
 - **Files:**
-  - AKH Homelab modify: `roles/plg-stack/templates/prometheus.yml.j2`
-  - AKH Homelab create: `roles/plg-stack/templates/dashboards/gbrain-operations.json`
-  - AKH Homelab modify: `roles/plg-stack/tasks/main.yml`
-  - AKH Homelab test: `roles/plg-stack/tests/baseline.yml`
-  - AKH Homelab create: `roles/plg-stack/tests/gbrain.yml`
+  - Observability deployment repository modify: `roles/plg-stack/templates/prometheus.yml.j2`
+  - Observability deployment repository create: `roles/plg-stack/templates/dashboards/gbrain-operations.json`
+  - Observability deployment repository modify: `roles/plg-stack/tasks/main.yml`
+  - Observability deployment repository test: `roles/plg-stack/tests/baseline.yml`
+  - Observability deployment repository create: `roles/plg-stack/tests/gbrain.yml`
 - **Approach:**
-  1. Add private static scrape targets for the personal and AKH observer ports over Tailscale.
+  1. Add private static scrape targets for the personal and second-brain observer ports over Tailscale.
   2. Provision a fleet landing dashboard with brain state, observer freshness, and each expected work item.
   3. Group per-brain drill-down by registered sources, enabled enhancements, infrastructure, and backlogs while retaining last success, next due, oldest pending age, recent failures, and reason/runbook.
   4. Add a “Needs attention / destash” section without write controls.
 - **Test Scenarios:**
-  - Personal healthy and AKH failed render independently.
+  - Personal healthy and second-brain failed render independently.
   - Unknown, disabled, degraded, failed, and stale-observer states are visually distinct.
   - Registered sources and enabled Dream, Minion, embedding, link, fact, and content-processing work appear from generic registrations rather than a dashboard allowlist.
   - Empty, partial, and newly configured brains render without query errors.
   - Dashboard JSON contains no real database URL, credential, source URL, or knowledge field.
-- **Verification:** Ansible renders valid Prometheus and Grafana configuration; Grafana at `http://akhserver01.tailf8b117.ts.net:3000` loads the provisioned dashboard and both initial targets.
+- **Verification:** Ansible renders valid Prometheus and Grafana configuration; Grafana at the deployment-local observability URL loads the provisioned dashboard and both initial targets.
 
 ### U8. Add Mattermost alerts and repair guidance
 
-- **Goal:** Notify Aaron about sustained actionable failures without alert noise.
+- **Goal:** Notify the operator about sustained actionable failures without alert noise.
 - **Requirements:** R17, R28-R29; KTD6-KTD8
 - **Dependencies:** U7
 - **Files:**
-  - AKH Homelab modify: `roles/plg-stack/templates/alerting/rules.yml.j2`
-  - AKH Homelab modify: `roles/plg-stack/templates/alerting/policies.yml.j2`
-  - AKH Homelab test: `roles/plg-stack/tests/alerts.yml`
+  - Observability deployment repository modify: `roles/plg-stack/templates/alerting/rules.yml.j2`
+  - Observability deployment repository modify: `roles/plg-stack/templates/alerting/policies.yml.j2`
+  - Observability deployment repository test: `roles/plg-stack/tests/alerts.yml`
   - GBrain create: `docs/runbooks/observability/observer-missing.md`
   - GBrain create: `docs/runbooks/observability/missed-work.md`
   - GBrain create: `docs/runbooks/observability/backlog.md`
@@ -399,7 +399,7 @@ The U-ID gaps preserve stable identifiers from the earlier revision: former U2 m
 
 ### U9. Deploy and accept Phase 1A
 
-- **Goal:** Put the scoreboard into daily use for personal and AKH brains.
+- **Goal:** Put the scoreboard into daily use for personal and second brains.
 - **Requirements:** R16-R17, R20-R32; AE5, AE7-AE9
 - **Dependencies:** U1, U3, U4, U7, U8
 - **Files:**
@@ -408,7 +408,7 @@ The U-ID gaps preserve stable identifiers from the earlier revision: former U2 m
   - GBrain create: `ops/launchd/ai.gbrain.observer.plist.template`
   - GBrain test: `test/observability/deployment-contract.test.ts`
 - **Approach:**
-  1. Compare GBrain’s discovered sources and recurring work for personal and AKH with the actual deployed schedules; add configuration only for overrides or legacy paths that cannot yet register themselves.
+  1. Compare GBrain’s discovered sources and recurring work for the personal and second brains with the actual deployed schedules; add configuration only for overrides or legacy paths that cannot yet register themselves.
   2. Deploy one launchd-supervised native observer per brain with separate `GBRAIN_HOME`, credentials, ports, and logs.
   3. Deploy the homelab scrape targets, dashboard, and alerts.
   4. Observe for 24 hours and repair configuration or instrumentation gaps; do not add canary infrastructure during acceptance.
@@ -431,7 +431,7 @@ The U-ID gaps preserve stable identifiers from the earlier revision: former U2 m
 | Real database seam | GBrain U3 | The focused Postgres operational-snapshot test passes without running the memory-heavy full E2E suite |
 | Repository guards | GBrain changed surfaces | `bun run verify` and affected generated-reference guards pass |
 | Metrics validity | GBrain U4 | Golden exposition parses and respects the bounded-series/content contract |
-| Homelab configuration | AKH Homelab U7-U8 | Ansible templates render; Prometheus, Grafana dashboard, and alert provisioning tests pass |
+| Observability configuration | Observability deployment repository U7-U8 | Ansible templates render; Prometheus, Grafana dashboard, and alert provisioning tests pass |
 | Deployed smoke | U9 | Prometheus sees both observers; Grafana renders both brains; Mattermost receives and resolves one safe test alert |
 | Observation | U9 | 24 hours with no unexplained missing observer, missed expected work, cross-brain effect, or sensitive telemetry |
 
@@ -444,7 +444,7 @@ Full repository E2E is not a Phase 1A default gate. It is reserved for changes t
 - U1 is done when GBrain has one expected-work registry and one operational snapshot contract.
 - U3 is done when current GBrain evidence covers registered sources and recurring work without source-specific monitoring code or observer-specific SQL.
 - U4 is done when independently scoped native observers expose valid content-free metrics over Tailscale.
-- U7 is done when the existing Grafana on `akhserver01` shows fleet and detail status for personal and AKH.
+- U7 is done when the existing Grafana on the observability host shows fleet and detail status for the personal and second brains.
 - U8 is done when sustained failures notify the existing Mattermost observability route and recover cleanly.
 - U9 is done when 24-hour acceptance proves every expected activity is observed or visibly lacks instrumentation.
 - Phase 1A does not claim semantic end-to-end proof; Phase 1C remains the owner of that acceptance.
@@ -464,6 +464,6 @@ Full repository E2E is not a Phase 1A default gate. It is reserved for changes t
 - `src/core/build-identity.ts`
 - `src/core/search/embedding-identity.ts`
 - `src/core/search/telemetry.ts`
-- AKH Homelab: `docs/solutions/architecture-patterns/shared-grafana-observability-platform-alloy-tailscale-authentik-2026-07-11.md`
-- AKH Homelab: `roles/plg-stack/templates/prometheus.yml.j2`
-- AKH Homelab: `roles/plg-stack/templates/alerting/rules.yml.j2`
+- Observability deployment repository: `docs/solutions/architecture-patterns/shared-grafana-observability-platform-alloy-tailscale-authentik-2026-07-11.md`
+- Observability deployment repository: `roles/plg-stack/templates/prometheus.yml.j2`
+- Observability deployment repository: `roles/plg-stack/templates/alerting/rules.yml.j2`

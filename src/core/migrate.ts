@@ -5693,19 +5693,19 @@ export const MIGRATIONS: Migration[] = [
       if (engine.kind === 'postgres') {
         // A failed concurrent build leaves an invalid index with the target
         // name. Remove only that remnant; preserve a healthy existing index.
-        await engine.runMigration(
-          125,
-          `DO $$ BEGIN
-             IF EXISTS (
-               SELECT 1 FROM pg_index i
-               JOIN pg_class c ON c.oid = i.indexrelid
-               WHERE c.relname = 'idx_minion_jobs_name_status_recency'
-                 AND NOT i.indisvalid
-             ) THEN
-               EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS idx_minion_jobs_name_status_recency';
-             END IF;
-           END $$;`,
+        const rows = await engine.executeRaw<{ valid: boolean }>(
+          `SELECT i.indisvalid AS valid
+             FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = $1`,
+          ['idx_minion_jobs_name_status_recency'],
         );
+        if (rows.length > 0 && rows[0]?.valid !== true) {
+          await engine.runMigration(
+            125,
+            'DROP INDEX CONCURRENTLY IF EXISTS idx_minion_jobs_name_status_recency;',
+          );
+        }
         await engine.runMigration(
           125,
           `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_minion_jobs_name_status_recency
