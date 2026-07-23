@@ -24,6 +24,7 @@ import type { ProgressReporter } from '../progress.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { chat as gatewayChat, isAvailable } from '../ai/gateway.ts';
+import { estimateChatCostUsd } from '../ai/chat-pricing.ts';
 // #2163: concept pages route through importFromContent (the same
 // parse→chunk→embed pipeline put_page uses) instead of a bare engine.putPage,
 // so they land in the retrieval surface (content_chunks + embeddings) where
@@ -313,9 +314,14 @@ export async function runPhaseSynthesizeConcepts(
           // codex flagged. Throttle inside maybeYield bounds the actual
           // refresh rate.
           await maybeYield();
-          // Sonnet at ~$3/M input + $15/M output
-          estimatedSpendUsd +=
-            (result.usage.input_tokens * 3.0 + result.usage.output_tokens * 15.0) / 1_000_000;
+          // Charge the model that actually served the request. This preserves
+          // the phase cap for paid models without inventing spend for local or
+          // subscription-backed routes whose recipes declare zero metered cost.
+          estimatedSpendUsd += estimateChatCostUsd(
+            result.model || await getSynthesisModel(),
+            result.usage.input_tokens,
+            result.usage.output_tokens,
+          );
           narrative = result.text.trim() || deterministicNarrative(group);
         } catch (err) {
           failures.push({

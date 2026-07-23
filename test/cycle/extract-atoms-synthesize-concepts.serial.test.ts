@@ -50,7 +50,10 @@ beforeEach(async () => {
   await engine.executeRaw('UPDATE sources SET local_path = $1 WHERE id = $2', [brainDir, 'default']);
 });
 
-function stubChat(text: string, opts: { input_tokens?: number; output_tokens?: number } = {}): (o: ChatOpts) => Promise<ChatResult> {
+function stubChat(
+  text: string,
+  opts: { input_tokens?: number; output_tokens?: number; model?: string } = {},
+): (o: ChatOpts) => Promise<ChatResult> {
   return async (_o: ChatOpts) => ({
     text,
     blocks: [{ type: 'text', text }],
@@ -61,8 +64,8 @@ function stubChat(text: string, opts: { input_tokens?: number; output_tokens?: n
       cache_read_tokens: 0,
       cache_creation_tokens: 0,
     },
-    model: 'anthropic:claude-haiku-4-5',
-    providerId: 'anthropic',
+    model: opts.model ?? 'anthropic:claude-haiku-4-5',
+    providerId: (opts.model ?? 'anthropic:claude-haiku-4-5').split(':')[0],
   });
 }
 
@@ -265,6 +268,60 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(result.details?.pages_skipped_budget).toBe(0);
     expect(result.details?.duplicates_skipped).toBe(0);
   });
+
+  test('local routed model does not consume the phase budget', async () => {
+    const localModel = 'vllm:nvidia/Qwen3.6-35B-A3B-NVFP4';
+    await engine.setConfig('models.dream.extract_atoms', localModel);
+    let calls = 0;
+    const chat = async (opts: ChatOpts) => {
+      calls++;
+      return stubChat(
+        `[{"title":"local-${calls}","atom_type":"insight","body":"b"}]`,
+        { input_tokens: 1_000_000, output_tokens: 1_000_000, model: localModel },
+      )(opts);
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [
+        { filePath: '/local-a.txt', content: 'a', contentHash: 'local-a' },
+        { filePath: '/local-b.txt', content: 'b', contentHash: 'local-b' },
+      ],
+      _pages: [],
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(calls).toBe(2);
+    expect(result.details?.estimated_spend_usd).toBe(0);
+    expect(result.details?.transcripts_skipped_budget).toBe(0);
+  });
+
+  test('paid routed model still enforces the phase budget', async () => {
+    const paidModel = 'anthropic:claude-haiku-4-5';
+    await engine.setConfig('models.dream.extract_atoms', paidModel);
+    let calls = 0;
+    const chat = async (opts: ChatOpts) => {
+      calls++;
+      return stubChat(
+        `[{"title":"paid-${calls}","atom_type":"insight","body":"b"}]`,
+        { input_tokens: 1_000_000, output_tokens: 1_000_000, model: paidModel },
+      )(opts);
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [
+        { filePath: '/paid-a.txt', content: 'a', contentHash: 'paid-a' },
+        { filePath: '/paid-b.txt', content: 'b', contentHash: 'paid-b' },
+      ],
+      _pages: [],
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(calls).toBe(1);
+    expect(result.details?.estimated_spend_usd).toBe(6);
+    expect(result.details?.transcripts_skipped_budget).toBe(1);
+  });
 });
 
 describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
@@ -405,6 +462,69 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     });
 
     expect(capturedModel).toBe('sentinel:reasoning-tier');
+  });
+
+  test('local routed model synthesizes every eligible group without consuming budget', async () => {
+    const localModel = 'vllm:nvidia/Qwen3.6-35B-A3B-NVFP4';
+    await engine.setConfig('models.dream.synthesize_concepts', localModel);
+    const atoms = ['local-theme-a', 'local-theme-b'].flatMap((concept) =>
+      Array.from({ length: 5 }, (_, i) => ({
+        slug: `${concept}-${i}`,
+        title: `${concept} ${i}`,
+        body: `body ${i}`,
+        concept_refs: [concept],
+      })),
+    );
+    let calls = 0;
+    const chat = async (opts: ChatOpts) => {
+      calls++;
+      return stubChat('Local synthesis.', {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        model: localModel,
+      })(opts);
+    };
+
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(calls).toBe(2);
+    expect(result.details?.estimated_spend_usd).toBe(0);
+  });
+
+  test('paid routed model still stops LLM synthesis after the phase budget', async () => {
+    const paidModel = 'anthropic:claude-sonnet-4-6';
+    await engine.setConfig('models.dream.synthesize_concepts', paidModel);
+    const atoms = ['paid-theme-a', 'paid-theme-b'].flatMap((concept) =>
+      Array.from({ length: 5 }, (_, i) => ({
+        slug: `${concept}-${i}`,
+        title: `${concept} ${i}`,
+        body: `body ${i}`,
+        concept_refs: [concept],
+      })),
+    );
+    let calls = 0;
+    const chat = async (opts: ChatOpts) => {
+      calls++;
+      return stubChat('Paid synthesis.', {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        model: paidModel,
+      })(opts);
+    };
+
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(calls).toBe(1);
+    expect(result.details?.concepts_written).toBe(2);
+    expect(result.details?.estimated_spend_usd).toBe(18);
   });
 
   test('dry-run counts but does NOT write', async () => {

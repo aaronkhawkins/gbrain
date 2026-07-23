@@ -52,6 +52,7 @@ import type { PhaseResult } from '../cycle.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { ProgressReporter } from '../progress.ts';
 import { chat as gatewayChat, isAvailable } from '../ai/gateway.ts';
+import { estimateChatCostUsd } from '../ai/chat-pricing.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { createHash } from 'crypto';
@@ -592,9 +593,14 @@ export async function runPhaseExtractAtoms(
       // actual refresh rate so this is cheap when calls are fast.
       await maybeYield();
 
-      // Rough cost estimate — Haiku at ~$0.80/M input + $4/M output
-      estimatedSpendUsd +=
-        (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
+      // Charge the model that actually served the request. Routed local
+      // transports (for example vLLM/NIM) declare zero metered token cost in
+      // their recipe, while paid cloud models use the canonical pricing map.
+      estimatedSpendUsd += estimateChatCostUsd(
+        result.model || model,
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+      );
 
       const atoms = parseAtomsResponse(result.text);
       if (atoms.length === 0) {
