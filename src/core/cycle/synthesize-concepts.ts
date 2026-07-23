@@ -217,6 +217,18 @@ export async function runPhaseSynthesizeConcepts(
   const budgetCap = DEFAULT_BUDGET_USD;
   const failures: Array<{ concept: string; error: string }> = [];
   const tierCounts = { T1: 0, T2: 0, T3: 0, T4: 0 };
+  let synthesisModel: string | undefined;
+
+  async function getSynthesisModel(): Promise<string> {
+    if (synthesisModel !== undefined) return synthesisModel;
+    const { resolveModel } = await import('../model-config.ts');
+    synthesisModel = await resolveModel(engine, {
+      configKey: 'models.dream.synthesize_concepts',
+      tier: 'reasoning',
+      fallback: 'sonnet',
+    });
+    return synthesisModel;
+  }
 
   // v0.41.19.0 (T3): throttled yield helper. Fires `opts.yieldDuringPhase`
   // every 30s — cycle.ts threads `buildYieldDuringPhase(lock, outer)` so
@@ -280,6 +292,7 @@ export async function runPhaseSynthesizeConcepts(
       } else {
         try {
           const result = await chat({
+            model: await getSynthesisModel(),
             system: SYNTH_PROMPT,
             messages: [
               {

@@ -124,9 +124,53 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     // v0.41.2.1: _pages:[] suppresses page-discovery so this matches the
     // pre-v0.41.2.1 "transcript-only no-op" path. Reason changed from
     // 'no_transcripts' to 'no_work' to reflect the dual-source design.
-    const result = await runPhaseExtractAtoms(engine, { _transcripts: [], _pages: [] });
+    const noConfigEngine = {
+      getConfig: () => {
+        throw new Error('no-work path must not resolve a model');
+      },
+    };
+    const result = await runPhaseExtractAtoms(noConfigEngine as never, {
+      _transcripts: [],
+      _pages: [],
+    });
     expect(result.status).toBe('skipped');
     expect(result.details?.reason).toBe('no_work');
+  });
+
+  test('passes models.dream.extract_atoms to the injected chat seam', async () => {
+    await engine.setConfig('models.dream.extract_atoms', 'sentinel:extract-atoms');
+    let capturedModel: string | undefined;
+    const chat = async (opts: ChatOpts) => {
+      capturedModel = opts.model;
+      return stubChat(`[{"title":"routed","atom_type":"insight","body":"b"}]`)(opts);
+    };
+
+    await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/routed.txt', content: 'c', contentHash: 'route-hash' }],
+      _pages: [],
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(capturedModel).toBe('sentinel:extract-atoms');
+  });
+
+  test('falls back to the utility tier model for atom extraction', async () => {
+    await engine.setConfig('models.tier.utility', 'sentinel:utility-tier');
+    let capturedModel: string | undefined;
+    const chat = async (opts: ChatOpts) => {
+      capturedModel = opts.model;
+      return stubChat(`[{"title":"tiered","atom_type":"insight","body":"b"}]`)(opts);
+    };
+
+    await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/tiered.txt', content: 'c', contentHash: 'tier-hash' }],
+      _pages: [],
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(capturedModel).toBe('sentinel:utility-tier');
   });
 
   test('extracts atoms from transcript via stub chat', async () => {
@@ -295,6 +339,72 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     };
     await runPhaseSynthesizeConcepts(engine, { _atoms: atoms, _chat: chat as typeof import('../../src/core/ai/gateway.ts').chat });
     expect(chatCalled).toBe(false);
+  });
+
+  test('T3-only synthesis does not resolve model configuration', async () => {
+    const atoms = [
+      { slug: 'a1', title: 'A1', body: 'b1', concept_refs: ['theme'] },
+      { slug: 'a2', title: 'A2', body: 'b2', concept_refs: ['theme'] },
+    ];
+    const noConfigEngine = {
+      getConfig: () => {
+        throw new Error('T3-only path must not resolve a model');
+      },
+    };
+
+    const result = await runPhaseSynthesizeConcepts(noConfigEngine as never, {
+      _atoms: atoms,
+      dryRun: true,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.details?.tier_counts).toMatchObject({ T3: 1 });
+  });
+
+  test('passes models.dream.synthesize_concepts to the injected chat seam', async () => {
+    await engine.setConfig('models.dream.synthesize_concepts', 'sentinel:synthesize-concepts');
+    const atoms = Array.from({ length: 10 }, (_, i) => ({
+      slug: `configured-${i}`,
+      title: `Configured ${i}`,
+      body: `body ${i}`,
+      concept_refs: ['configured-theme'],
+    }));
+    let capturedModel: string | undefined;
+    const chat = async (opts: ChatOpts) => {
+      capturedModel = opts.model;
+      return stubChat('Configured synthesis.')(opts);
+    };
+
+    await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(capturedModel).toBe('sentinel:synthesize-concepts');
+  });
+
+  test('falls back to the reasoning tier model for concept synthesis', async () => {
+    await engine.setConfig('models.tier.reasoning', 'sentinel:reasoning-tier');
+    const atoms = Array.from({ length: 5 }, (_, i) => ({
+      slug: `tiered-${i}`,
+      title: `Tiered ${i}`,
+      body: `body ${i}`,
+      concept_refs: ['tiered-theme'],
+    }));
+    let capturedModel: string | undefined;
+    const chat = async (opts: ChatOpts) => {
+      capturedModel = opts.model;
+      return stubChat('Tiered synthesis.')(opts);
+    };
+
+    await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(capturedModel).toBe('sentinel:reasoning-tier');
   });
 
   test('dry-run counts but does NOT write', async () => {

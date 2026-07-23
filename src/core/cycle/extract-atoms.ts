@@ -518,6 +518,13 @@ export async function runPhaseExtractAtoms(
     };
   }
 
+  const { resolveModel } = await import('../model-config.ts');
+  const model = await resolveModel(engine, {
+    configKey: 'models.dream.extract_atoms',
+    tier: 'utility',
+    fallback: 'haiku',
+  });
+
   // 4. Per work-item: extract atoms via Haiku
   let totalAtomsExtracted = 0;
   let transcriptsProcessed = 0;
@@ -568,6 +575,7 @@ export async function runPhaseExtractAtoms(
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     try {
       const result = await chat({
+        model,
         system: item.kind === 'page' && item.researchPolicy
           ? `${EXTRACT_PROMPT}\nFor this marked research source, also include concepts: an array of 1-5 specific durable topic slugs.`
           : EXTRACT_PROMPT,
