@@ -53,6 +53,8 @@ const BENIGN_SKIP_REASONS = new Set([
   'no_changes',
   'nothing_to_do',
   'not_due',
+  'insufficient_evidence',
+  'cooldown_active',
 ]);
 
 const DEFERRED_SKIP_REASONS = new Set([
@@ -132,7 +134,10 @@ export function classifyDreamSkipReason(reason: string | null): SkipClass {
 }
 
 function outcomeClass(outcome: PhaseOutcome): SkipClass {
-  if (['ok', 'success', 'completed'].includes(outcome.status)) return 'success';
+  // A warning means the scheduled phase executed and surfaced a content or
+  // maintenance concern. That concern belongs to its dedicated health check;
+  // it is still successful cadence evidence.
+  if (['ok', 'success', 'completed', 'warn'].includes(outcome.status)) return 'success';
   if (outcome.status === 'skipped') return classifyDreamSkipReason(outcome.reason);
   return 'failure';
 }

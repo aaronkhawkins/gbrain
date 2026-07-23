@@ -335,11 +335,25 @@ describe('resolveEnabledDreamPhases', () => {
       },
       synthesizeCorpusConfigured: false,
     });
+    expect(optedIn).not.toContain('synthesize');
     expect(optedIn).toEqual(expect.arrayContaining([
-      'synthesize',
       'conversation_facts_backfill',
       'enrich_thin',
       'skillopt',
     ]));
+
+    const synthesisConfigured = resolveEnabledDreamPhases({
+      packPhases: [],
+      phaseEnabled: { synthesize: true },
+      synthesizeCorpusConfigured: true,
+    });
+    expect(synthesisConfigured).toContain('synthesize');
+
+    const packCannotBypassPrerequisite = resolveEnabledDreamPhases({
+      packPhases: ['synthesize'],
+      phaseEnabled: { synthesize: false },
+      synthesizeCorpusConfigured: false,
+    });
+    expect(packCannotBypassPrerequisite).not.toContain('synthesize');
   });
 });

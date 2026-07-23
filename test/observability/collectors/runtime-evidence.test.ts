@@ -28,9 +28,79 @@ function engineWithRows(rows: unknown[], onSql?: (sql: string) => void): BrainEn
 describe('Dream evidence scope and skip classification', () => {
   test('distinguishes no-op, deferred, and failed skips', () => {
     expect(classifyDreamSkipReason('no_work')).toBe('success');
+    expect(classifyDreamSkipReason('insufficient_evidence')).toBe('success');
+    expect(classifyDreamSkipReason('cooldown_active')).toBe('success');
     expect(classifyDreamSkipReason('source_in_cooldown')).toBe('deferred');
     expect(classifyDreamSkipReason('lock_busy')).toBe('deferred');
     expect(classifyDreamSkipReason('no_brain_dir')).toBe('failure');
+  });
+
+  test('a warning proves the phase ran without creating a cadence failure', async () => {
+    const entry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      enabledDreamPhases: ['lint'],
+      includeInfrastructure: false,
+    }).find((candidate) =>
+      candidate.key === dreamPhaseWorkKey('lint', 'alpha', SOURCE_LABEL_KEY)
+    )!;
+    const finishedAt = '2026-07-23T11:05:00.000Z';
+    const evidence = await collectDreamPhaseEvidence([entry], engineWithRows([{
+      name: 'autopilot-cycle',
+      status: 'completed',
+      started_at: '2026-07-23T11:00:00.000Z',
+      finished_at: finishedAt,
+      data: { source_id: 'alpha' },
+      result: {
+        report: {
+          phases: [{
+            phase: 'lint',
+            status: 'warn',
+            details: { issues: 2 },
+          }],
+        },
+      },
+    }]), { now: NOW });
+
+    expect(evidence.get(entry.key)).toEqual(expect.objectContaining({
+      last_attempt_at: finishedAt,
+      last_success_at: finishedAt,
+      recent_failures: 0,
+    }));
+    expect(evidence.get(entry.key)?.force_state).toBeUndefined();
+  });
+
+  test('insufficient evidence is a successful scheduled no-op', async () => {
+    const entry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      enabledDreamPhases: ['patterns'],
+      includeInfrastructure: false,
+    }).find((candidate) =>
+      candidate.key === dreamPhaseWorkKey('patterns', 'alpha', SOURCE_LABEL_KEY)
+    )!;
+    const finishedAt = '2026-07-23T11:05:00.000Z';
+    const evidence = await collectDreamPhaseEvidence([entry], engineWithRows([{
+      name: 'autopilot-cycle',
+      status: 'completed',
+      started_at: '2026-07-23T11:00:00.000Z',
+      finished_at: finishedAt,
+      data: { source_id: 'alpha' },
+      result: {
+        report: {
+          phases: [{
+            phase: 'patterns',
+            status: 'skipped',
+            details: { reason: 'insufficient_evidence' },
+          }],
+        },
+      },
+    }]), { now: NOW });
+
+    expect(evidence.get(entry.key)).toEqual(expect.objectContaining({
+      last_success_at: finishedAt,
+      recent_failures: 0,
+    }));
   });
 
   test('source-scoped outcomes cannot mask another source and benign no-work is successful', async () => {

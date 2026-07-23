@@ -409,6 +409,8 @@ export function resolveEnabledDreamPhases(opts: {
 
   // Pack-declared phases (extract_atoms, synthesize_concepts, …).
   for (const p of pack) {
+    // Synthesis has an additional runtime prerequisite handled below.
+    if (p === 'synthesize') continue;
     if ((ALL_PHASES as string[]).includes(p)) out.add(p);
   }
 
@@ -425,8 +427,8 @@ export function resolveEnabledDreamPhases(opts: {
 
   const synthesizeFlag = opts.phaseEnabled?.synthesize;
   if (
-    synthesizeFlag === true ||
-    (synthesizeFlag !== false && opts.synthesizeCorpusConfigured === true)
+    synthesizeFlag !== false &&
+    opts.synthesizeCorpusConfigured === true
   ) {
     out.add('synthesize');
   }

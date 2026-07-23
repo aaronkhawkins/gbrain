@@ -85,6 +85,13 @@ describe('operational registry discovery failures', () => {
     expect(defaults.enabledDreamPhases).not.toContain('synthesize');
     expect(defaults.enabledDreamPhases).not.toContain('enrich_thin');
 
+    configValues.set('dream.synthesize.enabled', 'true');
+    const enabledWithoutCorpus = await discoverRegistryInput(engine, {
+      engine: 'pglite',
+      database_path: '/tmp/test-brain.db',
+    });
+    expect(enabledWithoutCorpus.enabledDreamPhases).not.toContain('synthesize');
+
     configValues.set('dream.synthesize.session_corpus_dir', '/tmp/sessions');
     configValues.set('cycle.enrich_thin.enabled', 'true');
     const enabled = await discoverRegistryInput(engine, {
