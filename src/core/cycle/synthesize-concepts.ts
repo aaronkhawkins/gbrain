@@ -38,6 +38,7 @@ import {
 } from '../generated-output-writer.ts';
 
 const DEFAULT_BUDGET_USD = 1.5;
+const DEFAULT_MAX_CHANGED_GROUPS = 100;
 const TIER_T1_MIN = 10;
 const TIER_T2_MIN = 5;
 const TIER_T3_MIN = 2;
@@ -55,6 +56,8 @@ export interface SynthesizeConceptsOpts {
   progress?: ProgressReporter;
   /** Test seam: alternative chat function. */
   _chat?: typeof gatewayChat;
+  /** Bound changed concept writes per cycle; unchanged fingerprints do not consume it. */
+  maxChangedGroups?: number;
   /** Test seam: skip DB query; cluster these atoms directly. */
   _atoms?: Array<{
     slug: string;
@@ -214,12 +217,21 @@ export async function runPhaseSynthesizeConcepts(
 
   // 4. Per group: synthesize narrative (LLM for T1/T2, deterministic for T3+)
   let conceptsWritten = 0;
+  let groupsProcessed = 0;
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
   const failures: Array<{ concept: string; error: string }> = [];
   let pricingUnknown: string | null = null;
   const tierCounts = { T1: 0, T2: 0, T3: 0, T4: 0 };
   let synthesisModel: string | undefined;
+  const configuredMax = Number.parseInt(
+    process.env.GBRAIN_SYNTHESIZE_MAX_CHANGED_GROUPS ?? '',
+    10,
+  );
+  const maxChangedGroups = opts.maxChangedGroups
+    ?? (Number.isSafeInteger(configuredMax) && configuredMax > 0
+      ? configuredMax
+      : DEFAULT_MAX_CHANGED_GROUPS);
 
   async function getSynthesisModel(): Promise<string> {
     if (synthesisModel !== undefined) return synthesisModel;
@@ -282,11 +294,12 @@ export async function runPhaseSynthesizeConcepts(
     if (!opts.dryRun) {
       const existing = await engine.getPage(outputSlug, { sourceId: outputSourceId });
       if ((existing?.frontmatter as Record<string, unknown> | undefined)?.synthesis_fingerprint === fingerprint) {
-        conceptsWritten++;
-        opts.progress?.tick(1, `${conceptsWritten} concepts`);
+        groupsProcessed++;
+        opts.progress?.tick(1, `${groupsProcessed} concepts`);
         continue;
       }
     }
+    if (!opts.dryRun && conceptsWritten >= maxChangedGroups) break;
     let narrative: string;
     if (group.tier === 'T1' || group.tier === 'T2') {
       const selectedModel = await getSynthesisModel();
@@ -379,8 +392,9 @@ export async function runPhaseSynthesizeConcepts(
       }
     }
     conceptsWritten++;
+    groupsProcessed++;
     // v0.41.19.0 (T4): one tick per concept group with running count.
-    opts.progress?.tick(1, `${conceptsWritten} concepts`);
+    opts.progress?.tick(1, `${groupsProcessed} concepts`);
 
     // v0.41.19.0 (T3): replaced bare per-iteration fire with throttled
     // helper. Same hook, same cycle-lock refresh effect, just at the
@@ -429,12 +443,18 @@ export async function runPhaseSynthesizeConcepts(
     summary:
       `synthesize_concepts: ${conceptsWritten} concepts ` +
       `(T1=${tierCounts.T1} T2=${tierCounts.T2} T3=${tierCounts.T3})` +
+      (groupsProcessed < atomGroups.length
+        ? ` (${atomGroups.length - groupsProcessed} groups deferred by batch limit)`
+        : '') +
       (failures.length > 0 ? ` (${failures.length} LLM-failed → template fallback)` : '') +
       (pricingUnknown !== null ? ` (pricing unknown for ${pricingUnknown} → template fallback)` : ''),
     details: {
       concepts_written: conceptsWritten,
       tier_counts: tierCounts,
       groups_found: atomGroups.length,
+      groups_processed: groupsProcessed,
+      groups_deferred: atomGroups.length - groupsProcessed,
+      max_changed_groups: maxChangedGroups,
       atoms_seen: atoms.length,
       failures,
       pricing_unknown: pricingUnknown,

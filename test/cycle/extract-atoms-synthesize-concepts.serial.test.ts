@@ -392,6 +392,32 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(tiers.T3).toBe(1); // hardware-renaissance (3)
   });
 
+  test('bounds changed groups while unchanged fingerprints remain resumable', async () => {
+    const atoms = [
+      { slug: 'a1', title: 'A1', body: 'b1', concept_refs: ['one'] },
+      { slug: 'a2', title: 'A2', body: 'b2', concept_refs: ['one'] },
+      { slug: 'b1', title: 'B1', body: 'b1', concept_refs: ['two'] },
+      { slug: 'b2', title: 'B2', body: 'b2', concept_refs: ['two'] },
+    ];
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      maxChangedGroups: 1,
+    });
+    expect(result.status).toBe('ok');
+    expect(result.details?.concepts_written).toBe(1);
+    expect(result.details?.groups_processed).toBe(1);
+    expect(result.details?.groups_deferred).toBe(1);
+    expect(result.details?.max_changed_groups).toBe(1);
+
+    const resumed = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      maxChangedGroups: 1,
+    });
+    expect(resumed.details?.concepts_written).toBe(1);
+    expect(resumed.details?.groups_processed).toBe(2);
+    expect(resumed.details?.groups_deferred).toBe(0);
+  });
+
   test('atoms with no concept refs are filtered out', async () => {
     const atoms = [
       { slug: 's1', title: 't1', body: 'b1', concept_refs: [] },
