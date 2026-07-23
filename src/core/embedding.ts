@@ -13,6 +13,11 @@ import {
   getEmbeddingDimensions as gatewayGetDims,
 } from './ai/gateway.ts';
 import { lookupEmbeddingPrice } from './embedding-pricing.ts';
+import {
+  buildEmbeddingSignature,
+  documentPreprocessingSignature,
+  PRIMARY_EMBEDDING_COLUMN,
+} from './embedding-provenance.ts';
 
 // v0.27.1: re-export multimodal embedding so callers can pull both text and
 // image embedding APIs from `src/core/embedding`. import-image-file consumes
@@ -163,8 +168,7 @@ export function estimateEmbeddingCostUsd(tokens: number): number {
 }
 
 /**
- * Embedding provenance signature for the currently-configured model:
- * `<provider:model>:<dims>` (e.g. `openai:text-embedding-3-large:1536`).
+ * Complete embedding provenance signature for the currently-configured model.
  * Stamped onto `pages.embedding_signature` when a page's chunks are
  * embedded so a later model/dimension swap can be detected as stale.
  *
@@ -177,9 +181,21 @@ export function estimateEmbeddingCostUsd(tokens: number): number {
  */
 export function currentEmbeddingSignature(): string {
   try {
-    return `${gatewayGetModel()}:${gatewayGetDims()}`;
+    const model = gatewayGetModel();
+    return buildEmbeddingSignature({
+      model,
+      dimensions: gatewayGetDims(),
+      column: PRIMARY_EMBEDDING_COLUMN,
+      preprocessing: documentPreprocessingSignature(model),
+    });
   } catch {
-    return `${EMBEDDING_MODEL}:${EMBEDDING_DIMENSIONS}`;
+    const model = `openai:${EMBEDDING_MODEL}`;
+    return buildEmbeddingSignature({
+      model,
+      dimensions: EMBEDDING_DIMENSIONS,
+      column: PRIMARY_EMBEDDING_COLUMN,
+      preprocessing: documentPreprocessingSignature(model),
+    });
   }
 }
 

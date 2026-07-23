@@ -1,6 +1,11 @@
 import type { BrainEngine } from '../engine.ts';
 import type { ResolvedColumn } from '../types.ts';
 import { readContentChunksEmbeddingDim } from '../embedding-dim-check.ts';
+import {
+  buildEmbeddingSignature,
+  documentPreprocessingSignature,
+  parseEmbeddingSignature,
+} from '../embedding-provenance.ts';
 
 export type EmbeddingIdentityStatus =
   | 'compatible'
@@ -12,17 +17,26 @@ export type EmbeddingIdentityStatus =
 export interface EmbeddingIdentityDiagnostics {
   status: EmbeddingIdentityStatus;
   vectorSearchAllowed: boolean;
-  desired: { column: string; model: string; dimensions: number };
+  desired: {
+    column: string;
+    model: string;
+    dimensions: number;
+    preprocessing: string;
+    signature: string;
+  };
   observed: {
     databaseModel: string | null;
     databaseDimensions: number | null;
     columnDimensions: number | null;
+    columnType: 'vector' | 'halfvec' | null;
     embeddedChunks: number;
     chunkModels: string[];
     pageSignatures: string[];
     chunkerVersions: number[];
     contextualModes: string[];
     corpusGenerations: string[];
+    chunksMissingModel: number;
+    pagesMissingSignature: number;
   };
   disagreements: string[];
 }
@@ -40,7 +54,7 @@ const gateCache = new WeakMap<BrainEngine, Map<string, GateCacheEntry>>();
 export function embeddingIdentityGate(
   engine: BrainEngine,
   resolved: ResolvedColumn,
-  ttlMs = 30_000,
+  ttlMs = 0,
 ): Promise<EmbeddingIdentityDiagnostics> {
   const key = `${resolved.name}:${resolved.embeddingModel}:${resolved.dimensions}`;
   const now = Date.now();
@@ -79,6 +93,8 @@ interface ProvenanceRow {
   chunker_versions: Array<number | string> | null;
   contextual_modes: string[] | null;
   corpus_generations: string[] | null;
+  chunks_missing_model: number | string;
+  pages_missing_signature: number | string;
 }
 
 /**
@@ -91,10 +107,18 @@ export async function inspectEmbeddingIdentity(
   engine: BrainEngine,
   resolved: ResolvedColumn,
 ): Promise<EmbeddingIdentityDiagnostics> {
+  const preprocessing = documentPreprocessingSignature(resolved.embeddingModel);
   const desired = {
     column: resolved.name,
     model: resolved.embeddingModel,
     dimensions: resolved.dimensions,
+    preprocessing,
+    signature: buildEmbeddingSignature({
+      model: resolved.embeddingModel,
+      dimensions: resolved.dimensions,
+      column: resolved.name,
+      preprocessing,
+    }),
   };
   const disagreements: string[] = [];
 
@@ -115,7 +139,9 @@ export async function inspectEmbeddingIdentity(
            COALESCE(array_agg(DISTINCT p.embedding_signature) FILTER (WHERE p.embedding_signature IS NOT NULL), ARRAY[]::text[]) AS page_signatures,
            COALESCE(array_agg(DISTINCT p.chunker_version) FILTER (WHERE p.chunker_version IS NOT NULL), ARRAY[]::smallint[]) AS chunker_versions,
            COALESCE(array_agg(DISTINCT p.contextual_retrieval_mode) FILTER (WHERE p.contextual_retrieval_mode IS NOT NULL), ARRAY[]::text[]) AS contextual_modes,
-           COALESCE(array_agg(DISTINCT p.corpus_generation) FILTER (WHERE p.corpus_generation IS NOT NULL), ARRAY[]::text[]) AS corpus_generations
+           COALESCE(array_agg(DISTINCT p.corpus_generation) FILTER (WHERE p.corpus_generation IS NOT NULL), ARRAY[]::text[]) AS corpus_generations,
+           COUNT(*) FILTER (WHERE cc.model IS NULL OR cc.model = '')::int AS chunks_missing_model,
+           COUNT(DISTINCT p.id) FILTER (WHERE p.embedding_signature IS NULL OR p.embedding_signature = '')::int AS pages_missing_signature
          FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
         WHERE cc.embedding IS NOT NULL`,
@@ -128,23 +154,37 @@ export async function inspectEmbeddingIdentity(
     const chunkerVersions = [...new Set((row?.chunker_versions ?? []).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
     const contextualModes = sortedStrings(row?.contextual_modes);
     const corpusGenerations = sortedStrings(row?.corpus_generations);
-    const expectedSignature = `${desired.model}:${desired.dimensions}`;
+    const chunksMissingModel = Number(row?.chunks_missing_model ?? 0);
+    const pagesMissingSignature = Number(row?.pages_missing_signature ?? 0);
 
     if (!databaseModel || databaseDimensions === null) {
       disagreements.push('database embedding selection is incomplete');
     } else {
-      if (!sameModel(databaseModel, desired.model)) disagreements.push('runtime model disagrees with database selection');
+      if (databaseModel !== desired.model) disagreements.push('runtime model disagrees with database selection');
       if (databaseDimensions !== desired.dimensions) disagreements.push('runtime dimensions disagree with database selection');
     }
     if (!column.exists || column.dims === null) disagreements.push('active embedding column shape is unknown');
     else if (column.dims !== desired.dimensions) disagreements.push('active embedding column dimensions disagree with runtime');
+    if (column.columnType !== null && column.columnType !== resolved.type) {
+      disagreements.push('active embedding column storage type disagrees with runtime');
+    }
 
     if (embeddedChunks > 0) {
-      if (chunkModels.length === 0) disagreements.push('stored vector model provenance is unknown');
+      if (chunksMissingModel > 0 || chunkModels.length === 0) {
+        disagreements.push('stored vector model provenance is unknown');
+      }
       if (chunkModels.length > 1) disagreements.push('stored vectors contain mixed model provenance');
-      if (chunkModels.some((model) => !sameModel(model, desired.model))) disagreements.push('stored vector model disagrees with runtime');
+      if (chunkModels.some((model) => model !== desired.model)) {
+        disagreements.push('stored vector model disagrees with runtime');
+      }
+      if (pagesMissingSignature > 0) {
+        disagreements.push('stored page embedding provenance is missing');
+      }
       if (pageSignatures.length > 1) disagreements.push('stored pages contain mixed embedding signatures');
-      if (pageSignatures.some((signature) => signature !== expectedSignature && !sameSignature(signature, expectedSignature))) {
+      if (pageSignatures.some((signature) => parseEmbeddingSignature(signature)?.version !== 2)) {
+        disagreements.push('stored page embedding signature is legacy or incomplete');
+      }
+      if (pageSignatures.some((signature) => signature !== desired.signature)) {
         disagreements.push('stored page embedding signature disagrees with runtime');
       }
     }
@@ -160,12 +200,15 @@ export async function inspectEmbeddingIdentity(
         databaseModel,
         databaseDimensions,
         columnDimensions: column.dims,
+        columnType: column.columnType,
         embeddedChunks,
         chunkModels,
         pageSignatures,
         chunkerVersions,
         contextualModes,
         corpusGenerations,
+        chunksMissingModel,
+        pagesMissingSignature,
       },
       disagreements,
     };
@@ -196,12 +239,15 @@ function unknownDiagnostics(
       databaseModel: null,
       databaseDimensions: null,
       columnDimensions: null,
+      columnType: null,
       embeddedChunks: 0,
       chunkModels: [],
       pageSignatures: [],
       chunkerVersions: [],
       contextualModes: [],
       corpusGenerations: [],
+      chunksMissingModel: 0,
+      pagesMissingSignature: 0,
     },
     disagreements,
   };
@@ -215,21 +261,4 @@ function parsePositiveInt(value: string | null): number | null {
 
 function sortedStrings(values: string[] | null | undefined): string[] {
   return [...new Set((values ?? []).filter((value): value is string => typeof value === 'string' && value.length > 0))].sort();
-}
-
-function sameModel(a: string, b: string): boolean {
-  if (a === b) return true;
-  // Legacy rows used the short model name. Permit that one-sided legacy
-  // comparison, but never collapse two explicitly different providers.
-  if (a.includes(':') && b.includes(':')) return false;
-  return a.split(':').pop() === b.split(':').pop();
-}
-
-function sameSignature(a: string, b: string): boolean {
-  const aParts = a.split(':');
-  const bParts = b.split(':');
-  if (aParts.length < 2 || bParts.length < 2) return false;
-  const aDims = aParts.pop();
-  const bDims = bParts.pop();
-  return aDims === bDims && sameModel(aParts.join(':'), bParts.join(':'));
 }

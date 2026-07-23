@@ -33,6 +33,12 @@ describe('chunkEmbeddingIndexSql — pre-v0.30.1 contract', () => {
     expect(sql).not.toContain('CREATE INDEX');
   });
 
+  test('emits halfvec HNSW for the managed 2048d local Nemotron space', () => {
+    const sql = chunkEmbeddingIndexSql(2048, 'halfvec');
+    expect(sql).toContain('CREATE INDEX');
+    expect(sql).toContain('embedding halfvec_cosine_ops');
+  });
+
   test('boundary at exactly PGVECTOR_HNSW_VECTOR_MAX_DIMS (2000)', () => {
     const at = chunkEmbeddingIndexSql(PGVECTOR_HNSW_VECTOR_MAX_DIMS);
     expect(at).toContain('CREATE INDEX');

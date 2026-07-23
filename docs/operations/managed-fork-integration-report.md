@@ -254,7 +254,7 @@ green. Known blockers/stop conditions:
 
 ## U2 baseline merge receipt
 
-- Status: resolved and locally verified; merge commit pending finalization.
+- Status: resolved and locally verified in merge commit `a949daff`.
 - First parent: `37749f135d0e33392b6c7acf83e01d01898314b1`.
 - Second parent: `bb5a66942d7a7b0992f94fc59b4710c8e30b1830`.
 - Later upstream objects included: none.
@@ -295,7 +295,7 @@ git diff bb5a66942d7a7b0992f94fc59b4710c8e30b1830 <u2-merge-commit>
 
 ## U3 gateway and provider receipt
 
-- Status: resolved and locally verified; focused commit pending finalization.
+- Status: resolved and locally verified in focused commit `5fda6b3e`.
 - Provider registry: upstream hosted providers remain registered, while the
   fork's `opencode-server`, `nvidia-nim`, and `vllm` identities are restored as
   distinct recipes. No provider ID is aliased or silently migrated.
@@ -336,3 +336,34 @@ Remaining U3 risk is operational rather than code-path ambiguity: real
 provider reachability and credential rotation/revocation are deployment gates
 for U8. U3 did not modify live configuration, queues, sources, databases, or
 release selection.
+
+## U4 NVIDIA and embedding identity receipt
+
+- Status: resolved and locally verified; no deployment or data mutation.
+- Provider separation: hosted authenticated `nvidia` and local optional-auth
+  `nvidia-nim` remain distinct recipes, endpoints, model catalogs, costs, and
+  provider identities. Neither aliases nor migrates the other.
+- Dimensions and preprocessing: hosted model-specific natural/Matryoshka
+  validation remains fail-closed; local Nemotron remains fixed at 2048
+  dimensions. Both use `input_type=query` for query vectors and
+  `input_type=passage` for stored vectors.
+- Persisted identity: new embeddings carry a v2 page signature binding exact
+  provider/model, dimensions, active column, and document preprocessing.
+  Chunk rows retain the fully qualified provider/model.
+- Retrieval gate: runtime and DB selection, physical column type/width, chunk
+  model, and page signature must agree before semantic ranking or semantic
+  cache lookup. Equal-width model/provider/preprocessing conflicts and
+  missing, NULL, or legacy v1 provenance fail semantic retrieval closed while
+  lexical retrieval remains available.
+- Legacy disposition: NULL/v1 cohorts are explicitly unverified. They are not
+  auto-invalidated or relabeled during Phase 0; a later bounded re-embedding
+  plan is required to admit them to semantic retrieval.
+- Wide-vector index: `halfvec(2048)` remains HNSW-eligible with
+  `halfvec_cosine_ops`; vector and halfvec limits remain distinct.
+- Data safety: implementation and tests used only synthetic in-memory rows.
+  No live brain/config/queue was read or changed, and no production vector was
+  cleared, resized, relabeled, or re-embedded.
+- Verification: 127 focused NVIDIA, dimension, embed/stale, identity,
+  provenance, HNSW, and PGLite tests passed; TypeScript and all 31 repository
+  verification checks passed. The 30 real-Postgres engine-parity cases skipped
+  because no `DATABASE_URL` test fixture was configured and remain a U8 gate.

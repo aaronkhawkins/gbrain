@@ -1,5 +1,6 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { embedBatch, currentEmbeddingSignature } from '../core/embedding.ts';
+import { embeddingModelFromSignature } from '../core/embedding-provenance.ts';
 import type { ChunkInput } from '../core/types.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { createProgress, type ProgressReporter } from '../core/progress.ts';
@@ -577,6 +578,8 @@ async function embedPage(
   }
 
   const embeddings = await embedBatch(toEmbed.map(c => c.chunk_text), { abortSignal: signal });
+  const signature = currentEmbeddingSignature();
+  const embeddingModel = embeddingModelFromSignature(signature);
   const embeddingMap = new Map<number, Float32Array>();
   for (let j = 0; j < toEmbed.length; j++) {
     embeddingMap.set(toEmbed[j].chunk_index, embeddings[j]);
@@ -586,6 +589,7 @@ async function embedPage(
     chunk_text: c.chunk_text,
     chunk_source: c.chunk_source,
     embedding: embeddingMap.get(c.chunk_index),
+    model: embeddingMap.has(c.chunk_index) ? embeddingModel : undefined,
     token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
   }));
 
@@ -598,7 +602,7 @@ async function embedPage(
   // page is mixed — don't claim it's current. `embed --all` fully re-embeds
   // such a page and then stamps it.
   if (toEmbed.length === chunks.length) {
-    await engine.setPageEmbeddingSignature(slug, { sourceId, signature: currentEmbeddingSignature() });
+    await engine.setPageEmbeddingSignature(slug, { sourceId, signature });
   }
   result.embedded += toEmbed.length;
   result.pages_processed++;
@@ -652,6 +656,7 @@ async function embedAll(
   // when their chunks are (re)embedded so a later model/dimension swap is
   // detectable as stale.
   const signature = currentEmbeddingSignature();
+  const embeddingModel = embeddingModelFromSignature(signature);
   // ─────────────────────────────────────────────────────────────
   // Stale-only fast path: avoid the listPages + per-page getChunks
   // bomb that pulled every page row + every chunk's embedding column
@@ -750,6 +755,7 @@ async function embedAll(
         chunk_text: c.chunk_text,
         chunk_source: c.chunk_source,
         embedding: embeddingMap.get(c.chunk_index) ?? undefined,
+        model: embeddingMap.has(c.chunk_index) ? embeddingModel : undefined,
         token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
       }));
       await observed(pacer, () => engine.upsertChunks(page.slug, updated, pageOpts));
@@ -1047,6 +1053,7 @@ async function embedAllStale(
             chunk_text: c.chunk_text,
             chunk_source: c.chunk_source,
             embedding: staleIdxToEmbedding.get(c.chunk_index) ?? undefined,
+            model: staleIdxToEmbedding.has(c.chunk_index) ? embeddingModelFromSignature(signature ?? '') : undefined,
             token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
           }));
           await observed(pacer, () => engine.upsertChunks(slug, merged, { sourceId: keySourceId }));

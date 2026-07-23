@@ -9,9 +9,12 @@ describe('recipe: nvidia-nim', () => {
     expect(local!.id).toBe('nvidia-nim');
     expect(local!.auth_env!.required).toEqual([]);
     expect(local!.auth_env!.optional).toContain('NVIDIA_NIM_API_KEY');
-    // Hosted `nvidia` first arrives on the pinned upstream side. U4 must add
-    // that recipe without renaming or aliasing this local contract.
-    expect(getRecipe('nvidia')).toBeUndefined();
+    const hosted = getRecipe('nvidia');
+    expect(hosted).toBeDefined();
+    expect(hosted!.id).toBe('nvidia');
+    expect(hosted!.base_url_default).toBe('https://integrate.api.nvidia.com/v1');
+    expect(hosted!.auth_env!.required).toEqual(['NVIDIA_API_KEY']);
+    expect(hosted).not.toBe(local);
   });
 
   test('registers the official fixed-dimension embedding model', () => {

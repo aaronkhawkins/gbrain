@@ -24,6 +24,7 @@ const resolved = {
 };
 
 async function seedEmbedded(model = 'text-embedding-3-large'): Promise<void> {
+  const qualifiedModel = model.includes(':') ? model : `openai:${model}`;
   await engine.putPage('concepts/searchable', {
     type: 'concept',
     title: 'Searchable',
@@ -35,10 +36,10 @@ async function seedEmbedded(model = 'text-embedding-3-large'): Promise<void> {
     chunk_text: 'A searchable concept.',
     chunk_source: 'compiled_truth',
     embedding: new Float32Array(1536).fill(0.01),
-    model,
+    model: qualifiedModel,
   }]);
   await engine.setPageEmbeddingSignature('concepts/searchable', {
-    signature: model.includes(':') ? `${model}:1536` : `openai:${model}:1536`,
+    signature: `v2|model=${encodeURIComponent(qualifiedModel)}|dimensions=1536|column=embedding|preprocessing=text-document-v1`,
   });
 }
 
@@ -51,8 +52,44 @@ describe('embedding identity fail-closed diagnostics', () => {
     const result = await inspectEmbeddingIdentity(engine, resolved);
     expect(result.status).toBe('compatible');
     expect(result.vectorSearchAllowed).toBe(true);
-    expect(result.observed.chunkModels).toEqual(['text-embedding-3-large']);
+    expect(result.observed.chunkModels).toEqual(['openai:text-embedding-3-large']);
     expect(result.observed.chunkerVersions).toEqual([3]);
+  });
+
+  test('legacy or missing page provenance is an explicit fail-closed cohort', async () => {
+    await engine.setConfig('embedding_model', 'openai:text-embedding-3-large');
+    await engine.setConfig('embedding_dimensions', '1536');
+    await seedEmbedded();
+    await engine.setPageEmbeddingSignature('concepts/searchable', {
+      signature: 'openai:text-embedding-3-large:1536',
+    });
+
+    const legacy = await inspectEmbeddingIdentity(engine, resolved);
+    expect(legacy.status).toBe('incompatible');
+    expect(legacy.vectorSearchAllowed).toBe(false);
+    expect(legacy.disagreements).toContain('stored page embedding signature is legacy or incomplete');
+
+    await engine.executeRaw(
+      `UPDATE pages SET embedding_signature = NULL WHERE slug = 'concepts/searchable'`,
+    );
+    const missing = await inspectEmbeddingIdentity(engine, resolved);
+    expect(missing.status).toBe('incompatible');
+    expect(missing.vectorSearchAllowed).toBe(false);
+    expect(missing.disagreements).toContain('stored page embedding provenance is missing');
+  });
+
+  test('equal-width vectors with different preprocessing fail closed', async () => {
+    await engine.setConfig('embedding_model', 'openai:text-embedding-3-large');
+    await engine.setConfig('embedding_dimensions', '1536');
+    await seedEmbedded();
+    await engine.setPageEmbeddingSignature('concepts/searchable', {
+      signature: `v2|model=${encodeURIComponent('openai:text-embedding-3-large')}|dimensions=1536|column=embedding|preprocessing=query-v1`,
+    });
+
+    const result = await inspectEmbeddingIdentity(engine, resolved);
+    expect(result.status).toBe('incompatible');
+    expect(result.vectorSearchAllowed).toBe(false);
+    expect(result.disagreements).toContain('stored page embedding signature disagrees with runtime');
   });
 
   test('same dimensions cannot hide a provider/model conflict', async () => {

@@ -10,16 +10,18 @@ change automatically.
 this mismatch and refuse to silently proceed. This doc is the recipe
 they point at.
 
-## Same-dimension model swaps (v0.41.31.0 — automatic)
+## Same-dimension model swaps and identity
 
 If you switch to a different model at the **same** dimension count
 (e.g. one 1536-dim provider to another, or a re-tuned model that keeps
 its width), the column type doesn't change, so no `ALTER`/wipe recipe
-is needed. As of v0.41.31.0, gbrain stamps an embedding-provenance
-signature (`<provider:model>:<dims>`) onto each page when its chunks are
-embedded. After you point the config at the new model, the stored
-signatures differ from the current one, and `gbrain embed --stale`
-re-embeds exactly those pages:
+is needed. GBrain stamps a versioned embedding-provenance signature onto
+each fully embedded page. It binds the exact provider/model, dimensions,
+active column, and document-side preprocessing contract. Chunk rows retain
+the same fully qualified provider/model.
+
+After you point the config at a new model, a dry run previews signature
+drift and an explicitly requested live run re-embeds those pages:
 
 ```bash
 # After switching to the new same-dim model in your config:
@@ -29,10 +31,15 @@ gbrain embed --stale --dry-run # preview the count without re-embedding
 
 Under federated_v2, the same drift is picked up by the per-source
 `embed-backfill` jobs that `gbrain sync --all` enqueues (capped
-`$X/source/24h`). **Grandfather:** pages embedded before v0.41.31.0
-carry a NULL signature and are NEVER flagged stale, so upgrading to
-v0.41.31.0 does NOT trigger a whole-corpus re-embed. Signatures only
-get stamped going forward.
+`$X/source/24h`).
+
+Legacy pages with a NULL or v1 (`<provider:model>:<dims>`) signature are not
+silently treated as compatible. They remain excluded from automatic
+signature invalidation so an upgrade cannot trigger an unapproved
+whole-corpus rewrite, but semantic retrieval fails closed for that
+unprovable cohort. Lexical retrieval remains available. Inventory and
+migrate such a cohort with a separate, bounded re-embedding plan; do not
+relabel legacy vectors without recomputing them.
 
 A **dimension** change still requires the wipe-and-reinit (PGLite) or
 column-alter (Postgres) recipe below — the on-disk `vector(N)` width
@@ -46,7 +53,8 @@ Switching dimensions requires:
 2. Wiping every existing embedding (the old vectors are unusable in the new space — and pgvector refuses to cast them across dimensions, so this must happen before the alter).
 3. Altering the column type (Postgres only — PGLite cannot do this).
 4. Re-embedding the entire corpus (can take hours on a 50K-page brain and costs $1-100 in API calls depending on model).
-5. Conditionally recreating the index (HNSW supports up to 2000 dimensions per pgvector; above that you must use exact scans).
+5. Conditionally recreating the index (`vector` HNSW supports up to 2000
+   dimensions; `halfvec` HNSW supports up to 4000).
 
 That's not an upgrade-time auto-run. It's a deliberate, expensive
 operation. Run it when you've decided you actually want the new model.
@@ -132,10 +140,14 @@ ALTER TABLE content_chunks ALTER COLUMN embedding TYPE vector(<NEW_DIMS>);
 -- For dims <= 2000 (e.g. 1024, 1280, 1536, 768):
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
   ON content_chunks USING hnsw (embedding vector_cosine_ops);
--- For dims > 2000 (e.g. 2048 Voyage 4 Large): skip step 4.
+-- For vector dims > 2000 (e.g. 2048 Voyage 4 Large): skip step 4.
 
 COMMIT;
 ```
+
+An existing `halfvec(2048)` local Nemotron cohort can retain HNSW with
+`halfvec_cosine_ops`. Changing `vector` to `halfvec`, or the reverse, is a
+separate storage migration and is not performed by a normal upgrade.
 
 Then re-init config with the new model:
 
@@ -168,7 +180,9 @@ recipe (Postgres). Both update the file plane AND the schema together.
 ## Verify
 
 After the recipe lands, `gbrain doctor --fast` should report green and
-`gbrain doctor` should pass the `embedding_width_consistency` check:
+`gbrain doctor` should pass the `embedding_width_consistency` check. A search
+can use semantic ranking only when runtime selection, DB selection, physical
+column type/width, exact chunk model, and v2 page signatures agree:
 
 ```
 ✓ embedding_width_consistency   dim parity: config 1280 / column vector(1280)

@@ -15,6 +15,7 @@ import type { SearchResult, SearchOpts, HybridSearchMeta } from '../types.ts';
 import { embed, embedQuery } from '../embedding.ts';
 import { registerBackgroundWorkDrainer } from '../background-work.ts';
 import { resolveEmbeddingColumn, isCacheSafe } from './embedding-column.ts';
+import { embeddingIdentityGate } from './embedding-identity.ts';
 import { resolveHardExcludes } from './source-boost.ts';
 import {
   resolveAdaptiveReturn,
@@ -1093,9 +1094,16 @@ export async function hybridSearch(
   // than "is the global default reachable?" — otherwise an unreachable
   // global default disables vector search even when the active column's
   // provider (Voyage, ZE) works fine.
+  const identity = await embeddingIdentityGate(engine, resolvedCol);
+  const identityDisabledReason: HybridSearchMeta['vector_disabled_reason'] =
+    identity.status === 'empty' ? 'embedding_identity_empty'
+    : identity.status === 'unselected' ? 'embedding_identity_unselected'
+    : identity.status === 'incompatible' ? 'embedding_identity_incompatible'
+    : identity.status === 'unknown' ? 'embedding_identity_unknown'
+    : undefined;
   const { isAvailable } = await import('../ai/gateway.ts');
   const providerProbe = resolvedCol.embeddingModel || undefined;
-  if (!isAvailable('embedding', providerProbe)) {
+  if (identityDisabledReason || !isAvailable('embedding', providerProbe)) {
     // v0.43 — fuse the relational arm with keyword so typed-edge answers
     // survive on the no-embedding-provider path (the relational win is most
     // valuable exactly when vector is unavailable). The title arm fuses here
@@ -1133,6 +1141,9 @@ export async function hybridSearch(
       intent: suggestions.intent,
       mode: resolvedMode.resolved_mode,
       embedding_column: resolvedCol.name,
+      ...(identityDisabledReason
+        ? { vector_disabled_reason: identityDisabledReason }
+        : {}),
       ...(resolvedMode.tokenBudget && resolvedMode.tokenBudget > 0
         ? { token_budget: noEmbedBudgetMeta }
         : {}),
@@ -1690,6 +1701,8 @@ export async function hybridSearchCached(
   const cfgCached = mergedCfgCached ?? ((await import('../config.ts')).loadConfig()) ?? { engine: 'pglite' as const };
   const resolvedColCached = resolveEmbeddingColumn(opts, cfgCached);
   const isNonDefaultColumn = !isCacheSafe(resolvedColCached, cfgCached);
+  const cachedIdentity = await embeddingIdentityGate(engine, resolvedColCached);
+  const identityRefused = !cachedIdentity.vectorSearchAllowed;
 
   // Cache key carries the column + provider so different embedding spaces
   // never collide on the same `(source_id, query_text)` row.
@@ -1733,6 +1746,7 @@ export async function hybridSearchCached(
     (opts?.walkDepth ?? 0) > 0 ||
     Boolean(opts?.nearSymbol) ||
     isNonDefaultColumn ||
+    identityRefused ||
     adaptiveReturnOn;
 
   let cacheStatus: 'hit' | 'miss' | 'disabled' = skipCache ? 'disabled' : 'miss';
@@ -1884,6 +1898,9 @@ export async function hybridSearchCached(
     cache: { status: cacheStatus },
     ...(innerMeta?.mode ? { mode: innerMeta.mode } : {}),
     ...(innerMeta?.embedding_column ? { embedding_column: innerMeta.embedding_column } : {}),
+    ...(innerMeta?.vector_disabled_reason
+      ? { vector_disabled_reason: innerMeta.vector_disabled_reason }
+      : {}),
     ...(innerMeta?.adaptive_return ? { adaptive_return: innerMeta.adaptive_return } : {}),
     ...(innerMeta?.autocut ? { autocut: innerMeta.autocut } : {}),
     // Per-call budget: prefer the INNER meta's budget record. The inner

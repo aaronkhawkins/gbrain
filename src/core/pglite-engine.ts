@@ -2398,7 +2398,7 @@ export class PGLiteEngine implements BrainEngine {
     const conds: string[] = [];
     if (opts?.signature !== undefined) {
       params.push(opts.signature);
-      conds.push(`(cc.embedding IS NULL OR (p.embedding_signature IS NOT NULL AND p.embedding_signature <> $${params.length}))`);
+      conds.push(`(cc.embedding IS NULL OR (p.embedding_signature LIKE 'v2|%' AND p.embedding_signature <> $${params.length}))`);
     } else {
       conds.push(`cc.embedding IS NULL`);
     }
@@ -2464,7 +2464,7 @@ export class PGLiteEngine implements BrainEngine {
          FROM pages p
         WHERE cc.page_id = p.id
           AND cc.embedding IS NOT NULL
-          AND p.embedding_signature IS NOT NULL
+          AND p.embedding_signature LIKE 'v2|%'
           AND p.embedding_signature <> $1${srcClause}
         RETURNING cc.page_id`,
       params,
