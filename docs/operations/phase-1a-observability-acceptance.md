@@ -49,10 +49,16 @@ Content-free acceptance checklist. Do not paste knowledge bodies, credentials, s
   existing notifier. After restoring the normal disabled configuration,
   Grafana sent the resolved notification at 2026-07-23T19:37:28Z and the
   active canary set returned empty.
+- Stopping only the personal observer made its Prometheus `up` series `0`
+  while the second-brain series remained `1`. Restarting the observer restored
+  both series to `1` and both health endpoints returned `healthy`.
+- Stopping Grafana made its health endpoint unavailable while Prometheus
+  continued to report both observers `UP`. Restarting Grafana restored a
+  healthy API and database without changing either observer's state.
 - The live acceptance check exposed and corrected a deployment-local routing
-  error where the personal launchd wrapper named the AKH repository. The
-  personal and AKH autopilots now use their intended repositories and both
-  brains returned healthy before sign-off.
+  error where the personal launchd wrapper named the second-brain repository.
+  The personal and second-brain autopilots now use their intended repositories
+  and both brains returned healthy before sign-off.
 - The personal facts migration was replayed against only its six clean target
   pages, fencing eight legacy facts while preserving unrelated repository
   changes. A deployed `extract_facts` run then completed successfully and
@@ -63,7 +69,7 @@ Content-free acceptance checklist. Do not paste knowledge bodies, credentials, s
 | Field | Value |
 |---|---|
 | Date | 2026-07-23 |
-| Operator | Aaron / Codex |
+| Operator | Local operator / Codex |
 | Personal observer version | GBrain 0.42.64.1 / `phase-1a-observability-2026-07-23` |
 | Second-brain observer version | GBrain 0.42.64.1 / `phase-1a-observability-2026-07-23` |
 | Residual instrumentation follow-ups | `runtime.autopilot-install-isolation` |

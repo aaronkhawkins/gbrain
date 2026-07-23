@@ -79,12 +79,12 @@ contract.
 
 **Work:**
 
-- Inventory each recurring personal and AKH process and map it to its existing
+- Inventory each recurring personal and second-brain process and map it to its existing
   source, Dream, Minion, embedding, retrieval, or missing evidence.
 - Record only missing-evidence paths as receipt candidates.
 - Make autopilot installation artifacts brain-scoped, including wrapper,
   label, logs, and uninstall behavior; add an isolation regression test.
-- Verify the existing personal and AKH launchd services remain independently
+- Verify the existing personal and second-brain launchd services remain independently
   restartable.
 
 **Done when:** No deployed process is double-counted, and installing or
@@ -168,8 +168,8 @@ gate.
 
 **Work:**
 
-- Deploy schema and runtime changes to personal first, then AKH if AKH has
-  registered processors.
+- Deploy schema and runtime changes to personal first, then the second brain if
+  it has registered processors.
 - Run one safe processor failure/recovery drill.
 - Confirm both brains remain healthy and isolated.
 - Record any remaining missing-evidence work keys for the next adapter batch.
