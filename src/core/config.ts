@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'f
 import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import type { EngineConfig, EmbeddingColumnConfig } from './types.ts';
+import type { ObservabilityConfig } from './observability/types.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -188,6 +189,12 @@ export interface GBrainConfig {
   retrieval_reflex?: boolean;
   /** Max pointers injected per turn (default 3). File-plane only. */
   retrieval_reflex_max_pointers?: number;
+  /**
+   * Phase 1A operational observer (file-plane). Per-brain bind, work-policy
+   * overrides, and external-work declarations. Never stores credentials.
+   * Shape: src/core/observability/types.ts ObservabilityConfig.
+   */
+  observability?: ObservabilityConfig;
   /**
    * v0.43 (#2095) — how many recent turns the reflex extracts entities from
    * (default 4). 1 reproduces the legacy current-turn-only behavior (and the

@@ -43,6 +43,8 @@ export interface LoadAllSourcesOpts {
   includeArchived?: boolean;
   /** Only return sources with config.federated === true (default false). */
   federatedOnly?: boolean;
+  /** Database-side source restriction. Undefined means whole brain. */
+  sourceIds?: readonly string[];
 }
 
 /** Parse `sources.config` to a plain object regardless of driver shape. */
@@ -64,20 +66,27 @@ export function isSourceFederated(config: unknown): boolean {
  * Enumerate every source. Order: 'default' first, then alphabetical by id.
  *
  * Caller filters in-process when the predicate is cheap (federatedOnly,
- * includeArchived). For source-id targeted reads use `fetchSource` instead
- * (single-row SELECT).
+ * includeArchived). `sourceIds` keeps authorized multi-source reads bounded;
+ * for a single targeted read use `fetchSource` instead.
  */
 export async function loadAllSources(
   engine: BrainEngine,
   opts: LoadAllSourcesOpts = {},
 ): Promise<SourceRow[]> {
+  if (opts.sourceIds?.length === 0) return [];
+  const sourceFilter = opts.sourceIds
+    ? ` WHERE id = ANY($1::text[])`
+    : '';
+  const params = opts.sourceIds ? [[...new Set(opts.sourceIds)]] : undefined;
   // Defensive on legacy brains pre-v0.26.5 that lack the archived column.
   let rows: SourceRow[];
   try {
     rows = await engine.executeRaw<SourceRow>(
       `SELECT id, name, local_path, last_commit, last_sync_at, config, created_at, archived, newest_content_at
          FROM sources
+        ${sourceFilter}
        ORDER BY (id = 'default') DESC, id`,
+      params,
     );
   } catch (err) {
     // Forward-reference safety: pre-v0.26.5 brains lack `archived`; pre-v109
@@ -87,7 +96,9 @@ export async function loadAllSources(
       rows = await engine.executeRaw<SourceRow>(
         `SELECT id, name, local_path, last_commit, last_sync_at, config, created_at
            FROM sources
+          ${sourceFilter}
          ORDER BY (id = 'default') DESC, id`,
+        params,
       );
     } else {
       throw err;

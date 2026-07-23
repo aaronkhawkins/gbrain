@@ -208,13 +208,13 @@ export function lagFromContentMs(
 export async function computeAllSourceMetrics(
   engine: BrainEngine,
   sources: SourceRow[],
-  opts?: { probeContent?: boolean },
+  opts?: { probeContent?: boolean; sourceIds?: readonly string[] },
 ): Promise<SourceMetrics[]> {
   if (sources.length === 0) return [];
 
-  const pageCounts = await pageCountsBySource(engine);
-  const chunkCounts = await chunkCountsBySource(engine);
-  const jobCounts = await jobCountsBySource(engine);
+  const pageCounts = await pageCountsBySource(engine, opts?.sourceIds);
+  const chunkCounts = await chunkCountsBySource(engine, opts?.sourceIds);
+  const jobCounts = await jobCountsBySource(engine, opts?.sourceIds);
   const now = Date.now();
   // v0.41.32.0: LOCAL callers (gbrain sources status/audit) opt into a live
   // commit-hash probe; the REMOTE federation_health path leaves it off and
@@ -276,27 +276,39 @@ export async function computeAllSourceMetrics(
   });
 }
 
-async function pageCountsBySource(engine: BrainEngine): Promise<Map<string, number>> {
+async function pageCountsBySource(
+  engine: BrainEngine,
+  sourceIds?: readonly string[],
+): Promise<Map<string, number>> {
+  if (sourceIds?.length === 0) return new Map();
   const rows = await engine.executeRaw<{ source_id: string; n: number }>(
     `SELECT source_id, COUNT(*)::int AS n
        FROM pages
       WHERE deleted_at IS NULL
+        ${sourceIds ? 'AND source_id = ANY($1::text[])' : ''}
       GROUP BY source_id`,
+    sourceIds ? [[...new Set(sourceIds)]] : undefined,
   );
   const m = new Map<string, number>();
   for (const r of rows) m.set(r.source_id, Number(r.n));
   return m;
 }
 
-async function chunkCountsBySource(engine: BrainEngine): Promise<Map<string, { total: number; embedded: number }>> {
+async function chunkCountsBySource(
+  engine: BrainEngine,
+  sourceIds?: readonly string[],
+): Promise<Map<string, { total: number; embedded: number }>> {
+  if (sourceIds?.length === 0) return new Map();
   const rows = await engine.executeRaw<{ source_id: string; total: number; embedded: number }>(
     `SELECT p.source_id,
             COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE c.embedding IS NOT NULL)::int AS embedded
        FROM content_chunks c
-       JOIN pages p ON p.id = c.page_id
+      JOIN pages p ON p.id = c.page_id
       WHERE p.deleted_at IS NULL
+        ${sourceIds ? 'AND p.source_id = ANY($1::text[])' : ''}
       GROUP BY p.source_id`,
+    sourceIds ? [[...new Set(sourceIds)]] : undefined,
   );
   const m = new Map<string, { total: number; embedded: number }>();
   for (const r of rows) m.set(r.source_id, { total: Number(r.total), embedded: Number(r.embedded) });
@@ -305,19 +317,27 @@ async function chunkCountsBySource(engine: BrainEngine): Promise<Map<string, { t
 
 type JobStats = { failed_24h: number; queue_depth: number; backfill_active: number; backfill_queued: number };
 
-async function jobCountsBySource(engine: BrainEngine): Promise<Map<string, JobStats>> {
+async function jobCountsBySource(
+  engine: BrainEngine,
+  sourceIds?: readonly string[],
+): Promise<Map<string, JobStats>> {
+  if (sourceIds?.length === 0) return new Map();
   // Pre-v0.11 brains don't have minion_jobs; return empty map.
   try {
     const rows = await engine.executeRaw<{ source_id: string; failed_24h: number; queue_depth: number; backfill_active: number; backfill_queued: number }>(
-      `SELECT data->>'sourceId' AS source_id,
+      `SELECT COALESCE(data->>'source_id', data->>'sourceId') AS source_id,
               COUNT(*) FILTER (WHERE status IN ('failed','dead') AND created_at > NOW() - INTERVAL '24 hours')::int AS failed_24h,
               COUNT(*) FILTER (WHERE status IN ('waiting','active','delayed'))::int AS queue_depth,
               COUNT(*) FILTER (WHERE name = 'embed-backfill' AND status = 'active')::int AS backfill_active,
               COUNT(*) FILTER (WHERE name = 'embed-backfill' AND status IN ('waiting','delayed','waiting-children'))::int AS backfill_queued
          FROM minion_jobs
         WHERE name IN ('sync','embed-backfill')
-          AND data->>'sourceId' IS NOT NULL
-        GROUP BY data->>'sourceId'`,
+          AND COALESCE(data->>'source_id', data->>'sourceId') IS NOT NULL
+          ${sourceIds
+            ? `AND COALESCE(data->>'source_id', data->>'sourceId') = ANY($1::text[])`
+            : ''}
+        GROUP BY COALESCE(data->>'source_id', data->>'sourceId')`,
+      sourceIds ? [[...new Set(sourceIds)]] : undefined,
     );
     const m = new Map<string, JobStats>();
     for (const r of rows) {

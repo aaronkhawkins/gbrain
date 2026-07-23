@@ -2549,6 +2549,40 @@ const get_status_snapshot: Operation = {
 };
 
 /**
+ * Content-free expected-work state for operational agents.
+ *
+ * This is intentionally separate from `get_status_snapshot`: it uses the
+ * exact observer builder and serializer, enforces the observer's read-only
+ * database boundary, accepts no input, and exposes no raw collector details.
+ * Admin scope matches the existing host-operational status posture.
+ */
+const get_operational_snapshot: Operation = {
+  name: 'get_operational_snapshot',
+  description:
+    'Content-free expected-work and brain operational state. Read-only, input-free, and admin-scoped.',
+  params: {},
+  handler: async (ctx) => {
+    const {
+      buildReadOnlyOperationalSnapshot,
+      serializeOperationalSnapshot,
+    } = await import('./observability/snapshot.ts');
+    const snapshot = await buildReadOnlyOperationalSnapshot({
+      engine: ctx.engine,
+      config: ctx.config,
+      ...sourceScopeOpts(ctx),
+      onCollectorError: (adapterId, error) => {
+        ctx.logger.warn(
+          `operational snapshot collector ${adapterId} failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    });
+    return JSON.parse(serializeOperationalSnapshot(snapshot)) as unknown;
+  },
+  scope: 'admin',
+  localOnly: false,
+};
+
+/**
  * Multi-topology v1 (Tier B): structured doctor report for remote callers.
  *
  * First read-only diagnostic op exposed over HTTP MCP. Wraps the focused
@@ -5437,6 +5471,8 @@ export const operations: Operation[] = [
   list_skills, get_skill, list_brain_skillpack, advisor,
   // v0.41.19.0: thin-client `gbrain status` payload (admin-scope, sync + cycle only)
   get_status_snapshot,
+  // Phase 1A: agent-native content-free expected-work snapshot (admin-scope)
+  get_operational_snapshot,
   // Sync
   sync_brain,
   // Raw data

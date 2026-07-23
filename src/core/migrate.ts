@@ -5677,6 +5677,108 @@ export const MIGRATIONS: Migration[] = [
 `);
     },
   },
+  {
+    version: 125,
+    name: 'minion_jobs_name_status_recency_index',
+    // Operational snapshots read a bounded recent-attempt window per handler
+    // name and the current non-terminal backlog. Keep both lookups on a
+    // name/status/recency access path instead of scanning all job history.
+    //
+    // Keep Postgres statements separate: postgres.js wraps multi-statement
+    // unsafe queries in an implicit transaction, which CONCURRENTLY rejects.
+    transaction: false,
+    idempotent: true,
+    sql: '',
+    handler: async (engine) => {
+      if (engine.kind === 'postgres') {
+        // A failed concurrent build leaves an invalid index with the target
+        // name. Remove only that remnant; preserve a healthy existing index.
+        const rows = await engine.executeRaw<{ valid: boolean }>(
+          `SELECT i.indisvalid AS valid
+             FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = $1`,
+          ['idx_minion_jobs_name_status_recency'],
+        );
+        if (rows.length > 0 && rows[0]?.valid !== true) {
+          await engine.runMigration(
+            125,
+            'DROP INDEX CONCURRENTLY IF EXISTS idx_minion_jobs_name_status_recency;',
+          );
+        }
+        await engine.runMigration(
+          125,
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_minion_jobs_name_status_recency
+             ON minion_jobs (name, status, created_at DESC);`,
+        );
+      } else {
+        await engine.runMigration(
+          125,
+          `CREATE INDEX IF NOT EXISTS idx_minion_jobs_name_status_recency
+             ON minion_jobs (name, status, created_at DESC);`,
+        );
+      }
+    },
+  },
+  {
+    version: 126,
+    name: 'minion_jobs_observer_partial_indexes',
+    // v125 keyed status + created_at, but the bounded observer query orders
+    // terminal rows by their actual event timestamp. Add query-shaped partial
+    // indexes for terminal history and current backlog, then retire v125's
+    // broader index. This migration is additive and safe to retry.
+    transaction: false,
+    idempotent: true,
+    sql: '',
+    handler: async (engine) => {
+      const terminalDdl = `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_minion_jobs_terminal_recency
+        ON minion_jobs (
+          name,
+          (COALESCE(finished_at, started_at, updated_at, created_at)) DESC,
+          id DESC
+        )
+        WHERE status IN ('completed', 'failed', 'dead', 'cancelled');`;
+      const backlogDdl = `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_minion_jobs_nonterminal
+        ON minion_jobs (name, status, created_at)
+        WHERE status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused');`;
+
+      if (engine.kind === 'postgres') {
+        for (const [name, ddl] of [
+          ['idx_minion_jobs_terminal_recency', terminalDdl],
+          ['idx_minion_jobs_nonterminal', backlogDdl],
+        ] as const) {
+          const rows = await engine.executeRaw<{ valid: boolean }>(
+            `SELECT i.indisvalid AS valid
+               FROM pg_index i
+               JOIN pg_class c ON c.oid = i.indexrelid
+              WHERE c.relname = $1`,
+            [name],
+          );
+          if (rows.length > 0 && rows[0]?.valid !== true) {
+            await engine.runMigration(126, `DROP INDEX CONCURRENTLY IF EXISTS ${name};`);
+          }
+          await engine.runMigration(126, ddl);
+        }
+        await engine.runMigration(
+          126,
+          'DROP INDEX CONCURRENTLY IF EXISTS idx_minion_jobs_name_status_recency;',
+        );
+      } else {
+        await engine.runMigration(
+          126,
+          terminalDdl.replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX'),
+        );
+        await engine.runMigration(
+          126,
+          backlogDdl.replace('CREATE INDEX CONCURRENTLY', 'CREATE INDEX'),
+        );
+        await engine.runMigration(
+          126,
+          'DROP INDEX IF EXISTS idx_minion_jobs_name_status_recency;',
+        );
+      }
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
