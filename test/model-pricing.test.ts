@@ -104,6 +104,13 @@ describe('estimateChatCostUsd — task budget accounting', () => {
   test('treats unpriced subscription transports as zero metered API spend', () => {
     expect(estimateChatCostUsd('opencode-server:gpt-5.5', 1_000_000, 1_000_000)).toBe(0);
   });
+
+  test('distinguishes unknown provider pricing from explicitly free transport', () => {
+    expect(estimateChatCostUsd('mistral:mistral-small-latest', 1_000, 1_000)).toBeNull();
+    expect(estimateChatCostUsd('openrouter:openai/gpt-5.5', 1_000, 1_000)).toBeNull();
+    expect(estimateChatCostUsd('unknown-provider:model', 1_000, 1_000)).toBeNull();
+    expect(estimateChatCostUsd(undefined, 1_000, 1_000)).toBeNull();
+  });
 });
 
 describe('DRIFT GUARD — derived views stay equal to canonical (re-hardcode trip-wire)', () => {

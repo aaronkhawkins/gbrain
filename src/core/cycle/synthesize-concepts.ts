@@ -217,6 +217,7 @@ export async function runPhaseSynthesizeConcepts(
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
   const failures: Array<{ concept: string; error: string }> = [];
+  let pricingUnknown: string | null = null;
   const tierCounts = { T1: 0, T2: 0, T3: 0, T4: 0 };
   let synthesisModel: string | undefined;
 
@@ -288,12 +289,16 @@ export async function runPhaseSynthesizeConcepts(
     }
     let narrative: string;
     if (group.tier === 'T1' || group.tier === 'T2') {
-      if (estimatedSpendUsd >= budgetCap) {
+      const selectedModel = await getSynthesisModel();
+      if (pricingUnknown === null && estimateChatCostUsd(selectedModel, 0, 0) === null) {
+        pricingUnknown = selectedModel;
+      }
+      if (pricingUnknown !== null || estimatedSpendUsd >= budgetCap) {
         narrative = deterministicNarrative(group);
       } else {
         try {
           const result = await chat({
-            model: await getSynthesisModel(),
+            model: selectedModel,
             system: SYNTH_PROMPT,
             messages: [
               {
@@ -317,11 +322,13 @@ export async function runPhaseSynthesizeConcepts(
           // Charge the model that actually served the request. This preserves
           // the phase cap for paid models without inventing spend for local or
           // subscription-backed routes whose recipes declare zero metered cost.
-          estimatedSpendUsd += estimateChatCostUsd(
-            result.model || await getSynthesisModel(),
+          const callCost = estimateChatCostUsd(
+            result.model || selectedModel,
             result.usage.input_tokens,
             result.usage.output_tokens,
           );
+          if (callCost === null) pricingUnknown = result.model || selectedModel;
+          else estimatedSpendUsd += callCost;
           narrative = result.text.trim() || deterministicNarrative(group);
         } catch (err) {
           failures.push({
@@ -417,18 +424,20 @@ export async function runPhaseSynthesizeConcepts(
 
   return {
     phase: 'synthesize_concepts',
-    status: failures.length > 0 ? 'warn' : 'ok',
+    status: failures.length > 0 || pricingUnknown !== null ? 'warn' : 'ok',
     duration_ms: 0,
     summary:
       `synthesize_concepts: ${conceptsWritten} concepts ` +
       `(T1=${tierCounts.T1} T2=${tierCounts.T2} T3=${tierCounts.T3})` +
-      (failures.length > 0 ? ` (${failures.length} LLM-failed → template fallback)` : ''),
+      (failures.length > 0 ? ` (${failures.length} LLM-failed → template fallback)` : '') +
+      (pricingUnknown !== null ? ` (pricing unknown for ${pricingUnknown} → template fallback)` : ''),
     details: {
       concepts_written: conceptsWritten,
       tier_counts: tierCounts,
       groups_found: atomGroups.length,
       atoms_seen: atoms.length,
       failures,
+      pricing_unknown: pricingUnknown,
       estimated_spend_usd: estimatedSpendUsd,
       budget_usd: budgetCap,
       dry_run: opts.dryRun ?? false,

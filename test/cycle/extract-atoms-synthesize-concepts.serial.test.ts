@@ -141,7 +141,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
   });
 
   test('passes models.dream.extract_atoms to the injected chat seam', async () => {
-    await engine.setConfig('models.dream.extract_atoms', 'sentinel:extract-atoms');
+    await engine.setConfig('models.dream.extract_atoms', 'vllm:sentinel-extract-atoms');
     let capturedModel: string | undefined;
     const chat = async (opts: ChatOpts) => {
       capturedModel = opts.model;
@@ -155,11 +155,11 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       dryRun: true,
     });
 
-    expect(capturedModel).toBe('sentinel:extract-atoms');
+    expect(capturedModel).toBe('vllm:sentinel-extract-atoms');
   });
 
   test('falls back to the utility tier model for atom extraction', async () => {
-    await engine.setConfig('models.tier.utility', 'sentinel:utility-tier');
+    await engine.setConfig('models.tier.utility', 'vllm:sentinel-utility-tier');
     let capturedModel: string | undefined;
     const chat = async (opts: ChatOpts) => {
       capturedModel = opts.model;
@@ -173,7 +173,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       dryRun: true,
     });
 
-    expect(capturedModel).toBe('sentinel:utility-tier');
+    expect(capturedModel).toBe('vllm:sentinel-utility-tier');
   });
 
   test('extracts atoms from transcript via stub chat', async () => {
@@ -322,6 +322,30 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(result.details?.estimated_spend_usd).toBe(6);
     expect(result.details?.transcripts_skipped_budget).toBe(1);
   });
+
+  test('unknown routed pricing fails closed before atom extraction', async () => {
+    const unknownModel = 'mistral:mistral-small-latest';
+    await engine.setConfig('models.dream.extract_atoms', unknownModel);
+    let calls = 0;
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [
+        { filePath: '/unknown-a.txt', content: 'a', contentHash: 'unknown-a' },
+        { filePath: '/unknown-b.txt', content: 'b', contentHash: 'unknown-b' },
+      ],
+      _pages: [],
+      _chat: async (opts) => {
+        calls++;
+        return stubChat('[]', { model: unknownModel })(opts);
+      },
+      dryRun: true,
+    });
+
+    expect(calls).toBe(0);
+    expect(result.status).toBe('warn');
+    expect(result.details?.pricing_unknown).toBe(unknownModel);
+    expect(result.details?.transcripts_skipped_budget).toBe(0);
+    expect(result.details?.transcripts_skipped_pricing_unknown).toBe(2);
+  });
 });
 
 describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
@@ -419,7 +443,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
   });
 
   test('passes models.dream.synthesize_concepts to the injected chat seam', async () => {
-    await engine.setConfig('models.dream.synthesize_concepts', 'sentinel:synthesize-concepts');
+    await engine.setConfig('models.dream.synthesize_concepts', 'vllm:sentinel-synthesize-concepts');
     const atoms = Array.from({ length: 10 }, (_, i) => ({
       slug: `configured-${i}`,
       title: `Configured ${i}`,
@@ -438,11 +462,11 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       dryRun: true,
     });
 
-    expect(capturedModel).toBe('sentinel:synthesize-concepts');
+    expect(capturedModel).toBe('vllm:sentinel-synthesize-concepts');
   });
 
   test('falls back to the reasoning tier model for concept synthesis', async () => {
-    await engine.setConfig('models.tier.reasoning', 'sentinel:reasoning-tier');
+    await engine.setConfig('models.tier.reasoning', 'vllm:sentinel-reasoning-tier');
     const atoms = Array.from({ length: 5 }, (_, i) => ({
       slug: `tiered-${i}`,
       title: `Tiered ${i}`,
@@ -461,7 +485,7 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
       dryRun: true,
     });
 
-    expect(capturedModel).toBe('sentinel:reasoning-tier');
+    expect(capturedModel).toBe('vllm:sentinel-reasoning-tier');
   });
 
   test('local routed model synthesizes every eligible group without consuming budget', async () => {
@@ -525,6 +549,34 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
     expect(calls).toBe(1);
     expect(result.details?.concepts_written).toBe(2);
     expect(result.details?.estimated_spend_usd).toBe(18);
+  });
+
+  test('unknown routed pricing fails closed to deterministic concept synthesis', async () => {
+    const unknownModel = 'openrouter:openai/gpt-5.5';
+    await engine.setConfig('models.dream.synthesize_concepts', unknownModel);
+    const atoms = ['unknown-theme-a', 'unknown-theme-b'].flatMap((concept) =>
+      Array.from({ length: 5 }, (_, i) => ({
+        slug: `${concept}-${i}`,
+        title: `${concept} ${i}`,
+        body: `body ${i}`,
+        concept_refs: [concept],
+      })),
+    );
+    let calls = 0;
+    const result = await runPhaseSynthesizeConcepts(engine, {
+      _atoms: atoms,
+      _chat: async (opts) => {
+        calls++;
+        return stubChat('must not run', { model: unknownModel })(opts);
+      },
+      dryRun: true,
+    });
+
+    expect(calls).toBe(0);
+    expect(result.status).toBe('warn');
+    expect(result.details?.concepts_written).toBe(2);
+    expect(result.details?.pricing_unknown).toBe(unknownModel);
+    expect(result.details?.estimated_spend_usd).toBe(0);
   });
 
   test('dry-run counts but does NOT write', async () => {

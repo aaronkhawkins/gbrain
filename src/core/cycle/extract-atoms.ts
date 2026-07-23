@@ -525,6 +525,8 @@ export async function runPhaseExtractAtoms(
     tier: 'utility',
     fallback: 'haiku',
   });
+  let pricingUnknown: string | null =
+    estimateChatCostUsd(model, 0, 0) === null ? model : null;
 
   // 4. Per work-item: extract atoms via Haiku
   let totalAtomsExtracted = 0;
@@ -532,6 +534,8 @@ export async function runPhaseExtractAtoms(
   let pagesProcessed = 0;
   let transcriptsSkipped = 0;
   let pagesSkipped = 0;
+  let transcriptsSkippedPricing = 0;
+  let pagesSkippedPricing = 0;
   const failures: Array<{ source: string; error: string }> = [];
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
@@ -567,6 +571,11 @@ export async function runPhaseExtractAtoms(
 
   for (const item of work) {
     await maybeYield();
+    if (pricingUnknown !== null) {
+      if (item.kind === 'transcript') transcriptsSkippedPricing++;
+      else pagesSkippedPricing++;
+      continue;
+    }
     if (estimatedSpendUsd >= budgetCap) {
       if (item.kind === 'transcript') transcriptsSkipped++;
       else pagesSkipped++;
@@ -596,11 +605,13 @@ export async function runPhaseExtractAtoms(
       // Charge the model that actually served the request. Routed local
       // transports (for example vLLM/NIM) declare zero metered token cost in
       // their recipe, while paid cloud models use the canonical pricing map.
-      estimatedSpendUsd += estimateChatCostUsd(
+      const callCost = estimateChatCostUsd(
         result.model || model,
         result.usage.input_tokens,
         result.usage.output_tokens,
       );
+      if (callCost === null) pricingUnknown = result.model || model;
+      else estimatedSpendUsd += callCost;
 
       const atoms = parseAtomsResponse(result.text);
       if (atoms.length === 0) {
@@ -703,26 +714,33 @@ export async function runPhaseExtractAtoms(
 
   return {
     phase: 'extract_atoms',
-    status: failures.length > 0 ? 'warn' : 'ok',
+    status: failures.length > 0 || pricingUnknown !== null ? 'warn' : 'ok',
     duration_ms: 0,
     summary:
       `extract_atoms: ${totalAtomsExtracted} atoms from ` +
       `${transcriptsProcessed}/${transcripts.length} transcripts + ` +
       `${pagesProcessed}/${pages.length} pages` +
       (failures.length > 0 ? ` (${failures.length} failed)` : '') +
+      (pricingUnknown !== null ? ` (pricing unknown for ${pricingUnknown})` : '') +
       (transcriptsSkipped + pagesSkipped > 0
         ? ` (${transcriptsSkipped + pagesSkipped} budget-skipped)`
+        : '') +
+      (transcriptsSkippedPricing + pagesSkippedPricing > 0
+        ? ` (${transcriptsSkippedPricing + pagesSkippedPricing} pricing-unknown-skipped)`
         : ''),
     details: {
       atoms_extracted: totalAtomsExtracted,
       transcripts_processed: transcriptsProcessed,
       transcripts_total: transcripts.length,
       transcripts_skipped_budget: transcriptsSkipped,
+      transcripts_skipped_pricing_unknown: transcriptsSkippedPricing,
       pages_processed: pagesProcessed,
       pages_total: pages.length,
       pages_skipped_budget: pagesSkipped,
+      pages_skipped_pricing_unknown: pagesSkippedPricing,
       duplicates_skipped: duplicatesSkipped,
       failures,
+      pricing_unknown: pricingUnknown,
       estimated_spend_usd: estimatedSpendUsd,
       budget_usd: budgetCap,
       source_id: sourceId,

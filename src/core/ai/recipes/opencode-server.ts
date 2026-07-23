@@ -26,6 +26,10 @@ export const opencodeServer: Recipe = {
       supports_subagent_loop: true,
       supports_prompt_cache: false,
       max_context_tokens: 200000,
+      // OpenCode uses Aaron's subscription-backed local OAuth session. GBrain
+      // incurs no metered per-token API charge through this transport.
+      cost_per_1m_input_usd: 0,
+      cost_per_1m_output_usd: 0,
       price_last_verified: '2026-07-10',
     },
     expansion: {
