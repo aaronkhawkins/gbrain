@@ -24,6 +24,8 @@ export const WORK_KINDS = [
   'embedding',
   'retrieval',
   'local_runtime',
+  'fact',
+  'link',
   'content_processor',
   'infrastructure',
 ] as const;
@@ -40,6 +42,10 @@ export const EVIDENCE_ADAPTERS = [
   'embedding',
   'retrieval',
   'local_runtime',
+  'facts',
+  'links',
+  'extract_rollup',
+  'discovery',
   'none',
 ] as const;
 
@@ -64,6 +70,8 @@ export interface ExpectedWorkEntry {
   evidence_adapter: EvidenceAdapterId;
   /** Adapter-specific opaque selector (job name, phase, source id, etc.). */
   selector: string;
+  /** Evidence scope. Global is explicit so source activity cannot mask it. */
+  scope?: { type: 'global' } | { type: 'source'; source_id: string };
   backlog_warn?: number;
   backlog_fail?: number;
   /** Bounded runbook id, not free-form prose in metrics. */
@@ -169,7 +177,18 @@ export interface ExternalWorkDeclaration {
   enabled?: boolean;
   required?: boolean;
   criticality?: Criticality;
-  /** Always adapter `none` until a receipt contract exists. */
+  cadence_seconds?: number | null;
+  grace_seconds?: number;
+  /**
+   * Reuse an existing durable registration/receipt. When absent, the work is
+   * intentionally reported as instrumentation_missing (Phase 1B owns a new
+   * generic processor receipt contract).
+   */
+  evidence?: {
+    adapter: 'minion_job' | 'extract_rollup' | 'ingestion_source';
+    selector?: string;
+    source_id?: string;
+  };
   note?: string;
 }
 

@@ -5677,6 +5677,49 @@ export const MIGRATIONS: Migration[] = [
 `);
     },
   },
+  {
+    version: 125,
+    name: 'minion_jobs_name_status_recency_index',
+    // Operational snapshots read a bounded recent-attempt window per handler
+    // name and the current non-terminal backlog. Keep both lookups on a
+    // name/status/recency access path instead of scanning all job history.
+    //
+    // Keep Postgres statements separate: postgres.js wraps multi-statement
+    // unsafe queries in an implicit transaction, which CONCURRENTLY rejects.
+    transaction: false,
+    idempotent: true,
+    sql: '',
+    handler: async (engine) => {
+      if (engine.kind === 'postgres') {
+        // A failed concurrent build leaves an invalid index with the target
+        // name. Remove only that remnant; preserve a healthy existing index.
+        await engine.runMigration(
+          125,
+          `DO $$ BEGIN
+             IF EXISTS (
+               SELECT 1 FROM pg_index i
+               JOIN pg_class c ON c.oid = i.indexrelid
+               WHERE c.relname = 'idx_minion_jobs_name_status_recency'
+                 AND NOT i.indisvalid
+             ) THEN
+               EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS idx_minion_jobs_name_status_recency';
+             END IF;
+           END $$;`,
+        );
+        await engine.runMigration(
+          125,
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_minion_jobs_name_status_recency
+             ON minion_jobs (name, status, created_at DESC);`,
+        );
+      } else {
+        await engine.runMigration(
+          125,
+          `CREATE INDEX IF NOT EXISTS idx_minion_jobs_name_status_recency
+             ON minion_jobs (name, status, created_at DESC);`,
+        );
+      }
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

@@ -33,8 +33,11 @@
 import type { BrainEngine, SourceRow } from '../core/engine.ts';
 import type { MinionQueue } from '../core/minions/queue.ts';
 import { NON_GLOBAL_PHASES, GLOBAL_PHASES, LAST_GLOBAL_AT_KEY } from '../core/cycle.ts';
-
-const FULL_CYCLE_FLOOR_MIN = 60;
+import {
+  AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY,
+  AUTOPILOT_GLOBAL_FLOOR_MINUTES,
+  AUTOPILOT_SOURCE_FLOOR_MINUTES,
+} from '../core/minions/recurring-work.ts';
 
 // #2194 fix #2: failure cooldown. A source whose autopilot-cycle keeps
 // failing/timing-out re-dispatches every tick today (only SUCCESS gates
@@ -179,7 +182,7 @@ export function readLastFullCycleAt(src: SourceRow): Date | null {
  * a brain may have fresh sync but stale extract/embed. The 60-min floor on
  * full-cycle is the canonical freshness signal for autopilot dispatch.
  */
-export function isSourceStale(src: SourceRow, now = Date.now(), floorMin = FULL_CYCLE_FLOOR_MIN): boolean {
+export function isSourceStale(src: SourceRow, now = Date.now(), floorMin = AUTOPILOT_SOURCE_FLOOR_MINUTES): boolean {
   const last = readLastFullCycleAt(src);
   if (last === null) return true;
   const ageMin = (now - last.getTime()) / 60_000;
@@ -327,7 +330,7 @@ export function selectSourcesForDispatch(
   sources: SourceRow[],
   fanoutMax: number,
   now = Date.now(),
-  floorMin = FULL_CYCLE_FLOOR_MIN,
+  floorMin = AUTOPILOT_SOURCE_FLOOR_MINUTES,
   recentFailures: Map<string, SourceFailure> = new Map(),
   cooldownOpts: CooldownOpts = { baseMin: FAILURE_COOLDOWN_BASE_MIN, capMin: FAILURE_COOLDOWN_CAP_MIN },
 ): { dispatch: SourceRow[]; skippedFresh: SourceRow[]; skippedCap: SourceRow[]; skippedCooldown: SourceRow[] } {
@@ -425,7 +428,7 @@ export async function dispatchPerSource(
   }
 
   const { dispatch, skippedFresh, skippedCap, skippedCooldown } =
-    selectSourcesForDispatch(sources, opts.fanoutMax, Date.now(), FULL_CYCLE_FLOOR_MIN, recentFailures, cooldownOpts);
+    selectSourcesForDispatch(sources, opts.fanoutMax, Date.now(), AUTOPILOT_SOURCE_FLOOR_MINUTES, recentFailures, cooldownOpts);
 
   const dispatched: string[] = [];
   for (const src of dispatch) {
@@ -511,10 +514,8 @@ export async function dispatchPerSource(
   };
 }
 
-const GLOBAL_FLOOR_MIN = 60;
-
 /** Is the brain-wide maintenance overdue? Null/unparseable → overdue. */
-export function isGlobalMaintenanceStale(lastGlobalAtIso: string | null, now = Date.now(), floorMin = GLOBAL_FLOOR_MIN): boolean {
+export function isGlobalMaintenanceStale(lastGlobalAtIso: string | null, now = Date.now(), floorMin = AUTOPILOT_GLOBAL_FLOOR_MINUTES): boolean {
   if (!lastGlobalAtIso) return true;
   const d = new Date(lastGlobalAtIso);
   if (!Number.isFinite(d.getTime())) return true;
@@ -538,8 +539,8 @@ export async function dispatchGlobalMaintenance(
   const emit = opts.emit ?? ((line) => process.stderr.write(line + '\n'));
   const log = opts.log ?? ((line) => console.log(line));
 
-  let floorMin = GLOBAL_FLOOR_MIN;
-  const floorCfg = await engine.getConfig('autopilot.global_floor_min');
+  let floorMin = AUTOPILOT_GLOBAL_FLOOR_MINUTES;
+  const floorCfg = await engine.getConfig(AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY);
   if (floorCfg) {
     const n = parseInt(floorCfg, 10);
     if (Number.isFinite(n) && n >= 1) floorMin = n;

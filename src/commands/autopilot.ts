@@ -39,6 +39,7 @@ import { detectInstallMethod } from './upgrade.ts';
 import { evaluateQuietHours } from '../core/minions/quiet-hours.ts';
 import { inspectLock } from '../core/db-lock.ts';
 import { getProcessBuildReceipt, persistProcessBuildReceipt } from '../core/build-identity.ts';
+import { AUTOPILOT_SOURCE_FLOOR_MINUTES } from '../core/minions/recurring-work.ts';
 
 /**
  * v0.37.7.0 #1162 — classify autopilot reconnect-loop errors.
@@ -905,16 +906,15 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
         const estTotal = plan.reduce((s, r) => s + r.est_seconds, 0);
 
         // Track time since last full cycle for the 60-min floor.
-        const FULL_CYCLE_FLOOR_MIN = 60;
         const minutesSinceLastFull = (Date.now() - lastFullCycleAt) / 60000;
 
         const shouldFullCycle =
-          (score >= 95 && plan.length === 0 && minutesSinceLastFull >= FULL_CYCLE_FLOOR_MIN) ||
+          (score >= 95 && plan.length === 0 && minutesSinceLastFull >= AUTOPILOT_SOURCE_FLOOR_MINUTES) ||
           plan.length > 3 ||
           estTotal >= 300 ||
           score < 70;
 
-        const shouldSleep = score >= 95 && plan.length === 0 && minutesSinceLastFull < FULL_CYCLE_FLOOR_MIN;
+        const shouldSleep = score >= 95 && plan.length === 0 && minutesSinceLastFull < AUTOPILOT_SOURCE_FLOOR_MINUTES;
 
         if (shouldSleep) {
           if (jsonMode) {

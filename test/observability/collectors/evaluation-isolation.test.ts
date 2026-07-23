@@ -40,13 +40,13 @@ describe('phase isolation', () => {
 
     const items = reg.map((e) => {
       if (e.kind === 'source') return evaluateWorkItem(e, sourceEv, NOW);
-      if (e.key === dreamPhaseWorkKey('extract_atoms')) return evaluateWorkItem(e, latePhase, NOW);
-      if (e.key === dreamPhaseWorkKey('sync')) return evaluateWorkItem(e, sourceEv, NOW);
+      if (e.key === dreamPhaseWorkKey('extract_atoms', 'wiki')) return evaluateWorkItem(e, latePhase, NOW);
+      if (e.key === dreamPhaseWorkKey('sync', 'wiki')) return evaluateWorkItem(e, sourceEv, NOW);
       return evaluateWorkItem(e, null, NOW);
     });
 
     const source = items.find((i) => i.key === 'source.wiki')!;
-    const atoms = items.find((i) => i.key === dreamPhaseWorkKey('extract_atoms'))!;
+    const atoms = items.find((i) => i.key === dreamPhaseWorkKey('extract_atoms', 'wiki'))!;
     expect(source.state).toBe('healthy');
     expect(atoms.state).toBe('failed');
     expect(rollupBrainState(items)).toBe('failed');

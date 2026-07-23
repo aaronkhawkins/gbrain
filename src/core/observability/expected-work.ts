@@ -4,9 +4,10 @@
  * Discovery order (KTD4):
  *   1. Registered sources (IngestionSource / sources table)
  *   2. Active-pack Dream phases + core cycle phases that are enabled
- *   3. Known recurring Minion job names
- *   4. Infrastructure (embedding, retrieval, local runtime)
- *   5. Explicit external_work declarations (always instrumentation_missing until 1B)
+ *   3. Scheduler-owned recurring Minion registrations
+ *   4. Generic fact/link projections over existing durable evidence
+ *   5. Infrastructure (embedding, retrieval, local runtime)
+ *   6. Explicit external_work declarations
  *
  * Per-brain observability.work overrides adjust policy without re-declaring work.
  */
@@ -22,7 +23,11 @@ import type {
 } from './types.ts';
 import { defaultRunbookForReason, type ReasonCode } from './reason-codes.ts';
 import type { CyclePhase } from '../cycle.ts';
-import { ALL_PHASES } from '../cycle.ts';
+import { ALL_PHASES, PHASE_SCOPE } from '../cycle.ts';
+import {
+  getAutopilotRecurringRegistrations,
+  type RecurringMinionRegistration,
+} from '../minions/recurring-work.ts';
 
 /** Default cadences (seconds). Tuned for typical single-operator brains. */
 export const DEFAULT_CADENCE = {
@@ -38,8 +43,6 @@ export const DEFAULT_CADENCE = {
   retrieval: null as number | null,
   /** Supervisor/worker freshness. */
   local_runtime: 10 * 60,
-  /** Recurring minion jobs. */
-  minion: 60 * 60,
 } as const;
 
 export const DEFAULT_GRACE = {
@@ -60,18 +63,6 @@ export const CORE_DREAM_PHASES: readonly CyclePhase[] = [
   'orphans',
 ] as const;
 
-/** Known recurring Minion job names (handlers that are scheduled, not one-shot). */
-export const RECURRING_MINION_JOBS: readonly {
-  name: string;
-  required: boolean;
-  cadence_seconds: number;
-  grace_seconds: number;
-}[] = [
-  { name: 'autopilot-cycle', required: true, cadence_seconds: DEFAULT_CADENCE.dream_cycle, grace_seconds: DEFAULT_GRACE.dream_phase },
-  { name: 'autopilot-global-maintenance', required: true, cadence_seconds: DEFAULT_CADENCE.dream_cycle, grace_seconds: DEFAULT_GRACE.dream_phase },
-  { name: 'embed-backfill', required: false, cadence_seconds: DEFAULT_CADENCE.dream_cycle, grace_seconds: DEFAULT_GRACE.dream_phase },
-];
-
 /** Sanitize a free-form id into a stable work-key segment. */
 export function sanitizeWorkSegment(raw: string): string {
   const s = raw.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -83,13 +74,17 @@ export function sourceWorkKey(sourceId: string): string {
   return `source.${sanitizeWorkSegment(sourceId)}`;
 }
 
-export function dreamPhaseWorkKey(phase: string): string {
-  return `dream.${sanitizeWorkSegment(phase)}`;
+export function dreamPhaseWorkKey(phase: string, sourceId?: string): string {
+  const base = `dream.${sanitizeWorkSegment(phase)}`;
+  return sourceId ? `${base}.${sanitizeWorkSegment(sourceId)}` : base;
 }
 
-export function minionWorkKey(jobName: string): string {
-  return `minion.${sanitizeWorkSegment(jobName)}`;
+export function minionWorkKey(jobName: string, sourceId?: string): string {
+  const base = `minion.${sanitizeWorkSegment(jobName)}`;
+  return sourceId ? `${base}.${sanitizeWorkSegment(sourceId)}` : base;
 }
+
+export type DiscoveryAxis = 'sources' | 'dream_phases';
 
 export interface RegistryInput {
   /** Registered source ids from the brain DB. */
@@ -99,6 +94,12 @@ export interface RegistryInput {
    * unioned with core phases and config-enabled opt-in phases.
    */
   enabledDreamPhases: string[];
+  /** Sources with scheduler-owned recurring cycles (normally local-path sources). */
+  scheduledSourceIds?: string[];
+  /** Scheduler registrations/cadence. Defaults to the native autopilot registry. */
+  recurringMinions?: RecurringMinionRegistration[];
+  /** Axes that could not be discovered and must stay visibly unknown. */
+  discoveryFailures?: DiscoveryAxis[];
   /** Config-disabled phases (explicit off). */
   disabledDreamPhases?: string[];
   /** Observability config overrides. */
@@ -137,23 +138,37 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
   const disabledPhases = new Set(input.disabledDreamPhases ?? []);
   for (const phase of input.enabledDreamPhases) {
     if (disabledPhases.has(phase)) continue;
-    const key = dreamPhaseWorkKey(phase);
-    entries.push(applyOverride({
-      key,
-      kind: 'dream_phase',
-      enabled: true,
-      required: true,
-      criticality: 'required',
-      cadence_seconds: DEFAULT_CADENCE.dream_phase,
-      grace_seconds: DEFAULT_GRACE.dream_phase,
-      evidence_adapter: 'dream_phase',
-      selector: phase,
-      repair_runbook: 'missed-work',
-    }, obs.work?.[key]));
+    const phaseScope = PHASE_SCOPE[phase as CyclePhase] ?? 'global';
+    const sourceScoped = phaseScope !== 'global' && input.sourceIds.length > 0;
+    const scopes: Array<{ type: 'global' } | { type: 'source'; source_id: string }> =
+      sourceScoped
+        ? input.sourceIds.map((sourceId) => ({ type: 'source', source_id: sourceId }))
+        : [{ type: 'global' }];
+    for (const scope of scopes) {
+      const sourceId = scope.type === 'source' ? scope.source_id : undefined;
+      const key = dreamPhaseWorkKey(phase, sourceId);
+      entries.push(applyOverride({
+        key,
+        kind: 'dream_phase',
+        enabled: true,
+        required: true,
+        criticality: 'required',
+        cadence_seconds: DEFAULT_CADENCE.dream_phase,
+        grace_seconds: DEFAULT_GRACE.dream_phase,
+        evidence_adapter: 'dream_phase',
+        selector: phase,
+        scope,
+        repair_runbook: 'missed-work',
+      }, obs.work?.[key]));
+    }
   }
 
-  for (const job of RECURRING_MINION_JOBS) {
-    const key = minionWorkKey(job.name);
+  const recurringMinions = input.recurringMinions ?? getAutopilotRecurringRegistrations({
+    scheduledSourceIds: input.scheduledSourceIds ?? input.sourceIds,
+  });
+  for (const job of recurringMinions) {
+    const sourceId = job.scope.type === 'source' ? job.scope.source_id : undefined;
+    const key = minionWorkKey(job.name, sourceId);
     entries.push(applyOverride({
       key,
       kind: 'minion',
@@ -164,8 +179,46 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
       grace_seconds: job.grace_seconds,
       evidence_adapter: 'minion_job',
       selector: job.name,
+      scope: job.scope,
       repair_runbook: 'missed-work',
     }, obs.work?.[key]));
+  }
+
+  for (const sourceId of input.sourceIds) {
+    const segment = sanitizeWorkSegment(sourceId);
+    const factKey = `facts.pending.${segment}`;
+    entries.push(applyOverride({
+      key: factKey,
+      kind: 'fact',
+      enabled: true,
+      required: false,
+      criticality: 'optional',
+      cadence_seconds: null,
+      grace_seconds: 0,
+      evidence_adapter: 'facts',
+      selector: sourceId,
+      scope: { type: 'source', source_id: sourceId },
+      backlog_warn: 100,
+      backlog_fail: 1_000,
+      repair_runbook: 'backlog',
+    }, obs.work?.[factKey]));
+
+    const linkKey = `links.extraction.${segment}`;
+    entries.push(applyOverride({
+      key: linkKey,
+      kind: 'link',
+      enabled: true,
+      required: false,
+      criticality: 'optional',
+      cadence_seconds: null,
+      grace_seconds: 0,
+      evidence_adapter: 'links',
+      selector: sourceId,
+      scope: { type: 'source', source_id: sourceId },
+      backlog_warn: 1,
+      backlog_fail: 500,
+      repair_runbook: 'backlog',
+    }, obs.work?.[linkKey]));
   }
 
   if (includeInfra) {
@@ -228,6 +281,23 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
     entries.push(externalToEntry(ext));
   }
 
+  for (const axis of new Set(input.discoveryFailures ?? [])) {
+    const key = `discovery.${axis}`;
+    entries.push({
+      key,
+      kind: 'infrastructure',
+      enabled: true,
+      required: true,
+      criticality: 'required',
+      cadence_seconds: null,
+      grace_seconds: 0,
+      evidence_adapter: 'discovery',
+      selector: axis,
+      scope: { type: 'global' },
+      repair_runbook: 'observer-missing',
+    });
+  }
+
   // Stable order for golden snapshots.
   return entries.sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -257,10 +327,13 @@ function externalToEntry(ext: ExternalWorkDeclaration): ExpectedWorkEntry {
     enabled: ext.enabled !== false,
     required: ext.required === true,
     criticality: ext.criticality ?? (ext.required ? 'required' : 'optional'),
-    cadence_seconds: null,
-    grace_seconds: 0,
-    evidence_adapter: 'none',
-    selector: ext.key,
+    cadence_seconds: ext.cadence_seconds ?? null,
+    grace_seconds: ext.grace_seconds ?? 0,
+    evidence_adapter: ext.evidence?.adapter ?? 'none',
+    selector: ext.evidence?.selector ?? ext.key,
+    ...(ext.evidence?.source_id
+      ? { scope: { type: 'source' as const, source_id: ext.evidence.source_id } }
+      : { scope: { type: 'global' as const } }),
     repair_runbook: 'missed-work',
   };
 }

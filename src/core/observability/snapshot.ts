@@ -28,6 +28,11 @@ import type {
 } from './types.ts';
 import { OPERATIONAL_SNAPSHOT_SCHEMA_VERSION } from './types.ts';
 import { collectAllEvidence } from './collectors/index.ts';
+import {
+  AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY,
+  AUTOPILOT_GLOBAL_FLOOR_MINUTES,
+  getAutopilotRecurringRegistrations,
+} from '../minions/recurring-work.ts';
 
 export interface BuildOperationalSnapshotOpts {
   engine: BrainEngine | null;
@@ -77,13 +82,20 @@ export async function discoverRegistryInput(
 ): Promise<RegistryInput> {
   const observability = readObservability(config);
   const sourceIds: string[] = [];
+  const scheduledSourceIds: string[] = [];
+  const discoveryFailures: RegistryInput['discoveryFailures'] = [];
   if (engine) {
     try {
       const sources = await loadAllSources(engine, { includeArchived: false });
-      for (const s of sources) sourceIds.push(s.id);
+      for (const s of sources) {
+        sourceIds.push(s.id);
+        if (s.local_path) scheduledSourceIds.push(s.id);
+      }
     } catch {
-      /* empty source list — collectors will mark evidence unknown */
+      discoveryFailures.push('sources');
     }
+  } else {
+    discoveryFailures.push('sources');
   }
 
   let packPhases: string[] = [];
@@ -98,7 +110,10 @@ export async function discoverRegistryInput(
       if (Array.isArray(phases)) packPhases = phases.filter((p): p is string => typeof p === 'string');
     } catch {
       packPhases = [];
+      discoveryFailures.push('dream_phases');
     }
+  } else {
+    discoveryFailures.push('dream_phases');
   }
 
   // Opt-in phase flags from config (DB or file plane).
@@ -119,10 +134,26 @@ export async function discoverRegistryInput(
   }
 
   const enabledDreamPhases = resolveEnabledDreamPhases({ packPhases, phaseEnabled });
+  let globalFloorMinutes = AUTOPILOT_GLOBAL_FLOOR_MINUTES;
+  if (engine) {
+    try {
+      const raw = await engine.getConfig(AUTOPILOT_GLOBAL_FLOOR_CONFIG_KEY);
+      const parsed = Number.parseInt(raw ?? '', 10);
+      if (Number.isFinite(parsed) && parsed >= 1) globalFloorMinutes = parsed;
+    } catch {
+      // The scheduler registration still exists; use its native default.
+    }
+  }
 
   return {
     sourceIds,
+    scheduledSourceIds,
     enabledDreamPhases,
+    recurringMinions: getAutopilotRecurringRegistrations({
+      scheduledSourceIds,
+      globalFloorMinutes,
+    }),
+    discoveryFailures,
     observability,
     includeInfrastructure: true,
   };
@@ -142,6 +173,7 @@ export async function buildOperationalSnapshot(
   if (!registry) {
     const input = await discoverRegistryInput(opts.engine, config);
     registry = buildExpectedWorkRegistry(input);
+    if ((input.discoveryFailures?.length ?? 0) > 0) partial = true;
   }
 
   let evidenceByKey = opts.evidenceByKey;
