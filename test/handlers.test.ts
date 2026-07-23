@@ -69,6 +69,19 @@ describe('registerBuiltinHandlers', () => {
 });
 
 describe('facts-absorb handler', () => {
+  test('normalizes the legacy unversioned payload into the current durable contract', async () => {
+    const { parseFactsAbsorbJobData } = await import('../src/core/facts/durable-job.ts');
+    expect(parseFactsAbsorbJobData({ slug: 'meetings/legacy-payload' })).toEqual({
+      schema_version: 1,
+      slug: 'meetings/legacy-payload',
+      sourceId: 'default',
+      sessionId: null,
+      source: 'sync:import',
+      notabilityFilter: 'all',
+      contentHash: '',
+    });
+  });
+
   test('loads the persisted page and completes fact extraction after enqueueing process exits', async () => {
     const slug = 'meetings/durable-worker-test';
     const body = 'A durable meeting note with enough substantive content for extraction. '.repeat(3);

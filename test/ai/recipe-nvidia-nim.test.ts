@@ -3,6 +3,17 @@ import { getRecipe } from '../../src/core/ai/recipes/index.ts';
 import { defaultResolveAuth } from '../../src/core/ai/gateway.ts';
 
 describe('recipe: nvidia-nim', () => {
+  test('uses a local provider identity that cannot alias hosted NVIDIA', () => {
+    const local = getRecipe('nvidia-nim');
+    expect(local).toBeDefined();
+    expect(local!.id).toBe('nvidia-nim');
+    expect(local!.auth_env.required).toEqual([]);
+    expect(local!.auth_env.optional).toContain('NVIDIA_NIM_API_KEY');
+    // Hosted `nvidia` first arrives on the pinned upstream side. U4 must add
+    // that recipe without renaming or aliasing this local contract.
+    expect(getRecipe('nvidia')).toBeUndefined();
+  });
+
   test('registers the official fixed-dimension embedding model', () => {
     const recipe = getRecipe('nvidia-nim');
     expect(recipe).toBeDefined();

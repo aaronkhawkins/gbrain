@@ -134,11 +134,14 @@ describe('managed fork release builder', () => {
     const firstTarget = readlinkSync(join(fixture.prefix, 'current'));
     const firstDir = join(fixture.prefix, firstTarget);
     const firstManifest = JSON.parse(readFileSync(join(firstDir, 'release-manifest.json'), 'utf8'));
+    expect(firstManifest.schema_version).toBe(1);
     expect(firstManifest.channel).toBe('private-research-fork');
     expect(firstManifest.tag).toBe('research-v1');
     expect(firstManifest.clean).toBe(true);
     expect(firstManifest.sha).toMatch(/^[0-9a-f]{40}$/);
-    expect(firstManifest.upstream_base).toContain('upstream-base@');
+    expect(firstManifest.upstream_ref).toBe('upstream-base');
+    expect(firstManifest.upstream_base).toMatch(/^upstream-base@[0-9a-f]{40}$/);
+    expect(firstManifest.built_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(firstManifest.binary_sha256).toMatch(/^[0-9a-f]{64}$/);
     const identity = JSON.parse(Bun.spawnSync(
       [join(firstDir, 'gbrain'), 'version', '--json'],
