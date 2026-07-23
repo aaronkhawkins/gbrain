@@ -1604,6 +1604,30 @@ export async function runCycle(
     }
   }
 
+  // Every mutating cycle entrypoint (Dream, queued autopilot, and inline
+  // autopilot) is a startup/periodic recovery opportunity for canonical files
+  // committed before a prior process died during projection. Keep this in the
+  // shared cycle primitive so non-Dream schedulers cannot strand file-only
+  // generated knowledge indefinitely.
+  if (engine && brainDir && !dryRun && needsLock) {
+    try {
+      const { reconcileGeneratedOutputs } = await import('./generated-output-writer.ts');
+      const repaired = await reconcileGeneratedOutputs(engine, {
+        sourceId: cycleSourceId ?? 'default',
+        brainDir,
+      });
+      if (repaired.failed > 0) {
+        process.stderr.write(
+          `[cycle] generated-output reconciliation degraded: ${repaired.failed} receipt(s) unresolved\n`,
+        );
+      }
+    } catch (error) {
+      process.stderr.write(
+        `[cycle] generated-output reconciliation failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
   // #1972: reap dead-holder sync/cycle locks at cycle start — before the sync
   // phase needs them — so a crashed sync's stranded lock self-heals THIS tick
   // instead of waiting out its TTL. Best-effort, namespace-scoped + host-scoped;
