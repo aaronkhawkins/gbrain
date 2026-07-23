@@ -55,7 +55,8 @@ describe('observer collector query efficiency', () => {
     expect(calls.filter((sql) => sql.includes('FROM content_chunks'))).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('FROM pages'))).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('FROM minion_jobs'))).toHaveLength(1);
-    expect(result.evidence.get('source.alpha')).toMatchObject({
+    const sourceEntry = registry.find((entry) => entry.evidence_adapter === 'ingestion_source')!;
+    expect(result.evidence.get(sourceEntry.key)).toMatchObject({
       oldest_pending_age_seconds: 0,
     });
     expect(result.evidence.get('embedding.coverage')).toMatchObject({
@@ -88,6 +89,7 @@ describe('observer collector query efficiency', () => {
     } as unknown as BrainEngine;
     const entry = buildExpectedWorkRegistry({
       sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
     }).find((candidate) => candidate.evidence_adapter === 'facts')!;
