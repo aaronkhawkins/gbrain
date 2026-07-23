@@ -247,6 +247,12 @@ describe('MinionSupervisor', () => {
         const events = readAudit(h.auditDir);
         const eventTypes = events.map(e => e.event);
         expect(eventTypes).toContain('started');
+        const started = events.find(e => e.event === 'started') as Record<string, any>;
+        expect(started.build_receipt).toMatchObject({
+          schema_version: 1,
+          role: 'supervisor',
+          build: { artifact: expect.any(String), target: { os: expect.any(String) } },
+        });
         expect(eventTypes.filter(t => t === 'worker_spawned').length).toBeGreaterThanOrEqual(3);
         expect(eventTypes.filter(t => t === 'worker_exited').length).toBeGreaterThanOrEqual(3);
         expect(eventTypes).toContain('max_crashes_exceeded');

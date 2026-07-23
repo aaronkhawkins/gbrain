@@ -45,6 +45,9 @@ describe('managed fork upgrade posture', () => {
       channel: 'private-research-fork', tag: 'fork-v1', sha: 'abc123',
       upstream_base: 'v0.42.59.0', clean: true, artifact: 'compiled',
       managed_fork: true, upgrade_posture: 'fork-managed',
+      target: {
+        os: 'darwin', arch: 'arm64', executable_format: 'mach-o', runtime_abi: 'bun-test',
+      },
     };
     expect(managedForkUpgradeGuard(identity).allowed).toBe(false);
   });

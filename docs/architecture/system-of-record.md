@@ -1,8 +1,10 @@
 # System of record
 
-**The GitHub repo (markdown + frontmatter) is the system of record.
-The Postgres/PGLite database is a derived cache. We do not back up
-the database — we rebuild it from the repo.**
+**The GitHub repo (markdown + frontmatter) is the knowledge system of record.
+The Postgres/PGLite database is a derived retrieval projection plus durable
+runtime state. Knowledge can be rebuilt from the repo, but managed cutovers
+still require an engine-correct backup for queue, history, and rollback
+evidence.**
 
 This document is the canonical reference for that contract. Every code
 path that writes user-knowledge state should match the pattern
@@ -13,17 +15,22 @@ enforces it programmatically.
 
 The DB is a derived index over the markdown content. It exists to make
 search fast, to dedup embedding-similar claims, to materialize the
-cross-page graph. None of that data is irreplaceable — as long as the
-markdown is intact, `gbrain sync && gbrain extract all` rebuilds the
-entire DB from scratch.
+cross-page graph. Knowledge rows are reconstructible as long as the markdown
+is intact: `gbrain sync && gbrain extract all` rebuilds them. DB-only runtime
+and audit state is not reconstructed by that operation.
 
 This means:
 
-- **Disaster recovery is one command.** If your DB volume corrupts, if
-  Postgres eats itself, if PGLite's WASM lock wedges — you don't need
-  a backup. You wipe the DB, re-import from your brain repo, and the
+- **Knowledge recovery is one command.** If your DB volume corrupts, if
+  Postgres eats itself, if PGLite's WASM lock wedges, you can wipe the
+  derived projection and re-import from your brain repo. The
   derived state regenerates. v0.32.3 ships `gbrain rebuild
   --confirm-destructive` as the documented one-liner.
+- **Deployment rollback is separate.** Before a schema-changing managed
+  cutover, take and restore-test an encrypted quiescent backup. It preserves
+  queue state, runtime history, configuration, and evidence needed to decide
+  whether binary rollback is safe. After normal writes resume, restore is not
+  safe without tested lossless delta replay.
 - **Multi-machine sync is git.** Your brain is a repo. Push from one
   machine, pull from another, and the second machine's DB rebuilds on
   its next sync. No "back up the database" step.

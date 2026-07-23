@@ -46,6 +46,7 @@ import { dirname } from 'path';
 import type { BrainEngine } from '../engine.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../db-lock.ts';
 import { currentBrainId } from './worker-registry.ts';
+import { getProcessBuildReceipt, persistProcessBuildReceipt } from '../build-identity.ts';
 
 export type SupervisorEvent =
   | 'started'
@@ -572,7 +573,10 @@ export class MinionSupervisor {
     }
 
     // 5. Announce start.
+    const supervisorReceipt = getProcessBuildReceipt('supervisor');
+    persistProcessBuildReceipt(supervisorReceipt);
     this.emit('started', {
+      build_receipt: supervisorReceipt,
       supervisor_pid: process.pid,
       pid_file: this.opts.pidFile,
       concurrency: this.opts.concurrency,

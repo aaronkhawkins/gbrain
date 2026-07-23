@@ -48,6 +48,11 @@ if (process.argv[2] === 'version' && process.argv.includes('--json')) {
     sha: __GBRAIN_BUILD_SHA__, upstream_base: __GBRAIN_UPSTREAM_BASE__,
     clean: __GBRAIN_BUILD_CLEAN__, artifact: 'compiled', managed_fork: true,
     upgrade_posture: 'fork-managed',
+    target: {
+      os: process.platform, arch: process.arch,
+      executable_format: process.platform === 'darwin' ? 'mach-o' : process.platform === 'linux' ? 'elf' : 'unknown',
+      runtime_abi: \`bun-\${Bun.version}\`,
+    },
   }}));
 } else process.exit(2);
 `);
@@ -80,7 +85,16 @@ function run(
 }
 
 function buildArgs(prefix: string, tag: string): string[] {
-  return ['build', '--prefix', prefix, '--tag', tag, '--upstream-ref', 'upstream-base'];
+  return [
+    'build', '--prefix', prefix, '--tag', tag, '--upstream-ref', 'upstream-base',
+    '--schema-min', '122', '--schema-max', '124',
+  ];
+}
+
+function builtReleaseId(stdout: string): string {
+  const match = stdout.match(/(?:^|\n)built ([A-Za-z0-9._-]+)\s*$/);
+  if (!match) throw new Error(`missing built release id in output: ${stdout}`);
+  return match[1];
 }
 
 describe('managed fork release builder', () => {
@@ -131,10 +145,12 @@ describe('managed fork release builder', () => {
     const fixture = makeRepo();
     const first = run(fixture.repo, fixture.script, buildArgs(fixture.prefix, 'research-v1'));
     expect(first.exitCode).toBe(0);
-    const firstTarget = readlinkSync(join(fixture.prefix, 'current'));
-    const firstDir = join(fixture.prefix, firstTarget);
+    expect(existsSync(join(fixture.prefix, 'current'))).toBe(false);
+    const firstId = builtReleaseId(first.stdout);
+    const firstDir = join(fixture.prefix, 'releases', firstId);
     const firstManifest = JSON.parse(readFileSync(join(firstDir, 'release-manifest.json'), 'utf8'));
-    expect(firstManifest.schema_version).toBe(1);
+    expect(firstManifest.schema_version).toBe(2);
+    expect(firstManifest.version).toBe('test');
     expect(firstManifest.channel).toBe('private-research-fork');
     expect(firstManifest.tag).toBe('research-v1');
     expect(firstManifest.clean).toBe(true);
@@ -143,6 +159,14 @@ describe('managed fork release builder', () => {
     expect(firstManifest.upstream_base).toMatch(/^upstream-base@[0-9a-f]{40}$/);
     expect(firstManifest.built_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(firstManifest.binary_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(firstManifest.schema_compatibility).toEqual({ min: 122, max: 124 });
+    expect(firstManifest.required_runtime_assets).toEqual([]);
+    expect(firstManifest.target.os).toBe(process.platform);
+    const selectFirst = run(fixture.repo, fixture.script, [
+      'select', '--prefix', fixture.prefix, '--release-id', firstId,
+    ]);
+    expect(selectFirst.exitCode).toBe(0);
+    const firstTarget = readlinkSync(join(fixture.prefix, 'current'));
     const identity = JSON.parse(Bun.spawnSync(
       [join(firstDir, 'gbrain'), 'version', '--json'],
       { stdout: 'pipe' },
@@ -151,12 +175,46 @@ describe('managed fork release builder', () => {
     expect(identity.build.sha).toBe(firstManifest.sha);
     expect(identity.build.upgrade_posture).toBe('fork-managed');
 
+    const installedPrefix = join(fixture.root, 'installed-prefix');
+    const install = run(fixture.repo, fixture.script, [
+      'install', '--prefix', installedPrefix, '--from-release', firstDir,
+    ]);
+    expect(install.exitCode).toBe(0);
+    const installedDir = join(installedPrefix, 'releases', firstId);
+    expect(readFileSync(join(installedDir, 'gbrain')).equals(readFileSync(join(firstDir, 'gbrain')))).toBe(true);
+    expect(readFileSync(join(installedDir, 'release-manifest.json')).equals(
+      readFileSync(join(firstDir, 'release-manifest.json')),
+    )).toBe(true);
+    expect(existsSync(join(installedPrefix, 'current'))).toBe(false);
+
+    // A previous release built by the manifest-v1 tool remains rollbackable,
+    // while new selection still requires a v2 candidate.
+    const legacyManifest = { ...firstManifest, schema_version: 1 };
+    delete legacyManifest.version;
+    delete legacyManifest.target;
+    delete legacyManifest.schema_compatibility;
+    delete legacyManifest.required_runtime_assets;
+    const legacyManifestPath = join(firstDir, 'release-manifest.json');
+    writeFileSync(legacyManifestPath, `${JSON.stringify(legacyManifest, null, 2)}\n`);
+    const legacyHash = new Bun.CryptoHasher('sha256')
+      .update(readFileSync(legacyManifestPath))
+      .digest('hex');
+    writeFileSync(
+      join(firstDir, 'release-manifest.sha256'),
+      `${legacyHash}  release-manifest.json\n`,
+    );
+
     writeFileSync(join(fixture.repo, 'release-2.txt'), 'second release\n');
     git(fixture.repo, 'add', '.');
     git(fixture.repo, 'commit', '-qm', 'release 2');
     git(fixture.repo, 'tag', 'research-v2');
     const second = run(fixture.repo, fixture.script, buildArgs(fixture.prefix, 'research-v2'));
     expect(second.exitCode).toBe(0);
+    const secondId = builtReleaseId(second.stdout);
+    const selectSecond = run(fixture.repo, fixture.script, [
+      'select', '--prefix', fixture.prefix, '--release-id', secondId,
+    ]);
+    expect(selectSecond.exitCode).toBe(0);
     const secondTarget = readlinkSync(join(fixture.prefix, 'current'));
     expect(secondTarget).not.toBe(firstTarget);
     expect(readlinkSync(join(fixture.prefix, 'previous'))).toBe(firstTarget);

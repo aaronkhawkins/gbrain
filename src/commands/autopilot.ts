@@ -38,6 +38,7 @@ import { logSelfUpgrade } from '../core/audit/self-upgrade-audit.ts';
 import { detectInstallMethod } from './upgrade.ts';
 import { evaluateQuietHours } from '../core/minions/quiet-hours.ts';
 import { inspectLock } from '../core/db-lock.ts';
+import { getProcessBuildReceipt, persistProcessBuildReceipt } from '../core/build-identity.ts';
 
 /**
  * v0.37.7.0 #1162 — classify autopilot reconnect-loop errors.
@@ -415,6 +416,12 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   } catch { /* best-effort */ }
 
   console.log(`Autopilot starting. Repo: ${repoPath}, interval: ${baseInterval}s`);
+  const schedulerReceipt = getProcessBuildReceipt('scheduler');
+  persistProcessBuildReceipt(schedulerReceipt);
+  console.log(JSON.stringify({
+    event: 'process_build_receipt',
+    receipt: schedulerReceipt,
+  }));
 
   // Mode resolution: Minions dispatch when the user has opted in AND the
   // worker daemon can actually run (Postgres only; PGLite's exclusive file

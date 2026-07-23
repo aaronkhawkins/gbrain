@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and select immutable, identifiable managed-fork releases.
+# Build, verify, and explicitly select immutable managed-fork releases.
 # All tests and dry runs should point --prefix at an isolated directory.
 set -euo pipefail
 
@@ -7,6 +7,9 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/build-fork-release.sh build --prefix DIR --tag TAG [options]
+  scripts/build-fork-release.sh install --prefix DIR --from-release DIR [--smoke-command FILE]
+  scripts/build-fork-release.sh verify --prefix DIR --release-id ID [--smoke-command FILE]
+  scripts/build-fork-release.sh select --prefix DIR --release-id ID [--smoke-command FILE]
   scripts/build-fork-release.sh rollback --prefix DIR [--smoke-command FILE]
 
 Build options:
@@ -14,11 +17,15 @@ Build options:
   --upstream-ref REF     Upstream base ref to record (default: origin/master)
   --bun FILE             Bun executable (default: bun from PATH)
   --smoke-command FILE   Additional smoke program; receives BINARY MANIFEST
+  --schema-min N         Oldest schema accepted by the candidate (required)
+  --schema-max N         Newest schema accepted by the candidate (required)
+  --from-release DIR     Verified immutable release directory to install
 
 The build command requires a clean checkout whose HEAD is exactly TAG. It
 builds below DIR/releases/TAG-SHA, verifies the embedded identity and checksums,
-then atomically selects it through DIR/current while retaining DIR/previous.
-Rollback verifies and smoke-tests DIR/previous before atomically selecting it.
+and leaves selection unchanged. Select is a separate verified operation that
+atomically updates DIR/current while retaining DIR/previous. Rollback verifies
+and smoke-tests DIR/previous before atomically selecting it.
 EOF
 }
 
@@ -67,13 +74,26 @@ verify_release() {
     const manifest = JSON.parse(readFileSync(process.env.RELEASE_MANIFEST, "utf8"));
     const identity = JSON.parse(process.env.RELEASE_IDENTITY);
     const build = identity.build;
+    const v2Mismatch = manifest.schema_version === 2 && (
+      identity.version !== manifest.version ||
+      build.target?.os !== manifest.target?.os ||
+      build.target?.arch !== manifest.target?.arch ||
+      build.target?.executable_format !== manifest.target?.executable_format ||
+      build.target?.runtime_abi !== manifest.target?.runtime_abi ||
+      !Number.isInteger(manifest.schema_compatibility?.min) ||
+      !Number.isInteger(manifest.schema_compatibility?.max) ||
+      manifest.schema_compatibility.min > manifest.schema_compatibility.max ||
+      !Array.isArray(manifest.required_runtime_assets)
+    );
     const mismatch =
+      ![1, 2].includes(manifest.schema_version) ||
       build.channel !== manifest.channel ||
       build.tag !== manifest.tag ||
       build.sha !== manifest.sha ||
       build.upstream_base !== manifest.upstream_base ||
       build.clean !== true || build.managed_fork !== true ||
-      build.upgrade_posture !== "fork-managed" || build.artifact !== "compiled";
+      build.upgrade_posture !== "fork-managed" || build.artifact !== "compiled" ||
+      v2Mismatch;
     if (mismatch) process.exit(1);
   ' || die "compiled identity does not match release manifest"
 
@@ -112,6 +132,10 @@ channel="private-research-fork"
 upstream_ref="origin/master"
 bun_bin="bun"
 smoke_command=""
+release_id=""
+schema_min=""
+schema_max=""
+from_release=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -121,6 +145,10 @@ while [ "$#" -gt 0 ]; do
     --upstream-ref) [ "$#" -ge 2 ] || die "--upstream-ref requires a value"; upstream_ref="$2"; shift 2 ;;
     --bun) [ "$#" -ge 2 ] || die "--bun requires a value"; bun_bin="$2"; shift 2 ;;
     --smoke-command) [ "$#" -ge 2 ] || die "--smoke-command requires a value"; smoke_command="$2"; shift 2 ;;
+    --release-id) [ "$#" -ge 2 ] || die "--release-id requires a value"; release_id="$2"; shift 2 ;;
+    --schema-min) [ "$#" -ge 2 ] || die "--schema-min requires a value"; schema_min="$2"; shift 2 ;;
+    --schema-max) [ "$#" -ge 2 ] || die "--schema-max requires a value"; schema_max="$2"; shift 2 ;;
+    --from-release) [ "$#" -ge 2 ] || die "--from-release requires a value"; from_release="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -139,6 +167,9 @@ case "$command_name" in
     [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]] || die "tag contains unsafe characters"
     [[ "$channel" =~ ^[A-Za-z0-9._/-]+$ ]] || die "channel contains unsafe characters"
     [[ "$upstream_ref" =~ ^[A-Za-z0-9._/-]+$ ]] || die "upstream ref contains unsafe characters"
+    [[ "$schema_min" =~ ^[0-9]+$ ]] || die "--schema-min is required and must be an integer"
+    [[ "$schema_max" =~ ^[0-9]+$ ]] || die "--schema-max is required and must be an integer"
+    [ "$schema_min" -le "$schema_max" ] || die "--schema-min must not exceed --schema-max"
 
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git checkout"
     repo_root=$(cd "$repo_root" && pwd -P)
@@ -174,10 +205,17 @@ case "$command_name" in
     source_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
     built_at=$(TZ=UTC date -r "$source_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$source_epoch" '+%Y-%m-%dT%H:%M:%SZ')
 
+    target_os=$("$staging/gbrain" version --json | "$bun_bin" -e 'const x=await Bun.stdin.json(); console.log(x.build.target.os)')
+    target_arch=$("$staging/gbrain" version --json | "$bun_bin" -e 'const x=await Bun.stdin.json(); console.log(x.build.target.arch)')
+    target_format=$("$staging/gbrain" version --json | "$bun_bin" -e 'const x=await Bun.stdin.json(); console.log(x.build.target.executable_format)')
+    target_abi=$("$staging/gbrain" version --json | "$bun_bin" -e 'const x=await Bun.stdin.json(); console.log(x.build.target.runtime_abi)')
+    build_version=$("$staging/gbrain" version --json | "$bun_bin" -e 'const x=await Bun.stdin.json(); console.log(x.version)')
+
     cat > "$staging/release-manifest.json" <<EOF
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "release_id": "$release_id",
+  "version": "$build_version",
   "channel": "$channel",
   "tag": "$tag",
   "sha": "$sha",
@@ -185,7 +223,18 @@ case "$command_name" in
   "upstream_base": "$upstream_base",
   "clean": true,
   "built_at": "$built_at",
-  "binary_sha256": "$binary_sha"
+  "binary_sha256": "$binary_sha",
+  "target": {
+    "os": "$target_os",
+    "arch": "$target_arch",
+    "executable_format": "$target_format",
+    "runtime_abi": "$target_abi"
+  },
+  "schema_compatibility": {
+    "min": $schema_min,
+    "max": $schema_max
+  },
+  "required_runtime_assets": []
 }
 EOF
     manifest_sha=$(sha256_file "$staging/release-manifest.json")
@@ -196,8 +245,55 @@ EOF
     [ -z "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ] || die "source checkout changed during build"
     mv "$staging" "$final_dir"
     trap - EXIT INT TERM
-    select_release "$prefix" "$release_id"
-    printf 'selected %s\n' "$release_id"
+    printf 'built %s\n' "$release_id"
+    ;;
+
+  verify|select)
+    [ -n "$release_id" ] || die "--release-id is required"
+    [[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "release id is unsafe"
+    [ -d "$prefix/releases/$release_id" ] || die "release does not exist: $release_id"
+    verify_release "$prefix/releases/$release_id" "$smoke_command"
+    if [ "$command_name" = "select" ]; then
+      manifest_schema=$(RELEASE_MANIFEST="$prefix/releases/$release_id/release-manifest.json" "$bun_bin" -e '
+        import { readFileSync } from "fs";
+        console.log(JSON.parse(readFileSync(process.env.RELEASE_MANIFEST, "utf8")).schema_version);
+      ')
+      [ "$manifest_schema" = "2" ] || die "selection requires a manifest v2 candidate"
+      select_release "$prefix" "$release_id"
+      printf 'selected %s\n' "$release_id"
+    else
+      printf 'verified %s\n' "$release_id"
+    fi
+    ;;
+
+  install)
+    [ -n "$from_release" ] || die "--from-release is required"
+    [ -d "$from_release" ] || die "source release does not exist"
+    [ ! -L "$from_release" ] || die "source release must not be a symlink"
+    from_release=$(cd "$from_release" && pwd -P)
+    verify_release "$from_release" "$smoke_command"
+    release_id=$(RELEASE_MANIFEST="$from_release/release-manifest.json" "$bun_bin" -e '
+      import { readFileSync } from "fs";
+      const manifest = JSON.parse(readFileSync(process.env.RELEASE_MANIFEST, "utf8"));
+      if (manifest.schema_version !== 2) process.exit(1);
+      console.log(manifest.release_id);
+    ') || die "install requires a manifest v2 source"
+    [[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "source release id is unsafe"
+    mkdir -p "$prefix/releases"
+    [ ! -L "$prefix/releases" ] || die "release directory must not be a symlink"
+    final_dir="$prefix/releases/$release_id"
+    [ ! -e "$final_dir" ] || die "immutable release already exists: $release_id"
+    staging="$prefix/releases/.staging-${release_id}-$$"
+    cleanup() { rm -rf "$staging"; }
+    trap cleanup EXIT INT TERM
+    mkdir -m 0755 "$staging"
+    cp -p "$from_release/gbrain" "$staging/gbrain"
+    cp -p "$from_release/release-manifest.json" "$staging/release-manifest.json"
+    cp -p "$from_release/release-manifest.sha256" "$staging/release-manifest.sha256"
+    verify_release "$staging" "$smoke_command"
+    mv "$staging" "$final_dir"
+    trap - EXIT INT TERM
+    printf 'installed %s\n' "$release_id"
     ;;
 
   rollback)

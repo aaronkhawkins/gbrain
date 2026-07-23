@@ -45,14 +45,37 @@ scripts/build-fork-release.sh build \
   --prefix /path/to/isolated/gbrain-fork \
   --tag research-v0.42.59.0-1 \
   --channel private-research-fork \
-  --upstream-ref origin/master
+  --upstream-ref origin/master \
+  --schema-min 122 \
+  --schema-max 124
 ```
 
 The builder compiles `gbrain`, embeds the channel, tag, SHA, upstream base and
-clean-tree state, and repeats them in `release-manifest.json`. The adjacent
-checksum protects the manifest; the manifest protects the binary. A failed
-build, identity check or smoke command never changes `current` or `previous`.
-Successful selection uses relative, atomic symlinks:
+clean-tree state, and repeats them in `release-manifest.json` with the target
+OS, architecture, executable format, runtime ABI, schema compatibility, and
+required runtime assets. The adjacent checksum protects the manifest; the
+manifest protects the binary. Build never changes `current` or `previous`.
+
+Verify and select through the same authority:
+
+```sh
+scripts/build-fork-release.sh install \
+  --prefix /path/to/second-compatible-target \
+  --from-release /path/to/first-prefix/releases/RELEASE_ID
+scripts/build-fork-release.sh verify \
+  --prefix /path/to/isolated/gbrain-fork \
+  --release-id RELEASE_ID
+scripts/build-fork-release.sh select \
+  --prefix /path/to/isolated/gbrain-fork \
+  --release-id RELEASE_ID
+```
+
+Install re-verifies and copies the exact binary, manifest, and checksum into a
+second matching target without selecting it. Selection re-verifies identity
+and checksums, then uses relative, atomic symlinks. Selection requires manifest
+v2; rollback can still verify and select
+a manifest-v1 previous artifact so upgrading the release tool does not erase
+the existing code rollback coordinate.
 
 ```text
 isolated/gbrain-fork/
@@ -71,9 +94,33 @@ Inspect identity without opening a brain or database:
 ```
 
 After a staged release has passed the focused suites, diff-aware CI and a
-compiled smoke check, a later operator-controlled procedure may select it for
-the live CLI. This guide does not authorize changing the live symlink,
-scheduler, database or configuration.
+compiled smoke check, the operator supplies a private mode-0600 deployment
+descriptor to `scripts/verify-managed-fork-release.ts`. There are no default
+brain-home or release paths. The verifier checks the selected immutable
+artifact, target tuple, engine, and CLI/scheduler/supervisor/worker receipts.
+Its output names only an opaque deployment ID and check results.
+
+Each service receives the same opaque `GBRAIN_DEPLOYMENT_RECEIPT_ID`,
+`GBRAIN_BRAIN_RECEIPT_ID`, and `GBRAIN_CONFIG_RECEIPT_ID`, plus its own
+absolute receipt destination: `GBRAIN_CLI_RECEIPT_FILE`,
+`GBRAIN_SCHEDULER_RECEIPT_FILE`, `GBRAIN_SUPERVISOR_RECEIPT_FILE`, or
+`GBRAIN_WORKER_RECEIPT_FILE`. Receipts are atomically written mode 0600.
+
+The private descriptor is JSON schema version 1 with: opaque
+`deployment_id`; absolute `release_prefix`, `brain_home`, and `config_path`;
+exact `release_id`; `expected_engine`; `require_selected`; expected channel,
+four-part version, tag, full commit, upstream base, target tuple, and three receipt IDs; plus
+absolute process-receipt paths keyed by `cli`, `scheduler`, `supervisor`, and
+`worker`. Keep it outside the checkout and set mode 0600.
+
+```sh
+bun scripts/verify-managed-fork-release.ts \
+  --descriptor /private/mode-0600/deployment.json \
+  --json
+```
+
+This guide does not authorize changing the live symlink, scheduler, database
+or configuration.
 
 Rollback only changes code selection and does not roll back persisted data:
 
@@ -109,6 +156,31 @@ database or source rollback is prohibited unless a tested delta replay/merge
 procedure makes the restore lossless; otherwise use the predeclared
 roll-forward repair. Vector-mutating work remains quarantined until the
 embedding cohort is accepted.
+
+## Cutover gates and stop thresholds
+
+Each deployment receives a private preflight receipt. These are minimum gates,
+not permission to infer missing values:
+
+1. Producers and schedulers are stopped, active jobs are drained or explicitly
+   quarantined, and every vector-mutating handler remains quarantined.
+2. A quiescent encrypted engine backup is restored into an isolated target.
+   Both candidate and previous compiled readers verify schema, aggregate row
+   counts, functions/triggers, RLS, vector columns/indexes, queue state, and
+   configuration.
+3. Migration lock acquisition must complete within 60 seconds and the migration
+   within 10 minutes. Any skipped required migration or real-Postgres test is a
+   stop.
+4. One isolated worker must claim and complete the deterministic canary within
+   five minutes. Dead, failed, stalled, duplicate, cross-source, wrong-build,
+   wrong-engine, embedding-mismatch, or non-synthetic vector deltas have zero
+   tolerance.
+5. The canary deployment observes 30 minutes before normal writes resume. The
+   protected deployment begins only after that acceptance and receives its own
+   30-minute gate. Both receive a 24-hour drift check.
+6. Once normal writes resume, database or repository rollback is prohibited
+   unless lossless delta replay was tested. Otherwise use the declared
+   roll-forward repair.
 
 ## Upgrade posture
 

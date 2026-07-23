@@ -53,6 +53,7 @@ import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { evaluateQuietHours, type QuietHoursConfig } from './quiet-hours.ts';
 import { readFileSync } from 'fs';
+import { getProcessBuildReceipt, persistProcessBuildReceipt } from '../build-identity.ts';
 
 /**
  * Pure parser for /proc/self/status RSS fields. Returns bytes of
@@ -276,6 +277,12 @@ export class MinionWorker extends EventEmitter {
 
     await this.queue.ensureSchema();
     this.running = true;
+    const workerReceipt = getProcessBuildReceipt('worker');
+    persistProcessBuildReceipt(workerReceipt);
+    console.log(JSON.stringify({
+      event: 'process_build_receipt',
+      receipt: workerReceipt,
+    }));
 
     // Graceful shutdown. Fires shutdownAbort so handlers subscribed to
     // `ctx.shutdownSignal` (currently: shell handler) can run their own cleanup

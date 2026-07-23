@@ -34,7 +34,7 @@
  *     operator.
  *
  * --json emits a stable envelope:
- *   { schema_version: 1, build?, sync?, cycle?, research?, locks?, workers?, queue?, autopilot? }
+ *   { schema_version: 1, build?, runtime?, sync?, cycle?, research?, locks?, workers?, queue?, autopilot? }
  * Sections may be omitted (thin-client mode, --section filter, or
  * section-build failure that didn't break the whole snapshot).
  */
@@ -44,7 +44,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { gbrainPath, loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { VERSION } from '../version.ts';
-import { getBuildIdentity, type BuildIdentity } from '../core/build-identity.ts';
+import {
+  getBuildIdentity,
+  getProcessBuildReceipt,
+  persistProcessBuildReceipt,
+  type BuildIdentity,
+  type ProcessBuildReceipt,
+} from '../core/build-identity.ts';
 import { collectResearchHealth, type ResearchHealth } from '../core/research-health.ts';
 import {
   buildSyncStatusReport,
@@ -119,6 +125,8 @@ export interface StatusReport {
   mode: 'local' | 'thin-client';
   /** Identity of this CLI artifact; never inferred from a remote server. */
   build?: BuildIdentity;
+  /** Content-free identity of the process producing this status document. */
+  runtime?: ProcessBuildReceipt;
   sync?: SyncStatusReport;
   cycle?: CycleSnapshot;
   research?: ResearchHealth | { remote_unavailable: true };
@@ -364,7 +372,11 @@ async function buildLocalReport(
     mode: 'local',
   };
 
-  if (want('build')) report.build = getBuildIdentity();
+  if (want('build')) {
+    report.build = getBuildIdentity();
+    report.runtime = getProcessBuildReceipt('cli', report.build);
+    persistProcessBuildReceipt(report.runtime);
+  }
 
   // #1984: a shared budget so `gbrain status --deadline-ms=N` never blocks a
   // poller past N. Each async section is raced against the REMAINING budget, so
@@ -449,7 +461,11 @@ async function buildThinClientReport(
     mode: 'thin-client',
   };
 
-  if (want('build')) report.build = getBuildIdentity();
+  if (want('build')) {
+    report.build = getBuildIdentity();
+    report.runtime = getProcessBuildReceipt('cli', report.build);
+    persistProcessBuildReceipt(report.runtime);
+  }
 
   if (want('sync') || want('cycle')) {
     try {

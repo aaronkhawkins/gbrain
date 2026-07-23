@@ -22,6 +22,12 @@ Each brain has:
 - Its own OAuth surface if served over HTTP MCP (v0.19+, PR 2).
 - Its own separate lifecycle, backup, access control.
 
+Managed deployments also have a private deployment descriptor that binds one
+brain home to one engine, immutable release, configuration receipt, and
+process receipts. The descriptor is operational routing evidence, not a brain
+or source selector, and must never be committed. A release verifier requires
+it explicitly so a healthy result cannot accidentally describe another brain.
+
 Brains are enumerated by:
 - **host** — your default brain, configured in `~/.gbrain/config.json`.
 - **mounts** — additional brains registered in `~/.gbrain/mounts.json` via

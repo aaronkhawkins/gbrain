@@ -249,6 +249,95 @@ directions of compatibility, owner, proof, and retirement condition.
   real-Postgres Minion resilience file remains skipped without
   `DATABASE_URL`; it is an explicit U8 predeployment gate, not a claimed pass.
 
+## U8 release and deployment gate
+
+- Status: release tooling and content-free process receipts are implemented;
+  deployment is blocked before version allocation and selection.
+- Discovery: two Postgres deployment descriptors are required. The observed
+  live entrypoints report source/upstream identity at the pre-integration fork
+  version rather than an immutable managed artifact. No verified
+  `current`/`previous` release pair was available.
+- Target matrix: both discovered entrypoints execute on the same
+  `darwin/arm64`, Mach-O, Bun 1.3.14 tuple. One candidate artifact may serve
+  both only when each private descriptor independently verifies that exact
+  manifest and checksum.
+- Required database gate: no isolated real-Postgres test target was
+  discoverable, and the local container runtime was unavailable. All
+  `DATABASE_URL`-gated migration, engine-parity, source-isolation, Dream, and
+  Minion resilience suites remain mandatory.
+- Backup discovery: the canary runtime has four backup files, including two
+  modified within seven days, but none is identified as encrypted and no
+  restore receipt was found. The protected runtime has no discovered backup
+  directory. Existing files therefore do not satisfy the encrypted,
+  restore-tested cutover gate.
+- Required private inputs: service selectors, brain/config receipt IDs,
+  quiescence disposition, vector-job quarantine, encrypted backup custody and
+  restore receipt, disposable canary source/queue, process receipt paths,
+  observation owner, and rollback/roll-forward decision are unresolved.
+- Service inventory: ten local launch definitions reference GBrain. None
+  currently wires process receipt IDs/files, several cannot be assigned to a
+  deployment from their definition alone, and independently selected
+  supervisor/worker entrypoints were not established for both deployments.
+  Cutover remains blocked until the private matrix resolves every producer and
+  process role without inference.
+- Queue baseline: the canary deployment reported 0 active, 0 waiting, 0
+  failed, and 107 historical dead rows. The protected deployment reported 0
+  active, 14 waiting, 0 failed, and 0 dead rows. Existing dead rows are a
+  baseline, not an allowed positive delta; the 14 waiting rows require
+  payload-version and handler classification before drain or quarantine. A
+  read-only classification found one distinct candidate-supported,
+  non-vector-mutating handler; all 14 rows use the legacy payload shape that
+  U7 normalizes. They may drain only after backup/restore and single-worker
+  canary gates, not under mixed worker generations.
+- Source baseline: each deployment reports one repository-backed source and
+  both source worktrees are dirty. Their commit plus dirty-state receipts must
+  be captured privately before quiescence. Neither existing source is eligible
+  for write canaries; a separate disposable repository-backed source and
+  checkpoint are still required.
+- Semantic compatibility stop: both deployments are at schema v122 and neither
+  has a v2 page embedding signature. The canary inventory is 10,652 pages
+  (8,703 legacy signatures, 1,949 NULL, 0 v2) across two stored chunk models.
+  The protected inventory is 117 pages (109 legacy, 8 NULL, 0 v2) across one
+  stored chunk model. U4 correctly fails semantic retrieval closed for these
+  unverified cohorts, while Phase 0 prohibits production re-embedding. A
+  synthetic v2 canary would not prove existing retrieval remains useful.
+  The one legacy signature per deployment parses and matches current
+  model/dimensions, but all 10,333 canary and all 238 protected embedded
+  chunks carry a model label that disagrees with current configuration; eight
+  protected embedded pages also lack a page signature. The current evidence
+  therefore cannot support a metadata-only acceptance claim.
+  Deployment is therefore blocked on a separately approved bounded
+  provenance/re-embedding migration or a reviewed immutable-evidence
+  acceptance policy; lexical-only degradation is not an acceptable cutover.
+- Release authority: build and exact-byte cross-prefix install are
+  non-selecting. Verify, select, and rollback share
+  manifest/checksum/compiled-identity checks. Manifest v2 binds the
+  four-part version, target tuple, schema compatibility, and runtime assets. Version and
+  changelog allocation remain owned by the repository shipping workflow.
+- Runtime evidence: CLI status, scheduler startup, supervisor startup, and
+  worker startup expose the same content-free process build receipt. The
+  deployment verifier requires an explicit mode-0600 private descriptor and
+  rejects a wrong artifact, target, engine, selection, brain/config receipt,
+  or missing daemon receipt.
+
+### Candidate/previous compatibility matrix
+
+| Plane | Candidate reads previous | Previous reads candidate | Classification before normal writes |
+|---|---|---|---|
+| Schema v122 | Candidate migrates only after restore-tested clone coverage | Previous reader must be exercised against the migrated clone | Restore-required until proven |
+| Schema v123 | Candidate repairs the oversized-safe trigger path idempotently | Previous reader must be exercised against the repaired clone | Restore-required until proven |
+| Schema v124/final head | Candidate native | Not assumed | Roll-forward-only unless clone proof succeeds |
+| Config shapes | Additive provider/task keys retain existing readers | Older code may ignore additive keys; private snapshot still required | Backward-compatible reader, restore-required writer |
+| Queue envelopes | Legacy facts payload normalizes to v1 | v1 additive fields are ignored by the previous handler | Backward-compatible; future versions quarantine-required |
+| Facts/generated pages/chunks/links/timelines/provenance | Candidate reads existing rows and canonical files | Candidate-created source-aware/generated outputs need previous-reader clone proof | Restore-required before writes, roll-forward after writes |
+| Embedding metadata | Full v2 identity is accepted; legacy/unknown fails semantic closed | Previous code cannot be trusted to enforce candidate identity | Quarantine-required; no production re-embedding |
+| Status JSON | Additive build/runtime fields preserve existing fields | Previous consumers may ignore additions | Backward-compatible |
+
+The prior compiled artifact on a migrated clone has not been exercised because
+no immutable prior artifact or safe test database was available. That missing
+proof blocks canary and deployment. No live scheduler, worker, queue, source,
+database, configuration, release selector, or vector was changed.
+
 ### Clean auto-merge interaction map
 
 The 40 paths changed on both sides are not presumed safe because they merge
