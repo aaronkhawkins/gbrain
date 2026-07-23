@@ -41,4 +41,41 @@ describe('Phase 1A deployment contract', () => {
       expect(body).not.toMatch(/postgres:\/\/[^\s"'`]+@/i);
     }
   });
+
+  test('operator guide matches observer routes and exact work-key overrides', () => {
+    const body = readFileSync(
+      join(ROOT, 'docs/guides/observability-operator.md'),
+      'utf8',
+    );
+    expect(body).toContain('gbrain observe snapshot');
+    expect(body).toContain('/healthz');
+    expect(body).toContain('/metrics');
+    expect(body).not.toContain('/snapshot.json');
+    expect(body).toContain('minion.autopilot-cycle.<source-id>');
+    expect(body).toContain('minion.maintain');
+    expect(body).toContain('Overrides match the full generated');
+  });
+
+  test('changed public observability docs contain no private deployment identifiers', () => {
+    const files = [
+      'docs/guides/observability-operator.md',
+      'docs/operations/phase-1a-observability-acceptance.md',
+      'docs/plans/2026-07-23-001-feat-establish-operational-truth-plan.md',
+      'docs/runbooks/observability/observer-missing.md',
+      'docs/runbooks/observability/missed-work.md',
+      'docs/runbooks/observability/backlog.md',
+      'docs/runbooks/observability/embedding.md',
+    ];
+    const prohibited = [
+      /\bAaron\b/i,
+      /\bAKH\b/i,
+      /\bakhserver\d*\b/i,
+      /\bakh-homelab\b/i,
+      /\btail[a-z0-9]+\.ts\.net\b/i,
+    ];
+    for (const file of files) {
+      const body = readFileSync(join(ROOT, file), 'utf8');
+      for (const pattern of prohibited) expect(body).not.toMatch(pattern);
+    }
+  });
 });
