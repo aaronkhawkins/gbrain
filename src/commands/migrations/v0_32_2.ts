@@ -130,21 +130,45 @@ interface PhaseBOutcome {
 
 /**
  * Dirty-tree refusal: mirror src/core/dry-fix.ts behavior. Refuses to
- * write if any source's local_path has uncommitted changes. Dry-run
- * skips this check (no writes happen anyway).
+ * write if one of the exact entity pages it will update has uncommitted
+ * changes. Unrelated work in the same repository is preserved and does not
+ * block a bounded migration. Dry-run skips this check (no writes happen).
  */
-function isLocalPathDirty(localPath: string): boolean {
+function isLocalPathDirty(localPath: string, relativePaths: string[]): boolean {
+  if (relativePaths.length === 0) return false;
+
   try {
-    const out = execFileSync('git', ['-C', localPath, 'status', '--porcelain'], {
-      encoding: 'utf-8',
-      timeout: 10_000,
-    });
+    const isWorkTree = execFileSync(
+      'git',
+      ['-C', localPath, 'rev-parse', '--is-inside-work-tree'],
+      {
+        encoding: 'utf-8',
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    if (isWorkTree.trim() !== 'true') return false;
+  } catch {
+    // Plain directories are valid sources, so the Git guard does not apply
+    // when Git is unavailable or the source is not a work tree.
+    return false;
+  }
+
+  try {
+    const out = execFileSync(
+      'git',
+      ['--literal-pathspecs', '-C', localPath, 'status', '--porcelain', '--', ...relativePaths],
+      {
+        encoding: 'utf-8',
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
     return out.trim().length > 0;
   } catch {
-    // Not a git repo OR git not on PATH → treat as "not dirty" (the
-    // user opted out of git tracking, which is allowed). The fence
-    // writes are still atomic via .tmp + rename.
-    return false;
+    // Once the source is known to be a Git work tree, an indeterminate status
+    // must not be interpreted as clean.
+    return true;
   }
 }
 
@@ -200,18 +224,21 @@ async function phaseBFenceFacts(
     // a fact fence into them. A brain with no legacy rows has nothing to
     // mutate and must be allowed to complete even if unrelated user-authored
     // pages are currently uncommitted.
-    const writableSourceIds = new Set(
-      legacy
-        .filter((row) => row.entity_slug !== null && localPathById.get(row.source_id))
-        .map((row) => row.source_id),
-    );
-    for (const id of writableSourceIds) {
+    const writablePathsBySource = new Map<string, Set<string>>();
+    for (const row of legacy) {
+      if (row.entity_slug === null || !localPathById.get(row.source_id)) continue;
+      const paths = writablePathsBySource.get(row.source_id) ?? new Set<string>();
+      paths.add(`${row.entity_slug}.md`);
+      paths.add(`${row.entity_slug}.md.tmp`);
+      writablePathsBySource.set(row.source_id, paths);
+    }
+    for (const [id, relativePaths] of writablePathsBySource) {
       const localPath = localPathById.get(id);
-      if (localPath && isLocalPathDirty(localPath)) {
+      if (localPath && isLocalPathDirty(localPath, [...relativePaths])) {
         return {
           name: 'fence_facts',
           status: 'failed',
-          detail: `source "${id}" has uncommitted changes in ${localPath}. Commit or stash, then re-run.`,
+          detail: `source "${id}" has uncommitted changes in a facts backfill target under ${localPath}. Commit or stash the affected page, then re-run.`,
         };
       }
     }

@@ -133,6 +133,96 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     expect(readFileSync(join(brainDir, 'existing.md'), 'utf-8')).toBe('unrelated user edit\n');
   });
 
+  test('preserves unrelated dirty work while fencing a clean target page', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.name', 'GBrain Test'], { cwd: brainDir });
+    writeFileSync(join(brainDir, 'existing.md'), 'baseline\n', 'utf-8');
+    execFileSync('git', ['add', 'existing.md'], { cwd: brainDir });
+    execFileSync('git', ['commit', '-q', '-m', 'baseline'], { cwd: brainDir });
+    writeFileSync(join(brainDir, 'existing.md'), 'unrelated user edit\n', 'utf-8');
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('fenced=1');
+    expect(readFileSync(join(brainDir, 'existing.md'), 'utf-8')).toBe('unrelated user edit\n');
+    expect(readFileSync(join(brainDir, 'people/alice.md'), 'utf-8')).toContain('Founded Acme');
+  });
+
+  test('rejects a dirty page that the facts backfill would modify', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.name', 'GBrain Test'], { cwd: brainDir });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    writeFileSync(join(brainDir, 'people/alice.md'), '# Alice\n', 'utf-8');
+    execFileSync('git', ['add', 'people/alice.md'], { cwd: brainDir });
+    execFileSync('git', ['commit', '-q', '-m', 'baseline'], { cwd: brainDir });
+    writeFileSync(join(brainDir, 'people/alice.md'), '# Alice\n\nUser edit.\n', 'utf-8');
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('facts backfill target');
+    expect(readFileSync(join(brainDir, 'people/alice.md'), 'utf-8')).toBe('# Alice\n\nUser edit.\n');
+  });
+
+  test('rejects an untracked temporary file that the backfill would overwrite', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.name', 'GBrain Test'], { cwd: brainDir });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    const tmpPath = join(brainDir, 'people/alice.md.tmp');
+    writeFileSync(tmpPath, 'operator recovery artifact\n', 'utf-8');
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('facts backfill target');
+    expect(readFileSync(tmpPath, 'utf-8')).toBe('operator recovery artifact\n');
+    expect(existsSync(join(brainDir, 'people/alice.md'))).toBe(false);
+  });
+
+  test('treats target names with Git pathspec characters literally', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.name', 'GBrain Test'], { cwd: brainDir });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    const targetPath = join(brainDir, 'people/[alice].md');
+    writeFileSync(targetPath, '# Alice\n', 'utf-8');
+    execFileSync('git', ['--literal-pathspecs', 'add', '--', 'people/[alice].md'], { cwd: brainDir });
+    execFileSync('git', ['commit', '-q', '-m', 'baseline'], { cwd: brainDir });
+    writeFileSync(targetPath, '# Alice\n\nUser edit.\n', 'utf-8');
+    await seedLegacyFact({ entity_slug: 'people/[alice]', fact: 'Founded Acme' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('facts backfill target');
+    expect(readFileSync(targetPath, 'utf-8')).toBe('# Alice\n\nUser edit.\n');
+  });
+
+  test('fails closed when Git cannot determine target status', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: brainDir });
+    execFileSync('git', ['config', 'user.name', 'GBrain Test'], { cwd: brainDir });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    writeFileSync(join(brainDir, 'people/alice.md'), '# Alice\n', 'utf-8');
+    execFileSync('git', ['add', 'people/alice.md'], { cwd: brainDir });
+    execFileSync('git', ['commit', '-q', '-m', 'baseline'], { cwd: brainDir });
+    writeFileSync(join(brainDir, '.git/index'), 'not a git index\n', 'utf-8');
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('facts backfill target');
+    expect(readFileSync(join(brainDir, 'people/alice.md'), 'utf-8')).toBe('# Alice\n');
+  });
+
   test('fences legacy DB rows into entity pages + updates row_num', async () => {
     const id1 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme in 2017' });
     const id2 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Prefers async over meetings' });

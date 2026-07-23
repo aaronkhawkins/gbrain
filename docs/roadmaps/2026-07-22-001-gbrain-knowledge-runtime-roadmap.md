@@ -18,6 +18,15 @@ Active Phase 0 and data-plane plans:
 - `docs/plans/2026-07-22-003-refactor-rebuild-embedding-cohorts-plan.md`
 - `docs/operations/managed-fork-integration-report.md`
 
+Phase 1 delivery:
+
+- Phase 1A implementation:
+  `docs/plans/2026-07-23-001-feat-establish-operational-truth-plan.md`
+- Phase 1A live acceptance:
+  `docs/operations/phase-1a-observability-acceptance.md`
+- Phase 1B implementation:
+  `docs/plans/2026-07-23-002-feat-phase-1b-processing-receipts-and-assisted-repair-plan.md`
+
 ## Delivery principles
 
 - Prove deployed capabilities before expanding their scope.
