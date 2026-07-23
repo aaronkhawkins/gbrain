@@ -197,5 +197,8 @@ describe('checkAutopilotLockScope (#1226)', () => {
     expect(isGbrainAutopilotCommand('"/Applications/GBrain/gbrain" autopilot --repo /tmp/brain')).toBe(true);
     expect(isGbrainAutopilotCommand('/usr/bin/node autopilot-worker.js')).toBe(false);
     expect(isGbrainAutopilotCommand('/tmp/gbrain doctor')).toBe(false);
+    expect(isGbrainAutopilotCommand('/usr/bin/grep gbrain autopilot')).toBe(false);
+    expect(isGbrainAutopilotCommand('/usr/bin/python worker.py --project gbrain --mode autopilot')).toBe(false);
+    expect(isGbrainAutopilotCommand('/tmp/gbrain doctor --note autopilot')).toBe(false);
   });
 });

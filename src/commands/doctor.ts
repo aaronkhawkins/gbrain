@@ -2481,7 +2481,24 @@ function readProcessCommand(pid: number): string {
 }
 
 export function isGbrainAutopilotCommand(command: string): boolean {
-  return /(?:^|[\\/"'\s])gbrain(?:\.exe)?(?=["'\s]|$)[\s\S]*?(?:^|\s)autopilot(?=\s|$)/i.test(command);
+  const argv = command.match(/"[^"]*"|'[^']*'|\S+/g)?.map(token => {
+    const first = token[0];
+    return first && first === token[token.length - 1] && (first === '"' || first === "'")
+      ? token.slice(1, -1)
+      : token;
+  }) ?? [];
+  const executableName = (token: string | undefined): string =>
+    (token ?? '').replace(/^.*[\\/]/, '').toLowerCase();
+
+  let commandIndex = -1;
+  if (/^gbrain(?:\.exe)?$/.test(executableName(argv[0]))) {
+    commandIndex = 1;
+  } else if (/^bun(?:\.exe)?$/.test(executableName(argv[0]))
+    && /^gbrain(?:\.exe)?$/.test(executableName(argv[1]))) {
+    commandIndex = 2;
+  }
+
+  return commandIndex >= 0 && argv[commandIndex] === 'autopilot';
 }
 
 export function checkAutopilotLockScope(deps: AutopilotLockScopeDeps = {}): Check {
