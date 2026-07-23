@@ -21,6 +21,10 @@ import type {
   WorkObservation,
   WorkPolicyOverride,
 } from './types.ts';
+import {
+  OBSERVABILITY_WARNING_CODES,
+  WORK_KINDS,
+} from './types.ts';
 import { defaultRunbookForReason, type ReasonCode } from './reason-codes.ts';
 import type { CyclePhase } from '../cycle.ts';
 import { ALL_PHASES, PHASE_SCOPE } from '../cycle.ts';
@@ -590,7 +594,14 @@ function computeNextDue(
 export function assertExportableSnapshot(snapshot: {
   brain: string;
   state: string;
-  items: Array<{ key: string; state: string; reason: string | null }>;
+  items: Array<{
+    key: string;
+    state: string;
+    reason: string | null;
+    kind?: string;
+    repair_runbook?: string | null;
+  }>;
+  warnings?: string[];
 }): void {
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(snapshot.brain)) {
     throw new Error(`operational snapshot: invalid brain id ${JSON.stringify(snapshot.brain)}`);
@@ -607,6 +618,22 @@ export function assertExportableSnapshot(snapshot: {
     }
     if (item.reason != null && !REASON_SET_LOCAL.has(item.reason)) {
       throw new Error(`operational snapshot: unregistered reason ${item.reason}`);
+    }
+    if (item.kind != null && !WORK_KINDS.includes(item.kind as never)) {
+      throw new Error(`operational snapshot: unregistered work kind ${item.kind}`);
+    }
+    if (
+      item.repair_runbook != null &&
+      !/^[A-Za-z0-9._-]{1,64}$/.test(item.repair_runbook)
+    ) {
+      throw new Error(
+        `operational snapshot: invalid repair runbook ${JSON.stringify(item.repair_runbook)}`,
+      );
+    }
+  }
+  for (const warning of snapshot.warnings ?? []) {
+    if (!OBSERVABILITY_WARNING_CODES.includes(warning as never)) {
+      throw new Error(`operational snapshot: unregistered warning ${warning}`);
     }
   }
 }

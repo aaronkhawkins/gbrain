@@ -34,6 +34,16 @@ export type WorkKind = (typeof WORK_KINDS)[number];
 
 export type Criticality = 'required' | 'optional';
 
+/** Bounded warning codes allowed on exported snapshots. */
+export const OBSERVABILITY_WARNING_CODES = [
+  'collector_timeout',
+  'collector_failed',
+  'collector_unknown_adapter',
+] as const;
+
+export type ObservabilityWarningCode =
+  (typeof OBSERVABILITY_WARNING_CODES)[number];
+
 /** Adapter ids registered in collectors/index.ts. */
 export const EVIDENCE_ADAPTERS = [
   'ingestion_source',
@@ -132,7 +142,7 @@ export interface OperationalSnapshot {
     port: number;
     snapshot_age_ms: number;
   };
-  warnings?: string[];
+  warnings?: ObservabilityWarningCode[];
   partial?: boolean;
 }
 

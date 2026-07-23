@@ -5,14 +5,15 @@
  *   GET /healthz  — liveness
  *   GET /metrics  — OpenMetrics snapshot (cached)
  *
- * Forces probe-only DB use (caller responsibility). Rejects public binds
- * unless allow_public_bind is set. Never runs Doctor or mutates state.
+ * Enforces read-only DB use. Rejects non-loopback/non-Tailscale binds unless
+ * the explicit unsafe override is set. Never runs Doctor or mutates state.
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
+import { isIP } from 'node:net';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
-import { buildOperationalSnapshot, serializeOperationalSnapshot } from './snapshot.ts';
+import { buildReadOnlyOperationalSnapshot } from './snapshot.ts';
 import { renderOpenMetrics, scanOpenMetricsForProhibited } from './openmetrics.ts';
 import type { ObservabilityConfig, OperationalSnapshot } from './types.ts';
 
@@ -41,10 +42,70 @@ const PUBLIC_BINDS = new Set(['0.0.0.0', '::', '[::]', '*']);
 
 export function assertSafeBind(bind: string, allowPublic: boolean): void {
   const normalized = bind.trim().toLowerCase();
-  if (!allowPublic && (PUBLIC_BINDS.has(normalized) || normalized === '')) {
+  if (allowPublic && normalized !== '') return;
+  if (PUBLIC_BINDS.has(normalized) || normalized === '') {
     throw new Error(
       `observer: public/wildcard bind ${JSON.stringify(bind)} rejected; ` +
       `set observability.observer.allow_public_bind=true only for local tests`,
+    );
+  }
+  if (!isSafeObserverAddress(normalized)) {
+    throw new Error(
+      `observer: bind ${JSON.stringify(bind)} rejected; only numeric loopback or Tailscale addresses are allowed ` +
+      `unless observability.observer.allow_public_bind=true`,
+    );
+  }
+}
+
+function isSafeObserverAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) {
+    const octets = address.split('.').map(Number);
+    return octets[0] === 127 ||
+      (octets[0] === 100 && octets[1]! >= 64 && octets[1]! <= 127);
+  }
+  if (family !== 6) return false;
+  const words = expandIpv6(address);
+  if (!words) return false;
+  const loopback = words.slice(0, 7).every((word) => word === 0) && words[7] === 1;
+  const tailscale = words[0] === 0xfd7a && words[1] === 0x115c && words[2] === 0xa1e0;
+  return loopback || tailscale;
+}
+
+function expandIpv6(address: string): number[] | null {
+  const halves = address.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0) return null;
+  const parts = [...left, ...Array(missing).fill('0'), ...right];
+  if (parts.length !== 8) return null;
+  const words = parts.map((part) => Number.parseInt(part, 16));
+  return words.every((word) => Number.isInteger(word) && word >= 0 && word <= 0xffff)
+    ? words
+    : null;
+}
+
+export const OBSERVER_TIMING_BOUNDS = {
+  refreshMs: { min: 100, max: 86_400_000 },
+  collectTimeoutMs: { min: 100, max: 600_000 },
+} as const;
+
+export function assertObserverTiming(
+  refreshMs: number,
+  collectTimeoutMs: number,
+): void {
+  const refresh = OBSERVER_TIMING_BOUNDS.refreshMs;
+  const timeout = OBSERVER_TIMING_BOUNDS.collectTimeoutMs;
+  if (!Number.isFinite(refreshMs) || !Number.isInteger(refreshMs) ||
+      refreshMs < refresh.min || refreshMs > refresh.max) {
+    throw new Error(`observer: refreshMs must be an integer between ${refresh.min} and ${refresh.max}`);
+  }
+  if (!Number.isFinite(collectTimeoutMs) || !Number.isInteger(collectTimeoutMs) ||
+      collectTimeoutMs < timeout.min || collectTimeoutMs > timeout.max) {
+    throw new Error(
+      `observer: collectTimeoutMs must be an integer between ${timeout.min} and ${timeout.max}`,
     );
   }
 }
@@ -69,19 +130,24 @@ export async function startObserverServer(opts: ObserverServerOptions): Promise<
   assertSafeBind(opts.bind, opts.allowPublicBind === true);
   const refreshMs = opts.refreshMs ?? 30_000;
   const collectTimeoutMs = opts.collectTimeoutMs ?? 15_000;
+  assertObserverTiming(refreshMs, collectTimeoutMs);
   const nowFn = opts.now ?? (() => new Date());
 
   let cached: OperationalSnapshot | null = null;
   let cachedMetrics: string | null = null;
   let refreshing: Promise<OperationalSnapshot> | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let refreshFailed = false;
 
   const build = opts.buildSnapshot ?? (async () =>
-    buildOperationalSnapshot({
+    buildReadOnlyOperationalSnapshot({
       engine: opts.engine,
       config: opts.config,
       now: nowFn(),
       collectTimeoutMs,
+      onCollectorError: (adapterId, error) => {
+        console.error(`gbrain observer collector ${adapterId} failed`, error);
+      },
     }));
 
   async function refresh(): Promise<OperationalSnapshot> {
@@ -101,7 +167,11 @@ export async function startObserverServer(opts: ObserverServerOptions): Promise<
         }
         cached = snap;
         cachedMetrics = metrics;
+        refreshFailed = false;
         return snap;
+      } catch (error) {
+        refreshFailed = true;
+        throw error;
       } finally {
         refreshing = null;
       }
@@ -138,7 +208,7 @@ export async function startObserverServer(opts: ObserverServerOptions): Promise<
     const url = req.url?.split('?')[0] ?? '/';
 
     if (url === '/healthz' || url === '/health') {
-      const ok = cached != null;
+      const ok = cached != null && !refreshFailed;
       res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
       if (method === 'HEAD') {
         res.end();
@@ -149,6 +219,7 @@ export async function startObserverServer(opts: ObserverServerOptions): Promise<
         brain: cached?.brain ?? null,
         generated_at: cached?.generated_at ?? null,
         state: cached?.state ?? 'unknown',
+        reason: refreshFailed ? 'refresh_failed' : null,
       }) + '\n');
       return;
     }
@@ -172,21 +243,6 @@ export async function startObserverServer(opts: ObserverServerOptions): Promise<
         return;
       }
       res.end(cachedMetrics);
-      return;
-    }
-
-    if (url === '/snapshot.json') {
-      if (!cached) {
-        res.writeHead(503, { 'content-type': 'application/json' });
-        res.end('{"error":"no_snapshot"}\n');
-        return;
-      }
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      if (method === 'HEAD') {
-        res.end();
-        return;
-      }
-      res.end(serializeOperationalSnapshot(cached) + '\n');
       return;
     }
 

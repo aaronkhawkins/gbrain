@@ -452,9 +452,9 @@ async function buildLocalReport(
     try {
       report.operational = await withSectionDeadline(
         (async () => {
-          const { buildOperationalSnapshot } = await import('../core/observability/snapshot.ts');
+          const { buildReadOnlyOperationalSnapshot } = await import('../core/observability/snapshot.ts');
           const { loadConfig } = await import('../core/config.ts');
-          return buildOperationalSnapshot({
+          return buildReadOnlyOperationalSnapshot({
             engine,
             config: loadConfig(),
             collectTimeoutMs: remaining() ?? 15_000,

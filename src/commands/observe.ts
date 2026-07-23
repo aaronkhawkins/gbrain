@@ -11,16 +11,16 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { loadConfig, type GBrainConfig } from '../core/config.ts';
 import {
-  buildOperationalSnapshot,
+  buildReadOnlyOperationalSnapshot,
   serializeOperationalSnapshot,
 } from '../core/observability/snapshot.ts';
 import {
   resolveObserverBind,
   startObserverServer,
   assertSafeBind,
+  assertObserverTiming,
 } from '../core/observability/observer-server.ts';
 import type { ObservabilityConfig } from '../core/observability/types.ts';
-import { hasPendingMigrations } from '../core/migrate.ts';
 
 export const OBSERVE_HELP = `gbrain observe — per-brain operational observer
 
@@ -30,7 +30,7 @@ Usage:
   gbrain observe --help
 
 serve binds a private OpenMetrics endpoint for Prometheus scrape.
-Uses probe-only DB sessions (never applies migrations).
+Uses enforced read-only DB sessions (never applies migrations).
 
 Environment:
   GBRAIN_HOME     Isolates config + local runtime evidence per brain
@@ -40,7 +40,7 @@ Environment:
 function parseFlag(args: string[], name: string): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === name && i + 1 < args.length) return args[i + 1];
+    if (a === name) return i + 1 < args.length ? args[i + 1] : '';
     if (a.startsWith(`${name}=`)) return a.slice(name.length + 1);
   }
   return undefined;
@@ -84,18 +84,13 @@ export async function runObserve(
     const json = rest.includes('--json') || true; // always JSON for machine use
     void json;
     try {
-      // Schema compatibility check (report, don't migrate).
-      if (engine) {
-        try {
-          const pending = await hasPendingMigrations(engine);
-          if (pending) {
-            stderr('gbrain observe: schema has pending migrations; snapshot may report unknown/schema_incompatible signals\n');
-          }
-        } catch {
-          /* probe failure → collectors surface db/unknown */
-        }
-      }
-      const snap = await buildOperationalSnapshot({ engine, config: cfg });
+      const snap = await buildReadOnlyOperationalSnapshot({
+        engine,
+        config: cfg,
+        onCollectorError: (adapterId, error) => {
+          stderr(`gbrain observe: collector ${adapterId} failed: ${(error as Error).message}\n`);
+        },
+      });
       stdout(serializeOperationalSnapshot(snap) + '\n');
       return { exitCode: 0 };
     } catch (err) {
@@ -116,7 +111,7 @@ export async function runObserve(
       process.env.GBRAIN_OBSERVE_PORT ??
       String(defaults.port);
     const port = Number(portRaw);
-    if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    if (!Number.isFinite(port) || !Number.isInteger(port) || port <= 0 || port > 65535) {
       stderr(`gbrain observe serve: invalid --port ${portRaw}\n`);
       return { exitCode: 2 };
     }
@@ -129,23 +124,13 @@ export async function runObserve(
 
     try {
       assertSafeBind(bind, allowPublic);
+      assertObserverTiming(refreshMs, collectTimeoutMs);
     } catch (err) {
-      stderr(`${(err as Error).message}\n`);
+      const message = (err as Error).message
+        .replace('observer: refreshMs', 'gbrain observe serve: invalid --refresh-ms; value')
+        .replace('observer: collectTimeoutMs', 'gbrain observe serve: invalid --collect-timeout-ms; value');
+      stderr(`${message}\n`);
       return { exitCode: 2 };
-    }
-
-    if (engine) {
-      try {
-        const pending = await hasPendingMigrations(engine);
-        if (pending) {
-          stderr(
-            'gbrain observe: pending migrations detected; observer will not apply them. ' +
-            'Run `gbrain apply-migrations --yes` from an operator shell if needed.\n',
-          );
-        }
-      } catch {
-        /* continue with unknown schema posture */
-      }
     }
 
     try {
@@ -154,8 +139,8 @@ export async function runObserve(
         config: cfg,
         bind,
         port,
-        refreshMs: Number.isFinite(refreshMs) ? refreshMs : 30_000,
-        collectTimeoutMs: Number.isFinite(collectTimeoutMs) ? collectTimeoutMs : 15_000,
+        refreshMs,
+        collectTimeoutMs,
         allowPublicBind: allowPublic,
       });
       stderr(`gbrain observe: serving metrics at ${server.url}/metrics (brain=${server.getCached()?.brain})\n`);
