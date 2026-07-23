@@ -2569,6 +2569,7 @@ const get_operational_snapshot: Operation = {
     const snapshot = await buildReadOnlyOperationalSnapshot({
       engine: ctx.engine,
       config: ctx.config,
+      ...sourceScopeOpts(ctx),
       onCollectorError: (adapterId, error) => {
         ctx.logger.warn(
           `operational snapshot collector ${adapterId} failed: ${error instanceof Error ? error.message : String(error)}`,

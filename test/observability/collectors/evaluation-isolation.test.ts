@@ -11,11 +11,13 @@ import { rollupBrainState } from '../../../src/core/observability/rollup.ts';
 import type { WorkEvidence } from '../../../src/core/observability/types.ts';
 
 const NOW = new Date('2026-07-23T12:00:00.000Z');
+const SOURCE_LABEL_KEY = 'test-brain-source-label-key';
 
 describe('phase isolation', () => {
   test('healthy source + late extract_atoms fails only that enhancement', () => {
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: ['sync', 'extract_atoms'],
       includeInfrastructure: false,
     });
@@ -40,13 +42,13 @@ describe('phase isolation', () => {
 
     const items = reg.map((e) => {
       if (e.kind === 'source') return evaluateWorkItem(e, sourceEv, NOW);
-      if (e.key === dreamPhaseWorkKey('extract_atoms', 'wiki')) return evaluateWorkItem(e, latePhase, NOW);
-      if (e.key === dreamPhaseWorkKey('sync', 'wiki')) return evaluateWorkItem(e, sourceEv, NOW);
+      if (e.key === dreamPhaseWorkKey('extract_atoms', 'wiki', SOURCE_LABEL_KEY)) return evaluateWorkItem(e, latePhase, NOW);
+      if (e.key === dreamPhaseWorkKey('sync', 'wiki', SOURCE_LABEL_KEY)) return evaluateWorkItem(e, sourceEv, NOW);
       return evaluateWorkItem(e, null, NOW);
     });
 
-    const source = items.find((i) => i.key === 'source.wiki')!;
-    const atoms = items.find((i) => i.key === dreamPhaseWorkKey('extract_atoms', 'wiki'))!;
+    const source = items.find((i) => i.kind === 'source')!;
+    const atoms = items.find((i) => i.key === dreamPhaseWorkKey('extract_atoms', 'wiki', SOURCE_LABEL_KEY))!;
     expect(source.state).toBe('healthy');
     expect(atoms.state).toBe('failed');
     expect(rollupBrainState(items)).toBe('failed');

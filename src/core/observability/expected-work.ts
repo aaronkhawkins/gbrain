@@ -21,6 +21,7 @@ import type {
   WorkObservation,
   WorkPolicyOverride,
 } from './types.ts';
+import { createHmac } from 'node:crypto';
 import {
   OBSERVABILITY_WARNING_CODES,
   OPERATIONAL_STATES,
@@ -37,6 +38,7 @@ import {
   getAutopilotRecurringRegistrations,
   type RecurringMinionRegistration,
 } from '../minions/recurring-work.ts';
+import { stateSeverity } from './rollup.ts';
 
 /** Default cadences (seconds). Tuned for typical single-operator brains. */
 export const DEFAULT_CADENCE = {
@@ -72,25 +74,55 @@ export const CORE_DREAM_PHASES: readonly CyclePhase[] = [
   'orphans',
 ] as const;
 
-/** Sanitize a free-form id into a stable work-key segment. */
+/** Sanitize a bounded non-private id into a stable work-key segment. */
 export function sanitizeWorkSegment(raw: string): string {
   const s = raw.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
   if (!s) return 'unnamed';
   return s.slice(0, 64);
 }
 
-export function sourceWorkKey(sourceId: string): string {
-  return `source.${sanitizeWorkSegment(sourceId)}`;
+/**
+ * Derive a stable, privacy-safe source label for one brain.
+ *
+ * The raw source id remains available only in entry selectors/scopes. Exported
+ * work keys use this keyed digest so Prometheus/Grafana labels cannot retain
+ * client, project, or repository names.
+ */
+export function opaqueSourceSegment(sourceId: string, sourceLabelKey: string): string {
+  if (!sourceLabelKey) {
+    throw new Error('observability source label key is required');
+  }
+  return `s_${createHmac('sha256', sourceLabelKey)
+    .update('gbrain-observability-source-v1\0')
+    .update(sourceId)
+    .digest('hex')
+    .slice(0, 16)}`;
 }
 
-export function dreamPhaseWorkKey(phase: string, sourceId?: string): string {
+export function sourceWorkKey(sourceId: string, sourceLabelKey: string): string {
+  return `source.${opaqueSourceSegment(sourceId, sourceLabelKey)}`;
+}
+
+export function dreamPhaseWorkKey(
+  phase: string,
+  sourceId?: string,
+  sourceLabelKey?: string,
+): string {
   const base = `dream.${sanitizeWorkSegment(phase)}`;
-  return sourceId ? `${base}.${sanitizeWorkSegment(sourceId)}` : base;
+  return sourceId
+    ? `${base}.${opaqueSourceSegment(sourceId, sourceLabelKey ?? '')}`
+    : base;
 }
 
-export function minionWorkKey(jobName: string, sourceId?: string): string {
+export function minionWorkKey(
+  jobName: string,
+  sourceId?: string,
+  sourceLabelKey?: string,
+): string {
   const base = `minion.${sanitizeWorkSegment(jobName)}`;
-  return sourceId ? `${base}.${sanitizeWorkSegment(sourceId)}` : base;
+  return sourceId
+    ? `${base}.${opaqueSourceSegment(sourceId, sourceLabelKey ?? '')}`
+    : base;
 }
 
 export type DiscoveryAxis = 'sources' | 'dream_phases';
@@ -98,6 +130,8 @@ export type DiscoveryAxis = 'sources' | 'dream_phases';
 export interface RegistryInput {
   /** Registered source ids from the brain DB. */
   sourceIds: string[];
+  /** Per-brain secret material used only to HMAC exported source labels. */
+  sourceLabelKey?: string;
   /**
    * Enabled dream phases for this brain. Callers pass pack-declared phases
    * unioned with core phases and config-enabled opt-in phases.
@@ -125,9 +159,12 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
   const entries: ExpectedWorkEntry[] = [];
   const obs = input.observability ?? {};
   const includeInfra = input.includeInfrastructure !== false;
+  if (input.sourceIds.length > 0 && !input.sourceLabelKey) {
+    throw new Error('observability source label key is required for source-scoped work');
+  }
 
   for (const sourceId of input.sourceIds) {
-    const key = sourceWorkKey(sourceId);
+    const key = sourceWorkKey(sourceId, input.sourceLabelKey!);
     entries.push(applyOverride({
       key,
       kind: 'source',
@@ -148,14 +185,15 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
   for (const phase of input.enabledDreamPhases) {
     if (disabledPhases.has(phase)) continue;
     const phaseScope = PHASE_SCOPE[phase as CyclePhase] ?? 'global';
-    const sourceScoped = phaseScope !== 'global' && input.sourceIds.length > 0;
+    const dreamSourceIds = input.scheduledSourceIds ?? input.sourceIds;
+    const sourceScoped = phaseScope !== 'global' && dreamSourceIds.length > 0;
     const scopes: Array<{ type: 'global' } | { type: 'source'; source_id: string }> =
       sourceScoped
-        ? input.sourceIds.map((sourceId) => ({ type: 'source', source_id: sourceId }))
+        ? dreamSourceIds.map((sourceId) => ({ type: 'source', source_id: sourceId }))
         : [{ type: 'global' }];
     for (const scope of scopes) {
       const sourceId = scope.type === 'source' ? scope.source_id : undefined;
-      const key = dreamPhaseWorkKey(phase, sourceId);
+      const key = dreamPhaseWorkKey(phase, sourceId, input.sourceLabelKey);
       entries.push(applyOverride({
         key,
         kind: 'dream_phase',
@@ -177,7 +215,7 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
   });
   for (const job of recurringMinions) {
     const sourceId = job.scope.type === 'source' ? job.scope.source_id : undefined;
-    const key = minionWorkKey(job.name, sourceId);
+    const key = minionWorkKey(job.name, sourceId, input.sourceLabelKey);
     entries.push(applyOverride({
       key,
       kind: 'minion',
@@ -194,7 +232,7 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
   }
 
   for (const sourceId of input.sourceIds) {
-    const segment = sanitizeWorkSegment(sourceId);
+    const segment = opaqueSourceSegment(sourceId, input.sourceLabelKey!);
     const factKey = `facts.pending.${segment}`;
     entries.push(applyOverride({
       key: factKey,
@@ -287,6 +325,12 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
   }
 
   for (const ext of obs.external_work ?? []) {
+    if (
+      ext.evidence?.source_id &&
+      !input.sourceIds.includes(ext.evidence.source_id)
+    ) {
+      continue;
+    }
     entries.push(externalToEntry(ext));
   }
 
@@ -355,6 +399,8 @@ export function resolveEnabledDreamPhases(opts: {
   packPhases?: readonly string[] | null;
   /** Config map cycle.<phase>.enabled / dream.<phase>.enabled. */
   phaseEnabled?: Record<string, boolean | undefined>;
+  /** Runtime synthesis defaults on only when a corpus is configured. */
+  synthesizeCorpusConfigured?: boolean;
 }): string[] {
   const pack = new Set(opts.packPhases ?? []);
   const out = new Set<string>();
@@ -368,21 +414,37 @@ export function resolveEnabledDreamPhases(opts: {
 
   // Opt-in phases only when config explicitly enables them.
   const OPT_IN: CyclePhase[] = [
-    'propose_takes',
-    'grade_takes',
-    'calibration_profile',
     'conversation_facts_backfill',
     'enrich_thin',
     'skillopt',
-    'schema-suggest',
   ];
   for (const p of OPT_IN) {
     const flag = opts.phaseEnabled?.[p];
     if (flag === true) out.add(p);
   }
 
+  const synthesizeFlag = opts.phaseEnabled?.synthesize;
+  if (
+    synthesizeFlag === true ||
+    (synthesizeFlag !== false && opts.synthesizeCorpusConfigured === true)
+  ) {
+    out.add('synthesize');
+  }
+
   // Always-on non-core phases that run in a full cycle when not gated.
-  for (const p of ['lint', 'backlinks', 'synthesize', 'patterns', 'recompute_emotional_weight', 'consolidate', 'resolve_symbol_edges'] as CyclePhase[]) {
+  for (const p of [
+    'lint',
+    'backlinks',
+    'patterns',
+    'recompute_emotional_weight',
+    'consolidate',
+    'resolve_symbol_edges',
+    'propose_takes',
+    'grade_takes',
+    'calibration_profile',
+    'schema-suggest',
+    'purge',
+  ] as CyclePhase[]) {
     const flag = opts.phaseEnabled?.[p];
     if (flag === false) continue;
     out.add(p);
@@ -398,6 +460,35 @@ export function evaluateWorkItem(
   entry: ExpectedWorkEntry,
   evidence: WorkEvidence | null | undefined,
   now: Date = new Date(),
+): WorkObservation {
+  const evaluated = evaluateWorkItemPolicy(entry, evidence, now);
+  if (!entry.enabled || !evidence?.force_state) return evaluated;
+
+  const forcedState = evidence.force_state;
+  const forcedReason = evidence.force_reason ?? reasonForForcedState(forcedState);
+  if (
+    forcedState === 'failed' ||
+    forcedState === 'unknown' ||
+    forcedState === 'disabled' ||
+    stateSeverity(forcedState) > stateSeverity(evaluated.state)
+  ) {
+    return {
+      ...evaluated,
+      state: forcedState,
+      reason: forcedReason,
+      repair_runbook: forcedState === 'disabled'
+        ? null
+        : entry.repair_runbook ?? defaultRunbookForReason(forcedReason),
+      next_due_at: computeNextDue(entry, evidence, now),
+    };
+  }
+  return evaluated;
+}
+
+function evaluateWorkItemPolicy(
+  entry: ExpectedWorkEntry,
+  evidence: WorkEvidence | null | undefined,
+  now: Date,
 ): WorkObservation {
   const base: WorkObservation = {
     key: entry.key,
@@ -430,17 +521,6 @@ export function evaluateWorkItem(
       state: 'unknown',
       reason: 'instrumentation_missing',
       repair_runbook: entry.repair_runbook ?? defaultRunbookForReason('instrumentation_missing'),
-    };
-  }
-
-  if (evidence?.force_state) {
-    const reason = evidence.force_reason ?? reasonForForcedState(evidence.force_state);
-    return {
-      ...base,
-      state: evidence.force_state,
-      reason,
-      repair_runbook: entry.repair_runbook ?? defaultRunbookForReason(reason),
-      next_due_at: computeNextDue(entry, evidence, now),
     };
   }
 

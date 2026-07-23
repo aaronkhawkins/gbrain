@@ -13,6 +13,7 @@ import { collectExtractRollupEvidence } from '../../../src/core/observability/co
 import { classifyDreamSkipReason } from '../../../src/core/observability/collectors/dream-phase.ts';
 
 const NOW = new Date('2026-07-23T12:00:00.000Z');
+const SOURCE_LABEL_KEY = 'test-brain-source-label-key';
 
 function engineWithRows(rows: unknown[], onSql?: (sql: string) => void): BrainEngine {
   return {
@@ -34,6 +35,7 @@ describe('Dream evidence scope and skip classification', () => {
   test('source-scoped outcomes cannot mask another source and benign no-work is successful', async () => {
     const registry = buildExpectedWorkRegistry({
       sourceIds: ['alpha', 'beta'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: ['extract_atoms', 'embed'],
       includeInfrastructure: false,
     });
@@ -84,17 +86,44 @@ describe('Dream evidence scope and skip classification', () => {
     ];
     const evidence = await collectDreamPhaseEvidence(entries, engineWithRows(rows), { now: NOW });
 
-    expect(evidence.get(dreamPhaseWorkKey('extract_atoms', 'alpha'))).toMatchObject({
+    expect(evidence.get(dreamPhaseWorkKey('extract_atoms', 'alpha', SOURCE_LABEL_KEY))).toMatchObject({
       last_success_at: '2026-07-23T11:05:00.000Z',
       recent_failures: 0,
     });
-    expect(evidence.get(dreamPhaseWorkKey('extract_atoms', 'beta'))).toMatchObject({
+    expect(evidence.get(dreamPhaseWorkKey('extract_atoms', 'beta', SOURCE_LABEL_KEY))).toMatchObject({
       last_success_at: null,
       recent_failures: 1,
       force_state: 'failed',
     });
     expect(evidence.get(dreamPhaseWorkKey('embed'))).toMatchObject({
       last_success_at: '2026-07-23T11:25:00.000Z',
+    });
+  });
+
+  test('an unscoped legacy cycle satisfies the scheduler fallback Dream entry', async () => {
+    const registry = buildExpectedWorkRegistry({
+      sourceIds: ['default'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      scheduledSourceIds: [],
+      enabledDreamPhases: ['sync'],
+      includeInfrastructure: false,
+    });
+    const entry = registry.find((candidate) =>
+      candidate.kind === 'dream_phase' && candidate.selector === 'sync'
+    )!;
+    const evidence = await collectDreamPhaseEvidence([entry], engineWithRows([{
+      name: 'autopilot-cycle',
+      status: 'completed',
+      started_at: '2026-07-23T11:00:00.000Z',
+      finished_at: '2026-07-23T11:05:00.000Z',
+      data: {},
+      result: {},
+    }]), { now: NOW });
+
+    expect(entry.scope).toEqual({ type: 'global' });
+    expect(evidence.get(entry.key)).toMatchObject({
+      last_success_at: '2026-07-23T11:05:00.000Z',
+      recent_failures: 0,
     });
   });
 });
@@ -104,9 +133,10 @@ describe('Minion evidence recovery and bounded history', () => {
     const capturedSql: string[] = [];
     const entry = buildExpectedWorkRegistry({
       sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
-    }).find((e) => e.key === minionWorkKey('autopilot-cycle', 'alpha'))!;
+    }).find((e) => e.key === minionWorkKey('autopilot-cycle', 'alpha', SOURCE_LABEL_KEY))!;
     const engine = engineWithRows([
       {
         name: 'autopilot-cycle',
@@ -147,9 +177,10 @@ describe('generic fact and link evidence', () => {
   test('facts use the engine-owned pending-fact counter', async () => {
     const entry = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
-    }).find((e) => e.key === 'facts.pending.wiki')!;
+    }).find((e) => e.selector === 'wiki' && e.kind === 'fact')!;
     const engine = {
       countUnconsolidatedFacts: async (sourceId: string) => sourceId === 'wiki' ? 7 : 0,
     } as unknown as BrainEngine;
@@ -160,9 +191,10 @@ describe('generic fact and link evidence', () => {
   test('links use the engine-owned extraction watermark counter', async () => {
     const entry = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
-    }).find((e) => e.key === 'links.extraction.wiki')!;
+    }).find((e) => e.selector === 'wiki' && e.kind === 'link')!;
     const engine = {
       countStalePagesForExtraction: async (opts: { sourceId?: string }) =>
         opts.sourceId === 'wiki' ? 3 : 0,
@@ -174,6 +206,7 @@ describe('generic fact and link evidence', () => {
   test('declared content processors use the durable extraction rollup', async () => {
     const entry = buildExpectedWorkRegistry({
       sourceIds: ['wiki'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
       enabledDreamPhases: [],
       includeInfrastructure: false,
       observability: {

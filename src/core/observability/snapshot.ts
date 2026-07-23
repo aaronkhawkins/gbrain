@@ -8,6 +8,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
+import { createHash } from 'node:crypto';
 import { currentBrainId } from '../minions/worker-registry.ts';
 import { getBuildIdentity } from '../build-identity.ts';
 import { loadAllSources } from '../sources-load.ts';
@@ -34,7 +35,7 @@ import {
   getAutopilotRecurringRegistrations,
 } from '../minions/recurring-work.ts';
 import { withObserverReadOnlyEngine } from './read-only-engine.ts';
-import { hasPendingMigrations } from '../migrate.ts';
+import { LATEST_VERSION } from '../migrate.ts';
 
 export interface BuildOperationalSnapshotOpts {
   engine: BrainEngine | null;
@@ -51,6 +52,9 @@ export interface BuildOperationalSnapshotOpts {
   collectTimeoutMs?: number;
   /** Opaque brain id override. */
   brainId?: string;
+  /** Canonical source grant resolved by sourceScopeOpts(ctx). */
+  sourceId?: string;
+  sourceIds?: string[];
   /** When true, skip live collectors and use empty evidence (status partial path). */
   skipCollectors?: boolean;
   /** False means DB-backed work must report unknown/schema_incompatible. */
@@ -78,6 +82,31 @@ function readObservability(config?: GBrainConfig | null): NonNullable<GBrainConf
   return raw && typeof raw === 'object' ? raw : {};
 }
 
+/** Derive per-brain HMAC material without ever exporting the DB locator. */
+export function deriveSourceLabelKey(config?: GBrainConfig | null): string | null {
+  const locator = config?.database_url ?? config?.database_path;
+  if (!locator) return null;
+  return createHash('sha256')
+    .update('gbrain-observability-label-key-v1\0')
+    .update(locator)
+    .digest('hex');
+}
+
+function allowedSourceSet(scope: {
+  sourceId?: string;
+  sourceIds?: string[];
+}): Set<string> | null {
+  if (scope.sourceIds !== undefined) return new Set(scope.sourceIds);
+  if (scope.sourceId !== undefined) return new Set([scope.sourceId]);
+  return null;
+}
+
+function parseDbBoolean(raw: string | null): boolean | undefined {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return undefined;
+}
+
 /**
  * Discover registry inputs from a live engine. Best-effort: missing pack or
  * sources yields an empty list for that axis, never throws past the boundary.
@@ -85,15 +114,18 @@ function readObservability(config?: GBrainConfig | null): NonNullable<GBrainConf
 export async function discoverRegistryInput(
   engine: BrainEngine | null,
   config?: GBrainConfig | null,
+  scope: { sourceId?: string; sourceIds?: string[] } = {},
 ): Promise<RegistryInput> {
   const observability = readObservability(config);
   const sourceIds: string[] = [];
   const scheduledSourceIds: string[] = [];
   const discoveryFailures: RegistryInput['discoveryFailures'] = [];
+  const allowedSources = allowedSourceSet(scope);
   if (engine) {
     try {
       const sources = await loadAllSources(engine, { includeArchived: false });
       for (const s of sources) {
+        if (allowedSources && !allowedSources.has(s.id)) continue;
         sourceIds.push(s.id);
         if (s.local_path) scheduledSourceIds.push(s.id);
       }
@@ -122,24 +154,42 @@ export async function discoverRegistryInput(
     discoveryFailures.push('dream_phases');
   }
 
-  // Opt-in phase flags from config (DB or file plane).
+  // Runtime phase gates are DB-plane values read by the phase implementations.
   const phaseEnabled: Record<string, boolean | undefined> = {};
-  const cfgAny = config as Record<string, unknown> | null | undefined;
-  if (cfgAny) {
-    // Nested dream / cycle config if present.
-    const dream = cfgAny.dream as Record<string, unknown> | undefined;
-    const cycle = cfgAny.cycle as Record<string, unknown> | undefined;
-    for (const root of [dream, cycle]) {
-      if (!root || typeof root !== 'object') continue;
-      for (const [k, v] of Object.entries(root)) {
-        if (v && typeof v === 'object' && 'enabled' in (v as object)) {
-          phaseEnabled[k] = (v as { enabled?: boolean }).enabled;
-        }
-      }
+  let synthesizeCorpusConfigured = false;
+  if (engine) {
+    try {
+      const [
+        synthEnabled,
+        synthCorpus,
+        patternsEnabled,
+        conversationFactsEnabled,
+        enrichThinEnabled,
+        skilloptEnabled,
+      ] = await Promise.all([
+        engine.getConfig('dream.synthesize.enabled'),
+        engine.getConfig('dream.synthesize.session_corpus_dir'),
+        engine.getConfig('dream.patterns.enabled'),
+        engine.getConfig('cycle.conversation_facts_backfill.enabled'),
+        engine.getConfig('cycle.enrich_thin.enabled'),
+        engine.getConfig('cycle.skillopt.enabled'),
+      ]);
+      phaseEnabled.synthesize = parseDbBoolean(synthEnabled);
+      phaseEnabled.patterns = parseDbBoolean(patternsEnabled);
+      phaseEnabled.conversation_facts_backfill = parseDbBoolean(conversationFactsEnabled);
+      phaseEnabled.enrich_thin = parseDbBoolean(enrichThinEnabled);
+      phaseEnabled.skillopt = parseDbBoolean(skilloptEnabled);
+      synthesizeCorpusConfigured = Boolean(synthCorpus?.trim());
+    } catch {
+      discoveryFailures.push('dream_phases');
     }
   }
 
-  const enabledDreamPhases = resolveEnabledDreamPhases({ packPhases, phaseEnabled });
+  const enabledDreamPhases = resolveEnabledDreamPhases({
+    packPhases,
+    phaseEnabled,
+    synthesizeCorpusConfigured,
+  });
   let globalFloorMinutes = AUTOPILOT_GLOBAL_FLOOR_MINUTES;
   if (engine) {
     try {
@@ -153,6 +203,9 @@ export async function discoverRegistryInput(
 
   return {
     sourceIds,
+    ...(sourceIds.length > 0
+      ? { sourceLabelKey: deriveSourceLabelKey(config) ?? undefined }
+      : {}),
     scheduledSourceIds,
     enabledDreamPhases,
     recurringMinions: getAutopilotRecurringRegistrations({
@@ -177,7 +230,17 @@ export async function buildOperationalSnapshot(
 
   let registry = opts.registry;
   if (!registry) {
-    const input = await discoverRegistryInput(opts.engine, config);
+    const input = await discoverRegistryInput(opts.engine, config, {
+      sourceId: opts.sourceId,
+      sourceIds: opts.sourceIds,
+    });
+    if (input.sourceIds.length > 0 && !input.sourceLabelKey) {
+      input.sourceIds = [];
+      input.scheduledSourceIds = [];
+      input.discoveryFailures = [
+        ...new Set([...(input.discoveryFailures ?? []), 'sources' as const]),
+      ];
+    }
     registry = buildExpectedWorkRegistry(input);
     if ((input.discoveryFailures?.length ?? 0) > 0) partial = true;
   }
@@ -259,7 +322,7 @@ export async function buildReadOnlyOperationalSnapshot(
 ): Promise<OperationalSnapshot> {
   return withObserverReadOnlyEngine(opts.engine, async (engine) => {
     const schemaCompatible = engine
-      ? !(await hasPendingMigrations(engine))
+      ? await observerSchemaCompatible(engine)
       : undefined;
     return buildOperationalSnapshot({
       ...opts,
@@ -267,6 +330,17 @@ export async function buildReadOnlyOperationalSnapshot(
       schemaCompatible,
     });
   });
+}
+
+export async function observerSchemaCompatible(engine: BrainEngine): Promise<boolean> {
+  try {
+    const raw = await engine.getConfig('version');
+    if (raw == null || !/^[0-9]+$/.test(raw.trim())) return false;
+    const observed = Number(raw);
+    return Number.isSafeInteger(observed) && observed === LATEST_VERSION;
+  } catch {
+    return false;
+  }
 }
 
 /**
