@@ -6,7 +6,11 @@ import type { BrainEngine } from '../../engine.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from '../../link-extraction.ts';
 import type { CollectorOpts } from './index.ts';
-import { finiteNumber, unavailableEvidence } from './helpers.ts';
+import {
+  finiteNumber,
+  sourceIdsForScope,
+  unavailableEvidence,
+} from './helpers.ts';
 
 interface CountRow {
   source_id: string;
@@ -16,7 +20,7 @@ interface CountRow {
 export async function collectLinkEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  _opts: CollectorOpts,
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
@@ -24,7 +28,19 @@ export async function collectLinkEvidence(
     return out;
   }
 
-  const sourceIds = [...new Set(entries.map((entry) => entry.selector))];
+  const sourceGrant = sourceIdsForScope(opts);
+  const allowed = sourceGrant ? new Set(sourceGrant) : null;
+  const scopedEntries = allowed
+    ? entries.filter((entry) => allowed.has(entry.selector))
+    : entries;
+  for (const entry of entries) {
+    if (!scopedEntries.includes(entry)) {
+      out.set(entry.key, unavailableEvidence('evidence_unavailable'));
+    }
+  }
+  if (scopedEntries.length === 0) return out;
+
+  const sourceIds = [...new Set(scopedEntries.map((entry) => entry.selector))];
   try {
     const rows = await engine.executeRaw<CountRow>(
       `SELECT source_id, COUNT(*)::int AS count
@@ -40,7 +56,7 @@ export async function collectLinkEvidence(
       [sourceIds, LINK_EXTRACTOR_VERSION_TS],
     );
     const counts = new Map(rows.map((row) => [row.source_id, finiteNumber(row.count)]));
-    for (const entry of entries) {
+    for (const entry of scopedEntries) {
       out.set(entry.key, backlogEvidence(counts.get(entry.selector) ?? 0));
     }
     return out;
@@ -49,7 +65,7 @@ export async function collectLinkEvidence(
     // without discarding healthy evidence from its siblings.
   }
 
-  for (const entry of entries) {
+  for (const entry of scopedEntries) {
     try {
       const backlog = typeof engine.countStalePagesForExtraction === 'function'
         ? await engine.countStalePagesForExtraction({

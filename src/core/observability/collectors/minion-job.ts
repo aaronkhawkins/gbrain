@@ -7,11 +7,12 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import type { CollectorOpts } from './index.ts';
 import {
   newestIso,
   parseJsonRecord,
+  sourceIdsForScope,
   toIsoTimestamp,
   unavailableEvidence,
 } from './helpers.ts';
@@ -73,7 +74,7 @@ function entryScopeKey(entry: ExpectedWorkEntry): string {
 export async function collectMinionJobEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  opts: { config?: GBrainConfig | null; now: Date },
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
@@ -88,6 +89,11 @@ export async function collectMinionJobEvidence(
 
   const names = [...new Set(entries.map((entry) => entry.selector))];
   if (names.length === 0) return out;
+  const sourceIds = sourceIdsForScope(opts);
+  const sourcePredicate = sourceIds
+    ? `AND COALESCE(data->>'source_id', data->>'sourceId') = ANY($2::text[])`
+    : '';
+  const batchParams = sourceIds ? [names, sourceIds] : [names];
 
   let attempts: JobEvidenceRow[];
   let backlogRows: BacklogAggregateRow[];
@@ -100,11 +106,12 @@ export async function collectMinionJobEvidence(
          SELECT name, status, created_at, started_at, finished_at, updated_at, data
          FROM minion_jobs
          WHERE name = requested.name
+           ${sourcePredicate}
            AND status IN ('completed', 'failed', 'dead', 'cancelled')
          ORDER BY COALESCE(finished_at, started_at, updated_at, created_at) DESC, id DESC
          LIMIT ${MINION_ATTEMPT_HISTORY_LIMIT}
        ) recent`,
-      [names],
+      batchParams,
     );
     backlogRows = await engine.executeRaw<BacklogAggregateRow>(
       `SELECT name,
@@ -113,9 +120,10 @@ export async function collectMinionJobEvidence(
               MIN(created_at) AS oldest_created_at
        FROM minion_jobs
        WHERE name = ANY($1::text[])
+         ${sourcePredicate}
          AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')
        GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
-      [names],
+      batchParams,
     );
   } catch {
     // Engine parity fallback: bounded per-name reads avoid FILTER/window
@@ -125,14 +133,16 @@ export async function collectMinionJobEvidence(
       attempts = [];
       backlogRows = [];
       for (const name of names) {
+        const perNameParams = sourceIds ? [name, sourceIds] : [name];
         attempts.push(...await engine.executeRaw<JobEvidenceRow>(
           `SELECT name, status, created_at, started_at, finished_at, updated_at, data
            FROM minion_jobs
            WHERE name = $1
+             ${sourcePredicate}
              AND status IN ('completed', 'failed', 'dead', 'cancelled')
            ORDER BY COALESCE(finished_at, started_at, updated_at, created_at) DESC, id DESC
            LIMIT ${MINION_ATTEMPT_HISTORY_LIMIT}`,
-          [name],
+          perNameParams,
         ));
         backlogRows.push(...await engine.executeRaw<BacklogAggregateRow>(
           `SELECT name,
@@ -141,9 +151,10 @@ export async function collectMinionJobEvidence(
                   MIN(created_at) AS oldest_created_at
            FROM minion_jobs
            WHERE name = $1
+             ${sourcePredicate}
              AND status IN ('waiting', 'active', 'delayed', 'waiting-children', 'paused')
            GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
-          [name],
+          perNameParams,
         ));
       }
     } catch {

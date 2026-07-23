@@ -7,6 +7,7 @@ import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import type { CollectorOpts } from './index.ts';
 import {
   finiteNumber,
+  sourceIdsForScope,
   unavailableEvidence,
   unavailableEvidenceMap,
 } from './helpers.ts';
@@ -19,12 +20,24 @@ interface CountRow {
 export async function collectFactEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  _opts: CollectorOpts,
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) return unavailableEvidenceMap(entries, 'db_unreachable');
 
-  const sourceIds = [...new Set(entries.map((entry) => entry.selector))];
+  const sourceGrant = sourceIdsForScope(opts);
+  const allowed = sourceGrant ? new Set(sourceGrant) : null;
+  const scopedEntries = allowed
+    ? entries.filter((entry) => allowed.has(entry.selector))
+    : entries;
+  for (const entry of entries) {
+    if (!scopedEntries.includes(entry)) {
+      out.set(entry.key, unavailableEvidence('evidence_unavailable'));
+    }
+  }
+  if (scopedEntries.length === 0) return out;
+
+  const sourceIds = [...new Set(scopedEntries.map((entry) => entry.selector))];
   try {
     const rows = await engine.executeRaw<CountRow>(
       `SELECT source_id, COUNT(*)::int AS count
@@ -36,7 +49,7 @@ export async function collectFactEvidence(
       [sourceIds],
     );
     const counts = new Map(rows.map((row) => [row.source_id, finiteNumber(row.count)]));
-    for (const entry of entries) {
+    for (const entry of scopedEntries) {
       out.set(entry.key, backlogEvidence(counts.get(entry.selector) ?? 0));
     }
     return out;
@@ -46,7 +59,7 @@ export async function collectFactEvidence(
     // not the batched raw-query surface.
   }
 
-  for (const entry of entries) {
+  for (const entry of scopedEntries) {
     try {
       const backlog = typeof engine.countUnconsolidatedFacts === 'function'
         ? await engine.countUnconsolidatedFacts(entry.selector)

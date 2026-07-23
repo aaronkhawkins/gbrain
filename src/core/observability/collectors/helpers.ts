@@ -16,6 +16,20 @@ export interface UnavailableEvidenceOptions {
   recent_failures?: number | null;
 }
 
+export interface SourceScopeOptions {
+  sourceId?: string;
+  sourceIds?: string[];
+}
+
+/** Resolve the canonical source grant without widening an explicit empty grant. */
+export function sourceIdsForScope(
+  scope: SourceScopeOptions,
+): string[] | undefined {
+  if (scope.sourceIds !== undefined) return [...new Set(scope.sourceIds)];
+  if (scope.sourceId !== undefined) return [scope.sourceId];
+  return undefined;
+}
+
 export function unavailableEvidence(
   reason: UnavailableReason,
   options: UnavailableEvidenceOptions = {},

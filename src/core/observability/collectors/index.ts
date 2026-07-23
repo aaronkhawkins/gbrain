@@ -24,6 +24,7 @@ import { collectLinkEvidence } from './links.ts';
 import { collectExtractRollupEvidence } from './extract-rollup.ts';
 import { collectDiscoveryEvidence } from './discovery.ts';
 import {
+  sourceIdsForScope,
   unavailableEvidence,
   unavailableEvidenceMap,
 } from './helpers.ts';
@@ -34,6 +35,9 @@ export interface CollectAllOpts {
   config?: GBrainConfig | null;
   now?: Date;
   timeoutMs?: number;
+  /** Canonical source grant for remote snapshots; undefined means whole brain. */
+  sourceId?: string;
+  sourceIds?: string[];
   /** Test/extension seam; production uses the fixed adapter registry. */
   adapters?: Partial<Record<EvidenceAdapterId, AdapterFn>>;
   /** Raw details stay local and never enter snapshots. */
@@ -59,6 +63,8 @@ export interface CollectorOpts {
   config?: GBrainConfig | null;
   now: Date;
   context?: CollectorContext;
+  sourceId?: string;
+  sourceIds?: string[];
   /** Adapter deadline; async probes should stop promptly when aborted. */
   signal?: AbortSignal;
 }
@@ -89,13 +95,20 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
   const warnings: ObservabilityWarningCode[] = [];
   let partial = false;
   let sourceMetrics: Promise<SourceMetrics[]> | undefined;
+  const scopedSourceIds = sourceIdsForScope(opts);
   const contextFor = (engine: BrainEngine | null): CollectorContext => ({
     getSourceMetrics: () => {
       if (!sourceMetrics) {
         sourceMetrics = (async () => {
           if (!engine) throw new Error('database unavailable');
-          const sources = await loadAllSources(engine, { includeArchived: false });
-          return computeAllSourceMetrics(engine, sources, { probeContent: false });
+          const sources = await loadAllSources(engine, {
+            includeArchived: false,
+            sourceIds: scopedSourceIds,
+          });
+          return computeAllSourceMetrics(engine, sources, {
+            probeContent: false,
+            sourceIds: scopedSourceIds,
+          });
         })();
       }
       return sourceMetrics;
@@ -153,6 +166,8 @@ export async function collectAllEvidence(opts: CollectAllOpts): Promise<CollectA
           now,
           context: contextFor(adapterEngine),
           signal: controller.signal,
+          sourceId: opts.sourceId,
+          sourceIds: opts.sourceIds,
         }),
         remaining,
         controller,
@@ -212,16 +227,16 @@ async function withTimeout<T>(
  * every raw query issued by an adapter or a helper it calls.
  */
 function withAbortSignal(engine: BrainEngine, signal: AbortSignal): BrainEngine {
-  return new Proxy(engine, {
-    get(target, property) {
+  return new Proxy({} as BrainEngine, {
+    get(_target, property) {
       if (property === 'executeRaw') {
         return <T = Record<string, unknown>>(
           sql: string,
           params?: unknown[],
-        ): Promise<T[]> => target.executeRaw<T>(sql, params, { signal });
+        ): Promise<T[]> => engine.executeRaw<T>(sql, params, { signal });
       }
-      const value = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
+      const value = Reflect.get(engine, property, engine);
+      return typeof value === 'function' ? value.bind(engine) : value;
     },
   });
 }

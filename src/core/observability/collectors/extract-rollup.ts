@@ -6,10 +6,11 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
+import type { CollectorOpts } from './index.ts';
 import {
   finiteNumber,
+  sourceIdsForScope,
   toIsoTimestampStrict,
   unavailableEvidence,
 } from './helpers.ts';
@@ -25,7 +26,7 @@ interface ExtractRollupRow {
 export async function collectExtractRollupEvidence(
   entries: ExpectedWorkEntry[],
   engine: BrainEngine | null,
-  _opts: { config?: GBrainConfig | null; now: Date },
+  opts: CollectorOpts,
 ): Promise<Map<string, WorkEvidence | null>> {
   const out = new Map<string, WorkEvidence | null>();
   if (!engine) {
@@ -35,6 +36,7 @@ export async function collectExtractRollupEvidence(
 
   const selectors = [...new Set(entries.map((entry) => entry.selector))];
   try {
+    const sourceIds = sourceIdsForScope(opts);
     const rows = await engine.executeRaw<ExtractRollupRow>(
       `SELECT
          kind,
@@ -44,9 +46,10 @@ export async function collectExtractRollupEvidence(
          SUM(halt_count + eval_fail_count + rollup_write_failures) AS failures
        FROM extract_rollup_7d
        WHERE kind = ANY($1::text[])
+         ${sourceIds ? 'AND source_id = ANY($2::text[])' : ''}
          AND day >= CURRENT_DATE - INTERVAL '7 days'
        GROUP BY kind, source_id`,
-      [selectors],
+      sourceIds ? [selectors, sourceIds] : [selectors],
     );
     for (const entry of entries) {
       const row = rows.find((candidate) =>

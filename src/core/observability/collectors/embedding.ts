@@ -7,7 +7,7 @@ import { computeAllSourceMetrics } from '../../source-health.ts';
 import { loadAllSources } from '../../sources-load.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../types.ts';
 import type { CollectorOpts } from './index.ts';
-import { unavailableEvidence } from './helpers.ts';
+import { sourceIdsForScope, unavailableEvidence } from './helpers.ts';
 
 export async function collectEmbeddingEvidence(
   entries: ExpectedWorkEntry[],
@@ -37,12 +37,13 @@ export async function collectEmbeddingEvidence(
   }
 
   try {
+    const sourceIds = sourceIdsForScope(opts);
     const metrics = opts.context
       ? await opts.context.getSourceMetrics()
       : await computeAllSourceMetrics(
         engine,
-        await loadAllSources(engine, { includeArchived: false }),
-        { probeContent: false },
+        await loadAllSources(engine, { includeArchived: false, sourceIds }),
+        { probeContent: false, sourceIds },
       );
     let totalChunks = 0;
     let embedded = 0;
