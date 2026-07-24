@@ -54,6 +54,19 @@ describe('Phase 1A deployment contract', () => {
     expect(body).toContain('minion.autopilot-cycle.<source-id>');
     expect(body).toContain('minion.maintain');
     expect(body).toContain('Overrides match the full generated');
+    expect(body).toContain('minion.ingest_capture.s_');
+    expect(body).toContain('existing generic item panels and alerts');
+  });
+
+  test('native-intake failure recovery is bounded and preserves unrelated failures', () => {
+    const backlog = readFileSync(
+      join(ROOT, 'docs/runbooks/observability/backlog.md'),
+      'utf8',
+    );
+    expect(backlog).toContain('minion.ingest_capture.s_');
+    expect(backlog).toContain('retry the specific job id');
+    expect(backlog).toContain('other unresolved failures');
+    expect(backlog).not.toMatch(/payload|external[_ -]?id|source[_ -]?uri/i);
   });
 
   test('changed public observability docs contain no private deployment identifiers', () => {

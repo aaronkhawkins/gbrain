@@ -11,6 +11,7 @@ import {
   sourceWorkKey,
   dreamPhaseWorkKey,
   minionWorkKey,
+  nativeIntakeWorkKey,
 } from '../../src/core/observability/expected-work.ts';
 import type { ExpectedWorkEntry, WorkEvidence } from '../../src/core/observability/types.ts';
 
@@ -71,6 +72,32 @@ describe('buildExpectedWorkRegistry', () => {
       evidence_adapter: 'links',
       selector: 'wiki',
     }));
+  });
+
+  test('discovers enabled native-intake targets as opaque event-driven Minion work', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: ['producer', 'research', 'canonical'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      nativeIntakeTargetIds: ['research', 'canonical'],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    });
+
+    const intake = reg.filter((entry) => entry.selector === 'ingest_capture');
+    expect(intake).toHaveLength(2);
+    expect(intake).toContainEqual(expect.objectContaining({
+      key: nativeIntakeWorkKey('research', SOURCE_LABEL_KEY),
+      kind: 'minion',
+      scope: { type: 'source', source_id: 'research' },
+      cadence_seconds: null,
+      evidence_adapter: 'minion_job',
+      healthy_when_idle: true,
+      track_unresolved_failures: true,
+      repair_runbook: 'backlog',
+    }));
+    expect(JSON.stringify(intake.map((entry) => entry.key))).not.toContain('research');
+    expect(intake.some((entry) => entry.scope?.type === 'source' &&
+      entry.scope.source_id === 'producer')).toBe(false);
   });
 
   test('discovers registered processors without processor-specific observer code', () => {

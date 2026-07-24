@@ -1,9 +1,12 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import type { BrainEngine } from '../../../src/core/engine.ts';
+import { PGLiteEngine } from '../../../src/core/pglite-engine.ts';
+import { MinionQueue } from '../../../src/core/minions/queue.ts';
 import {
   buildExpectedWorkRegistry,
   dreamPhaseWorkKey,
   minionWorkKey,
+  nativeIntakeWorkKey,
 } from '../../../src/core/observability/expected-work.ts';
 import { collectDreamPhaseEvidence } from '../../../src/core/observability/collectors/dream-phase.ts';
 import { collectMinionJobEvidence } from '../../../src/core/observability/collectors/minion-job.ts';
@@ -325,6 +328,155 @@ describe('Minion evidence recovery and bounded history', () => {
       backlog_items: 100000,
       oldest_pending_age_seconds: 10800,
     });
+  });
+});
+
+describe('native-intake Minion operational truth', () => {
+  let engine: PGLiteEngine;
+  let queue: MinionQueue;
+  let entry: ReturnType<typeof buildExpectedWorkRegistry>[number];
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({ database_url: '' });
+    await engine.initSchema();
+    queue = new MinionQueue(engine);
+    entry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      nativeIntakeTargetIds: ['alpha'],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    }).find((candidate) =>
+      candidate.key === nativeIntakeWorkKey('alpha', SOURCE_LABEL_KEY)
+    )!;
+  }, 30_000);
+
+  beforeEach(async () => {
+    await engine.executeRaw('DELETE FROM minion_jobs');
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  }, 30_000);
+
+  test('an idle event-driven intake is healthy when all evidence queries succeed', async () => {
+    const evidence = await collectMinionJobEvidence([entry], engine, { now: NOW });
+
+    expect(evidence.get(entry.key)).toEqual({
+      last_attempt_at: null,
+      last_success_at: null,
+      backlog_items: 0,
+      oldest_pending_age_seconds: null,
+      recent_failures: 0,
+    });
+  });
+
+  test('waiting, active, and delayed intake report backlog count and oldest age', async () => {
+    await engine.executeRaw(
+      `INSERT INTO minion_jobs (name, status, data, created_at)
+       VALUES
+         ('ingest_capture', 'waiting', '{"sourceId":"alpha"}'::jsonb, '2026-07-23T10:00:00.000Z'),
+         ('ingest_capture', 'active',  '{"sourceId":"alpha"}'::jsonb, '2026-07-23T11:00:00.000Z'),
+         ('ingest_capture', 'delayed', '{"sourceId":"alpha"}'::jsonb, '2026-07-23T11:30:00.000Z')`,
+    );
+
+    const evidence = await collectMinionJobEvidence([entry], engine, { now: NOW });
+
+    expect(evidence.get(entry.key)).toMatchObject({
+      backlog_items: 3,
+      oldest_pending_age_seconds: 7200,
+      recent_failures: 0,
+      force_state: 'degraded',
+      force_reason: 'stalled',
+    });
+  });
+
+  test('old unresolved dead work survives newer success, 24 hours, and the newest 100 attempts', async () => {
+    await engine.executeRaw(
+      `INSERT INTO minion_jobs (name, status, data, created_at, finished_at)
+       VALUES (
+         'ingest_capture',
+         'dead',
+         '{"sourceId":"alpha"}'::jsonb,
+         '2026-07-20T11:00:00.000Z',
+         '2026-07-20T11:05:00.000Z'
+       )`,
+    );
+    await engine.executeRaw(
+      `INSERT INTO minion_jobs (name, status, data, created_at, finished_at)
+       SELECT
+         'ingest_capture',
+         'completed',
+         '{"sourceId":"alpha"}'::jsonb,
+         '2026-07-23T11:00:00.000Z'::timestamptz + (n * interval '1 second'),
+         '2026-07-23T11:00:00.000Z'::timestamptz + (n * interval '1 second')
+       FROM generate_series(1, 101) AS n`,
+    );
+
+    const evidence = await collectMinionJobEvidence([entry], engine, { now: NOW });
+
+    expect(evidence.get(entry.key)).toMatchObject({
+      last_success_at: '2026-07-23T11:01:41.000Z',
+      recent_failures: 1,
+      backlog_items: 0,
+      force_state: 'failed',
+      force_reason: 'dead',
+    });
+  });
+
+  test('retry completion clears only its own unresolved failure', async () => {
+    const first = await queue.add(
+      'ingest_capture',
+      { sourceId: 'alpha' },
+      { remove_on_complete: false, remove_on_fail: false },
+      { allowProtectedSubmit: true },
+    );
+    const second = await queue.add(
+      'ingest_capture',
+      { sourceId: 'alpha' },
+      { remove_on_complete: false, remove_on_fail: false },
+      { allowProtectedSubmit: true },
+    );
+    await engine.executeRaw(
+      `UPDATE minion_jobs
+          SET status = CASE WHEN id = $1 THEN 'dead' ELSE 'failed' END,
+              finished_at = now(),
+              updated_at = now()
+        WHERE id = ANY($2::int[])`,
+      [first.id, [first.id, second.id]],
+    );
+
+    const bothFailed = await collectMinionJobEvidence([entry], engine, { now: NOW });
+    expect(bothFailed.get(entry.key)).toMatchObject({
+      recent_failures: 2,
+      force_state: 'failed',
+      force_reason: 'dead',
+    });
+
+    expect(await queue.retryJob(first.id)).not.toBeNull();
+    const claimed = await queue.claim('retry-token', 60_000, 'default', ['ingest_capture']);
+    expect(claimed?.id).toBe(first.id);
+    expect(await queue.completeJob(first.id, 'retry-token')).not.toBeNull();
+
+    const oneFailed = await collectMinionJobEvidence([entry], engine, { now: NOW });
+    expect(oneFailed.get(entry.key)).toMatchObject({
+      recent_failures: 1,
+      force_state: 'degraded',
+      force_reason: 'recent_failures',
+    });
+
+    expect(await queue.retryJob(second.id)).not.toBeNull();
+    const claimedSecond = await queue.claim('retry-token-2', 60_000, 'default', ['ingest_capture']);
+    expect(claimedSecond?.id).toBe(second.id);
+    expect(await queue.completeJob(second.id, 'retry-token-2')).not.toBeNull();
+
+    const recovered = await collectMinionJobEvidence([entry], engine, { now: NOW });
+    expect(recovered.get(entry.key)).toMatchObject({
+      recent_failures: 0,
+      backlog_items: 0,
+    });
+    expect(recovered.get(entry.key)?.force_state).toBeUndefined();
   });
 });
 

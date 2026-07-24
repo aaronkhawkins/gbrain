@@ -37,6 +37,7 @@ import {
 import { withObserverReadOnlyEngine } from './read-only-engine.ts';
 import { LATEST_VERSION } from '../migrate.ts';
 import { listProcessingRegistrations } from '../processing-receipts.ts';
+import { parseNativeIntakeTargetPolicy } from '../ingestion/native-intake.ts';
 
 export interface BuildOperationalSnapshotOpts {
   engine: BrainEngine | null;
@@ -137,6 +138,7 @@ export async function discoverRegistryInput(
 ): Promise<RegistryInput> {
   const observability = readObservability(config);
   const sourceIds: string[] = [];
+  const nativeIntakeTargetIds: string[] = [];
   const scheduledSourceIds: string[] = [];
   const discoveryFailures: RegistryInput['discoveryFailures'] = [];
   const allowedSources = allowedSourceSet(scope);
@@ -149,6 +151,9 @@ export async function discoverRegistryInput(
       for (const s of sources) {
         if (allowedSources && !allowedSources.has(s.id)) continue;
         sourceIds.push(s.id);
+        if (parseNativeIntakeTargetPolicy(s.config)) {
+          nativeIntakeTargetIds.push(s.id);
+        }
         if (s.local_path) scheduledSourceIds.push(s.id);
       }
     } catch {
@@ -245,6 +250,7 @@ export async function discoverRegistryInput(
 
   return {
     sourceIds,
+    nativeIntakeTargetIds,
     ...(sourceIds.length > 0
       ? { sourceLabelKey: deriveSourceLabelKey(config) ?? undefined }
       : {}),

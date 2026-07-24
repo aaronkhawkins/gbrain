@@ -102,7 +102,7 @@ export function renderOpenMetrics(snapshot: OperationalSnapshot): string {
   lines.push('# TYPE gbrain_expected_work_backlog_items gauge');
   lines.push('# HELP gbrain_expected_work_oldest_pending_age_seconds Age of oldest pending item.');
   lines.push('# TYPE gbrain_expected_work_oldest_pending_age_seconds gauge');
-  lines.push('# HELP gbrain_expected_work_recent_failures Recent failure count.');
+  lines.push('# HELP gbrain_expected_work_recent_failures Recent or currently unresolved failure count.');
   lines.push('# TYPE gbrain_expected_work_recent_failures gauge');
   lines.push('# HELP gbrain_expected_work_reason One-hot reason code for expected work.');
   lines.push('# TYPE gbrain_expected_work_reason gauge');
