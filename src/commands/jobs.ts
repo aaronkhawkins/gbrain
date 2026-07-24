@@ -28,7 +28,10 @@ import {
 } from '../core/facts/durable-job.ts';
 
 const MAX_MEDIA_JSON_BYTES = 1_000_000;
-const MAX_MEDIA_TRANSCRIPTION_RESULT_BYTES = 5_000_000;
+// Normalized evidence can contain both the joined transcript and up to 100k
+// bounded segments. This remains finite while allowing every schema-valid
+// result produced by the worker to be exported to a materializer.
+const MAX_MEDIA_TRANSCRIPTION_RESULT_BYTES = 32 * 1024 * 1024;
 
 function boundedMediaTranscriptionResult(
   job: MinionJob,
