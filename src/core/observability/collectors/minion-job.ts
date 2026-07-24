@@ -286,24 +286,19 @@ export async function collectMinionJobEvidence(
 
     const backlogCount = scopedBacklog?.count ?? 0;
     if (scopedAttempts.length === 0 && backlogCount === 0) {
-      if (entry.healthy_when_idle) {
-        out.set(entry.key, {
-          last_attempt_at: null,
-          last_success_at: null,
-          backlog_items: 0,
-          oldest_pending_age_seconds: null,
-          recent_failures: failureCount,
-        });
+      if (!entry.healthy_when_idle) {
+        out.set(
+          entry.key,
+          unavailableEvidence('evidence_unavailable', {
+            backlog_items: 0,
+            recent_failures: 0,
+          }),
+        );
         continue;
       }
-      out.set(
-        entry.key,
-        unavailableEvidence('evidence_unavailable', {
-          backlog_items: 0,
-          recent_failures: 0,
-        }),
-      );
-      continue;
+      // Event-driven work may be idle, but durable failure aggregates still
+      // flow through the shared state override below. Returning healthy here
+      // would let another source's newer attempts hide this source's failure.
     }
 
     out.set(entry.key, {

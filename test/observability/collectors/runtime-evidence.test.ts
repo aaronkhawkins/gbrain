@@ -425,6 +425,59 @@ describe('native-intake Minion operational truth', () => {
     });
   });
 
+  test('one target old dead row is not hidden by more than 100 newer attempts from another target', async () => {
+    const registry = buildExpectedWorkRegistry({
+      sourceIds: ['alpha', 'beta'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      nativeIntakeTargetIds: ['alpha', 'beta'],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    });
+    const entries = registry.filter((candidate) => candidate.selector === 'ingest_capture');
+    const alpha = entries.find((candidate) =>
+      candidate.key === nativeIntakeWorkKey('alpha', SOURCE_LABEL_KEY)
+    )!;
+    const beta = entries.find((candidate) =>
+      candidate.key === nativeIntakeWorkKey('beta', SOURCE_LABEL_KEY)
+    )!;
+    await engine.executeRaw(
+      `INSERT INTO minion_jobs (name, status, data, created_at, finished_at)
+       VALUES (
+         'ingest_capture',
+         'dead',
+         '{"sourceId":"alpha"}'::jsonb,
+         '2026-07-20T11:00:00.000Z',
+         '2026-07-20T11:05:00.000Z'
+       )`,
+    );
+    await engine.executeRaw(
+      `INSERT INTO minion_jobs (name, status, data, created_at, finished_at)
+       SELECT
+         'ingest_capture',
+         'completed',
+         '{"sourceId":"beta"}'::jsonb,
+         '2026-07-23T11:00:00.000Z'::timestamptz + (n * interval '1 second'),
+         '2026-07-23T11:00:00.000Z'::timestamptz + (n * interval '1 second')
+       FROM generate_series(1, 101) AS n`,
+    );
+
+    const evidence = await collectMinionJobEvidence(entries, engine, { now: NOW });
+
+    expect(evidence.get(alpha.key)).toMatchObject({
+      last_attempt_at: null,
+      last_success_at: null,
+      recent_failures: 1,
+      backlog_items: 0,
+      force_state: 'failed',
+      force_reason: 'dead',
+    });
+    expect(evidence.get(beta.key)).toMatchObject({
+      recent_failures: 0,
+      backlog_items: 0,
+    });
+    expect(evidence.get(beta.key)?.force_state).toBeUndefined();
+  });
+
   test('retry completion clears only its own unresolved failure', async () => {
     const first = await queue.add(
       'ingest_capture',
