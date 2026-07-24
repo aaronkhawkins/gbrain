@@ -682,6 +682,22 @@ export function deriveNativeIntakeIdempotencyKey(
 }
 
 /**
+ * Derive the default page slug for one logical native delivery.
+ *
+ * The slug uses the same stable identity scope as queue idempotency and does
+ * not include receipt time. A worker retry after UTC midnight therefore
+ * targets the original page instead of deriving a second date-based slug.
+ * Explicit metadata.slug remains an admission-time override.
+ */
+export function deriveNativeIntakeOutputSlug(
+  input: NativeIntakeIdempotencyInput,
+): string {
+  const idempotencyDigest = deriveNativeIntakeIdempotencyKey(input)
+    .slice('native-intake:'.length);
+  return `inbox/native-${idempotencyDigest}`;
+}
+
+/**
  * Compute SHA-256 hex of a string. Helper for source authors so they don't
  * each invent their own hashing. Sources can also pre-hash binary content
  * separately (e.g. file-watcher hashes the file bytes, not the path).
