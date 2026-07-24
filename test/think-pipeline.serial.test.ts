@@ -374,6 +374,7 @@ describe('runThink + persistSynthesis — #1698 never persist empty', () => {
 describe('think MCP op — #1698 C3 + #10', () => {
   const baseCtx = (remote: boolean) => ({
     engine, config: {} as any, dryRun: false, remote,
+    sourceId: 'default',
     logger: { info() {}, warn() {}, error() {}, debug() {} } as any,
   });
 

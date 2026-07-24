@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as realEmbedding from '../src/core/embedding.ts';
+import { seedTestEmbeddingIdentity } from './helpers/embedding-identity-fixture.ts';
 
 /** Deterministic 1536d unit vector — identical for every call, so the
  * second consult matches the first write at cosine 1.0. */
@@ -69,6 +70,7 @@ beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  await seedTestEmbeddingIdentity(engine);
 
   // Three keyword-findable pages, ~200 tokens each, mixed types so dedup's
   // type-diversity layer keeps all of them. putPage never chunks —
