@@ -566,11 +566,11 @@ export class MinionQueue {
   /**
    * Prune old jobs in terminal statuses. Returns count of deleted rows.
    *
-   * Native-intake rows intentionally trade storage for durable idempotency:
-   * their globally scoped key and original event survive generic queue
-   * retention so a retry after 30 days cannot become a second delivery.
+   * Native-intake and media-processor rows intentionally trade storage for
+   * durable idempotency: their globally scoped key and original input survive
+   * generic queue retention so a later replay cannot become a second delivery.
    * A future compact receipt may reduce this retained-row cost, but generic
-   * prune must never silently weaken the admission contract.
+   * prune must never silently weaken either admission contract.
    */
   async prune(opts?: { olderThan?: Date; status?: MinionJobStatus[] }): Promise<number> {
     const statuses = opts?.status ?? ['completed', 'dead', 'cancelled'];
@@ -580,7 +580,13 @@ export class MinionQueue {
       `WITH pruned AS (
          DELETE FROM minion_jobs
          WHERE status = ANY($1) AND updated_at < $2
-           AND (idempotency_key IS NULL OR idempotency_key NOT LIKE 'native-intake:%')
+           AND (
+             idempotency_key IS NULL
+             OR (
+               idempotency_key NOT LIKE 'native-intake:%'
+               AND idempotency_key NOT LIKE 'media-process:%'
+             )
+           )
          RETURNING id
        )
        SELECT count(*)::text as count FROM pruned`,

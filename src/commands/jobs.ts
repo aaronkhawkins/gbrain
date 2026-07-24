@@ -9,6 +9,7 @@ import { MinionWorker } from '../core/minions/worker.ts';
 import { WORKER_EXIT_RSS_WATCHDOG } from '../core/minions/worker-exit-codes.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
+import type { MediaTranscriptionTransport } from '../core/media-transcription-transport.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
@@ -1376,7 +1377,10 @@ HANDLER TYPES (built in)
 export async function registerBuiltinHandlers(
   worker: MinionWorker,
   engine: BrainEngine,
-  opts?: { quiet?: boolean },
+  opts?: {
+    quiet?: boolean;
+    mediaTranscriptionTransport?: MediaTranscriptionTransport;
+  },
 ): Promise<void> {
   // `quiet` suppresses the informational startup stderr lines. The supervisor
   // (issue #1801) runs this against a throwaway worker purely to read
@@ -1384,6 +1388,15 @@ export async function registerBuiltinHandlers(
   // terminal with "shell handler registered…" lines. The real `jobs work` path
   // omits opts and prints as before.
   const quiet = opts?.quiet === true;
+  if (opts?.mediaTranscriptionTransport) {
+    const { makeMediaTranscriptionHandler } = await import(
+      '../core/minions/handlers/media-transcription.ts'
+    );
+    worker.register(
+      'media_transcription',
+      makeMediaTranscriptionHandler(opts.mediaTranscriptionTransport),
+    );
+  }
   registerBuiltinJob(worker, engine, 'facts-absorb', async (job) => {
     const data = parseFactsAbsorbJobData(job.data);
     const { slug, sourceId } = data;

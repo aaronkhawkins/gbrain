@@ -18,6 +18,10 @@ export const PROTECTED_JOB_NAMES: ReadonlySet<string> = new Set([
   // authorization, posture, and durable idempotency before creating this job.
   // Generic remote submit_job must not bypass that admission boundary.
   'ingest_capture',
+  // Acquired-media transcription can dispatch trusted local GPU/remote
+  // capacity. Submission must pass through the typed admission helper so
+  // callers cannot override processor identity, retry policy, or deadlines.
+  'media_transcription',
   // v0.15: subagent + aggregator are protected because they call the
   // Anthropic API. MCP callers can't submit them directly; only the
   // `gbrain agent run` CLI path (which sets allowProtectedSubmit) or a
