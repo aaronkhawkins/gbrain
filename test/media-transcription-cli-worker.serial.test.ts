@@ -190,6 +190,18 @@ describe('media-transcription CLI and configured worker', () => {
       attempts_made: 0,
       error_code: null,
     });
+    const waitingWithResult = await captureJson(() =>
+      runJobs(engine, [
+        'media-transcription',
+        'status',
+        String(jobId),
+        '--include-result',
+      ]));
+    expect(waitingWithResult).toEqual({
+      ...waiting,
+      result_available: false,
+      result: null,
+    });
 
     const queue = new MinionQueue(engine);
     const worker = new MinionWorker(engine, {
@@ -226,6 +238,22 @@ describe('media-transcription CLI and configured worker', () => {
       attempts_started: 1,
       attempts_made: 0,
       error_code: null,
+    });
+    const completedWithResult = await captureJson(() =>
+      runJobs(engine, [
+        'media-transcription',
+        'status',
+        String(jobId),
+        '--include-result',
+      ]));
+    expect(completedWithResult).toEqual({
+      ...completed,
+      result_available: true,
+      result: {
+        schema_version: 1,
+        outcome: 'ignored',
+        reason_code: 'no_meaningful_speech',
+      },
     });
   }, 30_000);
 });
