@@ -57,3 +57,30 @@ export type {
   NativeIntakeSubmissionResult,
   NativeIntakeTargetPolicy,
 } from './native-intake.ts';
+
+export type {
+  MediaAcquisition,
+  MediaAcquisitionStatus,
+  MediaEvidence,
+  MediaEvidenceDerivation,
+  MediaEvidenceOwner,
+  MediaEvidenceProvenance,
+  MediaKind,
+  MediaProcessorIdentity,
+  MediaTranscriptEvidence,
+  MediaTranscriptSegment,
+  MediaTranscriptSourceKind,
+  TerminalMediaAcquisitionStatus,
+} from './media-evidence.ts';
+
+export {
+  MEDIA_ACQUISITION_STATUSES,
+  MEDIA_EVIDENCE_API_VERSION,
+  MEDIA_KINDS,
+  MEDIA_TRANSCRIPT_SOURCE_KINDS,
+  TERMINAL_MEDIA_ACQUISITION_STATUSES,
+  MediaEvidenceValidationError,
+  deriveMediaProcessorIdempotencyKey,
+  isTerminalMediaAcquisition,
+  validateMediaEvidence,
+} from './media-evidence.ts';
