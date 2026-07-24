@@ -51,7 +51,19 @@ const EXPECTED_EXPORTS: ExpectedExport[] = [
   { subpath: 'gbrain/search/expansion', canary: ['expandQuery'] },
   { subpath: 'gbrain/ai/gateway', canary: ['configureGateway', 'embed'] },
   { subpath: 'gbrain/extract', canary: [] },
-  { subpath: 'gbrain/ingestion', canary: ['INGESTION_SOURCE_API_VERSION', 'validateIngestionEvent', 'computeContentHash'] },
+  {
+    subpath: 'gbrain/ingestion',
+    canary: [
+      'INGESTION_SOURCE_API_VERSION',
+      'NATIVE_INTAKE_API_VERSION',
+      'INTAKE_POSTURES',
+      'INTAKE_PROMOTION_AUTHORITIES',
+      'validateIngestionEvent',
+      'validateNativeIntakeEnvelope',
+      'deriveNativeIntakeIdempotencyKey',
+      'computeContentHash',
+    ],
+  },
   { subpath: 'gbrain/ingestion/test-harness', canary: ['IngestionTestHarness', 'expectEvent'] },
 ];
 

@@ -32,6 +32,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import type { Logger } from '../operations.ts';
+import { isValidSourceId } from '../source-id.ts';
 
 /**
  * Contract version stamped on every gbrain.plugin.json that ships an
@@ -41,6 +42,13 @@ import type { Logger } from '../operations.ts';
  * deprecation window.
  */
 export const INGESTION_SOURCE_API_VERSION = 'gbrain-ingestion-source-v1';
+
+/**
+ * Serialized native-intake envelope version. Independent from
+ * INGESTION_SOURCE_API_VERSION: producer plugin lifecycle and durable payload
+ * lifecycle evolve on separate compatibility timelines.
+ */
+export const NATIVE_INTAKE_API_VERSION = 'gbrain-native-intake-v1';
 
 /**
  * Canonical taxonomy of content types the daemon recognizes. The router
@@ -65,6 +73,27 @@ export const INGESTION_CONTENT_TYPES = [
 ] as const;
 
 export type IngestionContentType = typeof INGESTION_CONTENT_TYPES[number];
+
+/**
+ * Retrieval/write posture owned by a registered source within a brain.
+ *
+ * The source registration chooses where intake lands; an adapter MUST NOT
+ * invent a second registry or reinterpret these values as brain identities.
+ * `canonical` is durable knowledge. The other three are evidence postures and
+ * cross into canonical only through the explicit `promotion_boundary` carried
+ * by a NativeIntakeEnvelope.
+ */
+export const INTAKE_POSTURES = [
+  'canonical',
+  'inbox',
+  'research',
+  'session-evidence',
+] as const;
+
+export type IntakePosture = typeof INTAKE_POSTURES[number];
+
+export const INTAKE_PROMOTION_AUTHORITIES = ['operator', 'policy'] as const;
+export type IntakePromotionAuthority = typeof INTAKE_PROMOTION_AUTHORITIES[number];
 
 /**
  * Stable event the daemon receives from every source. Carries enough
@@ -106,6 +135,107 @@ export interface IngestionEvent {
   /** Optional source-specific metadata. Free-form. Persisted into the page's
    *  frontmatter under `ingestion_metadata` when present. */
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * The boundary an evidence posture must cross before becoming canonical.
+ *
+ * Dream may coordinate enrichment and propose work, but it is not a competing
+ * owner of canonical state. Promotion is authorized either directly by an
+ * operator or by a named, stable policy. Evidence remains in its original
+ * posture after promotion so lineage is not destroyed.
+ */
+export type IntakePromotionBoundary =
+  | {
+      target_posture: 'canonical';
+      authority: 'policy';
+      /** Stable configured policy identity authorizing this promotion. */
+      policy_id: string;
+    }
+  | {
+      target_posture: 'canonical';
+      authority: 'operator';
+      policy_id?: never;
+    };
+
+/**
+ * Normalized evidence submitted by a native intake adapter.
+ *
+ * This extends the existing IngestionEvent rather than creating a parallel
+ * source contract. IngestionEvent.source_id remains the producer/adapter
+ * instance identity. `target_source_id` identifies the existing registered
+ * GBrain source where evidence should land; resolving that registration
+ * belongs to the runtime.
+ *
+ * `brain_id` is an assertion about the already-active runtime, not a database
+ * selector. Admission added in issue #3 MUST reject an envelope whose brain id
+ * does not match that runtime; it MUST NOT switch databases from event input.
+ * It MUST also authorize the (source_id, target_source_id) producer-to-target
+ * pair from registered/authenticated producer config before comparing the
+ * adapter's posture assertion with the registered target posture.
+ *
+ * External identity is scoped to
+ * (brain_id, target_source_id, source_id, external_id). The idempotency key is
+ * a stable, adapter-supplied operation identity and may include a processor
+ * or schema version so intentional reprocessing is distinguishable from retry.
+ */
+export interface NativeIntakeEnvelope extends IngestionEvent {
+  /** Serialized envelope contract version. */
+  api_version: typeof NATIVE_INTAKE_API_VERSION;
+  /**
+   * Asserted active runtime id (`host` or a registered mount id). Cannot
+   * select another database; issue #3 admission verifies it against runtime.
+   */
+  brain_id: string;
+  /** Existing registered GBrain source that receives this evidence. */
+  target_source_id: string;
+  /** Stable identity assigned by the upstream system. */
+  external_id: string;
+  /**
+   * Optional upstream content creation time. When present, MUST be canonical
+   * UTC Date.toISOString() form (`YYYY-MM-DDTHH:mm:ss.sssZ`). Inherited
+   * received_at remains when the adapter observed/received the event.
+   */
+  source_created_at?: string;
+  /**
+   * Adapter assertion about the registered target's configured posture.
+   * Issue #3 admission MUST compare it with the resolved target registration
+   * and reject a mismatch; this field cannot override target configuration.
+   */
+  posture: IntakePosture;
+  /**
+   * Required for evidence postures and forbidden for canonical intake. This
+   * makes the evidence → canonical ownership boundary explicit.
+   */
+  promotion_boundary?: IntakePromotionBoundary;
+  /**
+   * Adapter-local retry identity. MUST be stable for retries and unique across
+   * external items/revisions within (brain_id, target_source_id, source_id).
+   * It may be reused in another scope. Issue #3 MUST pass the globally scoped
+   * output of deriveNativeIntakeIdempotencyKey to the Minion queue, never this
+   * raw value directly. If a durable key already exists, issue #3 MUST compare
+   * its stored external identity and content hash with this envelope before
+   * acknowledging it as a retry; a mismatch is a visible conflict.
+   */
+  idempotency_key: string;
+}
+
+export type NativeIntakeIdempotencyInput = Pick<
+  NativeIntakeEnvelope,
+  | 'api_version'
+  | 'brain_id'
+  | 'target_source_id'
+  | 'source_id'
+  | 'external_id'
+  | 'idempotency_key'
+>;
+
+/** Content-free identity safe to attach to native intake validation errors. */
+export interface NativeIntakeDiagnosticIdentity {
+  api_version?: string;
+  brain_id?: string;
+  source_id?: string;
+  target_source_id?: string;
 }
 
 /**
@@ -233,11 +363,13 @@ export interface IngestionSourceContext {
  * that failed and a human-readable reason. The daemon logs and rejects;
  * the source's emit returns silently (the source already moved on).
  */
-export class IngestionEventError extends Error {
+export class IngestionEventError<
+  TEvent extends Partial<IngestionEvent> = Partial<IngestionEvent>,
+> extends Error {
   constructor(
     public readonly field: string,
     public readonly reason: string,
-    public readonly event: Partial<IngestionEvent>,
+    public readonly event: TEvent,
   ) {
     super(`IngestionEvent.${field}: ${reason}`);
     this.name = 'IngestionEventError';
@@ -329,6 +461,219 @@ export function validateIngestionEvent(event: unknown): IngestionEventError | nu
   }
 
   return null;
+}
+
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$/;
+const PROMOTION_POLICY_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const CANONICAL_UTC_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function isNormalizedExternalId(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function isCanonicalUtcIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || !CANONICAL_UTC_ISO_RE.test(value)) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function boundedDiagnosticString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.replace(/[^\x20-\x7e]/g, '?').slice(0, maxLength);
+}
+
+function nativeIntakeDiagnosticIdentity(envelope: unknown): NativeIntakeDiagnosticIdentity {
+  if (envelope === null || typeof envelope !== 'object') return {};
+  const e = envelope as Record<string, unknown>;
+  return {
+    ...(boundedDiagnosticString(e.api_version, 64) !== undefined
+      ? { api_version: boundedDiagnosticString(e.api_version, 64) }
+      : {}),
+    ...(boundedDiagnosticString(e.brain_id, 32) !== undefined
+      ? { brain_id: boundedDiagnosticString(e.brain_id, 32) }
+      : {}),
+    ...(boundedDiagnosticString(e.source_id, 32) !== undefined
+      ? { source_id: boundedDiagnosticString(e.source_id, 32) }
+      : {}),
+    ...(boundedDiagnosticString(e.target_source_id, 32) !== undefined
+      ? { target_source_id: boundedDiagnosticString(e.target_source_id, 32) }
+      : {}),
+  };
+}
+
+function nativeIntakeError(
+  field: string,
+  reason: string,
+  envelope: unknown,
+): IngestionEventError<NativeIntakeDiagnosticIdentity> {
+  return new IngestionEventError(field, reason, nativeIntakeDiagnosticIdentity(envelope));
+}
+
+/**
+ * Validate the native envelope before durable submission. Target registration
+ * existence and brain-id equality are deliberately not checked here: issue #3
+ * admission resolves target_source_id through the active runtime's existing
+ * source registrations and treats brain_id only as a matching assertion. This
+ * pure contract cannot select a database and does not create a second registry.
+ */
+export function validateNativeIntakeEnvelope(
+  envelope: unknown,
+): IngestionEventError<NativeIntakeDiagnosticIdentity> | null {
+  const eventError = validateIngestionEvent(envelope);
+  if (eventError) return nativeIntakeError(eventError.field, eventError.reason, envelope);
+
+  const e = envelope as Record<string, unknown>;
+
+  if (e.api_version !== NATIVE_INTAKE_API_VERSION) {
+    return nativeIntakeError(
+      'api_version',
+      `must be '${NATIVE_INTAKE_API_VERSION}'`,
+      envelope,
+    );
+  }
+
+  // Brain, producer, and destination IDs share GBrain's canonical routing-id
+  // syntax. Both source IDs reuse the dependency-free canonical validator.
+  if (!isValidSourceId(e.brain_id)) {
+    return nativeIntakeError(
+      'brain_id',
+      'must be a registered brain id (1-32 lowercase alphanumeric characters with optional interior hyphens)',
+      envelope,
+    );
+  }
+  if (!isValidSourceId(e.source_id)) {
+    return nativeIntakeError(
+      'source_id',
+      'must be a producer source id (1-32 lowercase alphanumeric characters with optional interior hyphens)',
+      envelope,
+    );
+  }
+  if (!isValidSourceId(e.target_source_id)) {
+    return nativeIntakeError(
+      'target_source_id',
+      'must be a registered destination source id (1-32 lowercase alphanumeric characters with optional interior hyphens)',
+      envelope,
+    );
+  }
+  if (!isNormalizedExternalId(e.external_id)) {
+    return nativeIntakeError(
+      'external_id',
+      'must be a trimmed, non-empty, control-free string no longer than 512 characters',
+      envelope,
+    );
+  }
+  if (!INTAKE_POSTURES.includes(e.posture as IntakePosture)) {
+    return nativeIntakeError(
+      'posture',
+      `must be one of ${INTAKE_POSTURES.join(', ')}`,
+      envelope,
+    );
+  }
+  if (!isCanonicalUtcIsoTimestamp(e.received_at)) {
+    return nativeIntakeError(
+      'received_at',
+      'must be canonical UTC Date.toISOString() format (YYYY-MM-DDTHH:mm:ss.sssZ)',
+      envelope,
+    );
+  }
+  if (e.source_created_at !== undefined && !isCanonicalUtcIsoTimestamp(e.source_created_at)) {
+    return nativeIntakeError(
+      'source_created_at',
+      'must be canonical UTC Date.toISOString() format (YYYY-MM-DDTHH:mm:ss.sssZ) when present',
+      envelope,
+    );
+  }
+  if (typeof e.idempotency_key !== 'string' || !IDEMPOTENCY_KEY_RE.test(e.idempotency_key)) {
+    return nativeIntakeError(
+      'idempotency_key',
+      'must be 1-512 characters using alphanumeric, dot, underscore, colon, slash, or hyphen characters',
+      envelope,
+    );
+  }
+
+  if (e.posture === 'canonical') {
+    if (e.promotion_boundary !== undefined) {
+      return nativeIntakeError(
+        'promotion_boundary',
+        'must be absent when posture is canonical',
+        envelope,
+      );
+    }
+    return null;
+  }
+
+  if (
+    e.promotion_boundary === null ||
+    typeof e.promotion_boundary !== 'object' ||
+    Array.isArray(e.promotion_boundary)
+  ) {
+    return nativeIntakeError(
+      'promotion_boundary',
+      'is required for inbox, research, and session-evidence postures',
+      envelope,
+    );
+  }
+
+  const boundary = e.promotion_boundary as Record<string, unknown>;
+  if (boundary.target_posture !== 'canonical') {
+    return nativeIntakeError(
+      'promotion_boundary.target_posture',
+      "must be 'canonical'",
+      envelope,
+    );
+  }
+  if (!INTAKE_PROMOTION_AUTHORITIES.includes(boundary.authority as IntakePromotionAuthority)) {
+    return nativeIntakeError(
+      'promotion_boundary.authority',
+      `must be one of ${INTAKE_PROMOTION_AUTHORITIES.join(', ')}`,
+      envelope,
+    );
+  }
+  if (
+    boundary.authority === 'policy' &&
+    (typeof boundary.policy_id !== 'string' || !PROMOTION_POLICY_ID_RE.test(boundary.policy_id))
+  ) {
+    return nativeIntakeError(
+      'promotion_boundary.policy_id',
+      'is required for policy authority and must be a stable 1-64 character lowercase policy id',
+      envelope,
+    );
+  }
+  if (boundary.authority === 'operator' && boundary.policy_id !== undefined) {
+    return nativeIntakeError(
+      'promotion_boundary.policy_id',
+      'must be absent for operator authority',
+      envelope,
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Derive the globally unique key issue #3 passes to MinionQueue.
+ *
+ * The adapter key remains opaque and local to its asserted identity scope.
+ * Hashing the version and complete scope prevents cross-brain/source producer
+ * collisions in Minion's globally unique idempotency_key column without
+ * exposing potentially sensitive upstream identifiers in queue diagnostics.
+ */
+export function deriveNativeIntakeIdempotencyKey(
+  input: NativeIntakeIdempotencyInput,
+): string {
+  const scopedIdentity = JSON.stringify([
+    input.api_version,
+    input.brain_id,
+    input.target_source_id,
+    input.source_id,
+    input.external_id,
+    input.idempotency_key,
+  ]);
+  return `native-intake:${computeContentHash(scopedIdentity)}`;
 }
 
 /**
