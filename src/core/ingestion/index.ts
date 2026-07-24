@@ -42,3 +42,18 @@ export {
   validateIngestionEvent,
   validateNativeIntakeEnvelope,
 } from './types.ts';
+
+export {
+  NativeIntakeAdmissionError,
+  parseNativeIntakeProducerPolicy,
+  parseNativeIntakeTargetPolicy,
+  submitNativeIntake,
+} from './native-intake.ts';
+
+export type {
+  NativeIntakeAdmissionContext,
+  NativeIntakeAdmissionErrorCode,
+  NativeIntakeProducerPolicy,
+  NativeIntakeSubmissionResult,
+  NativeIntakeTargetPolicy,
+} from './native-intake.ts';

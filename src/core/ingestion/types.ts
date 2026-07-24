@@ -475,6 +475,11 @@ function isNormalizedExternalId(value: unknown): value is string {
     !/[\u0000-\u001f\u007f]/.test(value);
 }
 
+/** Internal shared validator for configured and envelope promotion policy IDs. */
+export function isValidPromotionPolicyId(value: unknown): value is string {
+  return typeof value === 'string' && PROMOTION_POLICY_ID_RE.test(value);
+}
+
 function isCanonicalUtcIsoTimestamp(value: unknown): value is string {
   if (typeof value !== 'string' || !CANONICAL_UTC_ISO_RE.test(value)) return false;
   const parsed = new Date(value);
@@ -635,7 +640,7 @@ export function validateNativeIntakeEnvelope(
   }
   if (
     boundary.authority === 'policy' &&
-    (typeof boundary.policy_id !== 'string' || !PROMOTION_POLICY_ID_RE.test(boundary.policy_id))
+    !isValidPromotionPolicyId(boundary.policy_id)
   ) {
     return nativeIntakeError(
       'promotion_boundary.policy_id',

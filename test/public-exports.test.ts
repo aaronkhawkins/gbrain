@@ -61,6 +61,7 @@ const EXPECTED_EXPORTS: ExpectedExport[] = [
       'validateIngestionEvent',
       'validateNativeIntakeEnvelope',
       'deriveNativeIntakeIdempotencyKey',
+      'submitNativeIntake',
       'computeContentHash',
     ],
   },

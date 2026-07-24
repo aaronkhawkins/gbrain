@@ -3,9 +3,9 @@
  *
  * Names in this set require an explicit `trusted.allowProtectedSubmit: true` opt-in
  * when passed to `MinionQueue.add()`. The CLI path and the `submit_job` operation
- * (when `ctx.remote === false`) set the flag; MCP callers never do. Defense-in-depth
- * against in-process handlers that programmatically submit a shell child via
- * `queue.add('shell', ...)`.
+ * (when `ctx.remote === false`) and explicitly reviewed internal admission
+ * paths set the flag; MCP callers never do. Defense-in-depth against in-process
+ * handlers that programmatically submit privileged work without admission.
  *
  * This file must stay pure — no imports from handlers, no filesystem, no env reads.
  * Queue core imports it; if this module grew side effects, every queue user would
@@ -14,6 +14,10 @@
 
 export const PROTECTED_JOB_NAMES: ReadonlySet<string> = new Set([
   'shell',
+  // Native intake admission binds authenticated producer identity, target
+  // authorization, posture, and durable idempotency before creating this job.
+  // Generic remote submit_job must not bypass that admission boundary.
+  'ingest_capture',
   // v0.15: subagent + aggregator are protected because they call the
   // Anthropic API. MCP callers can't submit them directly; only the
   // `gbrain agent run` CLI path (which sets allowProtectedSubmit) or a

@@ -1,4 +1,5 @@
 export { MinionQueue } from './queue.ts';
+export type { MinionAddDisposition, MinionAddResult, TrustedSubmitOpts } from './queue.ts';
 export { MinionWorker } from './worker.ts';
 export { calculateBackoff } from './backoff.ts';
 export { UnrecoverableError, rowToMinionJob, rowToInboxMessage } from './types.ts';
