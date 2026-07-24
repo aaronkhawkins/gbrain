@@ -5,6 +5,10 @@ import {
   deriveSourceLabelKey,
   discoverRegistryInput,
 } from '../../src/core/observability/snapshot.ts';
+import {
+  buildExpectedWorkRegistry,
+  nativeIntakeWorkKey,
+} from '../../src/core/observability/expected-work.ts';
 
 describe('operational registry discovery failures', () => {
   test('configured brain identity keeps source labels stable across database URL rotation', () => {
@@ -107,5 +111,75 @@ describe('operational registry discovery failures', () => {
       database_path: '/tmp/test-brain.db',
     });
     expect(explicitlyDisabled.enabledDreamPhases).not.toContain('synthesize');
+  });
+
+  test('native-intake targets come directly from enabled registered source policy', async () => {
+    const engine = {
+      kind: 'pglite',
+      executeRaw: async (sql: string) => {
+        if (sql.includes('FROM sources')) {
+          return [
+            {
+              id: 'producer',
+              name: 'Producer',
+              local_path: null,
+              last_commit: null,
+              last_sync_at: null,
+              config: { native_intake: { allowed_targets: ['research'] } },
+              created_at: new Date(),
+              archived: false,
+            },
+            {
+              id: 'research',
+              name: 'Research',
+              local_path: null,
+              last_commit: null,
+              last_sync_at: null,
+              config: {
+                native_intake: {
+                  posture: 'research',
+                  promotion_policy_ids: ['reviewed-evidence'],
+                },
+              },
+              created_at: new Date(),
+              archived: false,
+            },
+            {
+              id: 'malformed',
+              name: 'Malformed',
+              local_path: null,
+              last_commit: null,
+              last_sync_at: null,
+              config: { native_intake: { posture: 'not-a-posture' } },
+              created_at: new Date(),
+              archived: false,
+            },
+          ];
+        }
+        return [];
+      },
+      getConfig: async () => null,
+    } as unknown as BrainEngine;
+    const config = {
+      engine: 'pglite' as const,
+      database_path: '/tmp/native-intake-observer.db',
+    };
+
+    const input = await discoverRegistryInput(engine, config);
+    const registry = buildExpectedWorkRegistry(input);
+    const sourceLabelKey = deriveSourceLabelKey(config)!;
+
+    expect(input.nativeIntakeTargetIds).toEqual(['research']);
+    expect(registry).toContainEqual(expect.objectContaining({
+      key: nativeIntakeWorkKey('research', sourceLabelKey),
+      selector: 'ingest_capture',
+      scope: { type: 'source', source_id: 'research' },
+    }));
+    expect(registry.some((entry) => entry.scope?.type === 'source' &&
+      entry.scope.source_id === 'producer' &&
+      entry.selector === 'ingest_capture')).toBe(false);
+    expect(registry.some((entry) => entry.scope?.type === 'source' &&
+      entry.scope.source_id === 'malformed' &&
+      entry.selector === 'ingest_capture')).toBe(false);
   });
 });

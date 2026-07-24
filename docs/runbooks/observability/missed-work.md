@@ -16,6 +16,9 @@
 ## Repair
 
 - Re-run the owning cycle/job when safe (`gbrain dream`, `gbrain jobs submit …`)
+- For `minion.ingest_capture.s_<opaque>`, follow the backlog runbook and retry
+  only the failed job. Newer successful intake does not resolve an older
+  failed/dead row.
 - Fix handler crashes from supervisor audit, not from Grafana
 - Adjust cadence/grace only via `observability.work` overrides when the schedule intentionally changed
 

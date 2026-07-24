@@ -126,6 +126,13 @@ export function minionWorkKey(
     : base;
 }
 
+export function nativeIntakeWorkKey(
+  targetSourceId: string,
+  sourceLabelKey: string,
+): string {
+  return minionWorkKey('ingest_capture', targetSourceId, sourceLabelKey);
+}
+
 export type DiscoveryAxis = 'sources' | 'dream_phases' | 'processors';
 
 export interface RegistryInput {
@@ -133,6 +140,8 @@ export interface RegistryInput {
   sourceIds: string[];
   /** Per-brain secret material used only to HMAC exported source labels. */
   sourceLabelKey?: string;
+  /** Enabled targets derived from their registered sources.config policy. */
+  nativeIntakeTargetIds?: string[];
   /**
    * Enabled dream phases for this brain. Callers pass pack-declared phases
    * unioned with core phases and config-enabled opt-in phases.
@@ -180,6 +189,28 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
       backlog_warn: 50,
       backlog_fail: 500,
       repair_runbook: 'missed-work',
+    }, obs.work?.[key]));
+  }
+
+  for (const targetSourceId of input.nativeIntakeTargetIds ?? []) {
+    if (!input.sourceIds.includes(targetSourceId)) continue;
+    const key = nativeIntakeWorkKey(targetSourceId, input.sourceLabelKey!);
+    entries.push(applyOverride({
+      key,
+      kind: 'minion',
+      enabled: true,
+      required: true,
+      criticality: 'required',
+      cadence_seconds: null,
+      grace_seconds: 0,
+      evidence_adapter: 'minion_job',
+      selector: 'ingest_capture',
+      scope: { type: 'source', source_id: targetSourceId },
+      backlog_warn: 50,
+      backlog_fail: 500,
+      healthy_when_idle: true,
+      track_unresolved_failures: true,
+      repair_runbook: 'backlog',
     }, obs.work?.[key]));
   }
 

@@ -72,6 +72,11 @@ In `$GBRAIN_HOME/config.json`:
 - Source-scoped Minion work keys end in the registry's sanitized opaque source
   segment: `minion.<job-name>.<source-id>`. Overrides match the full generated
   key exactly. Global work such as `minion.maintain` has no source suffix.
+- Every enabled native-intake target is discovered from its registered source
+  policy and appears as `minion.ingest_capture.s_<opaque>`. Idle event-driven
+  intake is healthy when its Minion evidence queries succeed. These rows flow
+  through the existing generic item panels and alerts; no dashboard allowlist
+  or per-adapter declaration is required.
 - Only numeric loopback and Tailscale addresses (`100.64.0.0/10`,
   `fd7a:115c:a1e0::/48`) are accepted by default. Any other bind requires the
   explicit unsafe `allow_public_bind: true` override.
@@ -100,6 +105,8 @@ Template: `ops/launchd/ai.gbrain.observer.plist.template`
 | `gbrain_expected_work_state` | One-hot per work item |
 | `gbrain_expected_work_*_timestamp_seconds` | Last attempt / success / next due |
 | `gbrain_expected_work_backlog_items` | Backlog count |
+| `gbrain_expected_work_oldest_pending_age_seconds` | Age of the oldest waiting/active/delayed item |
+| `gbrain_expected_work_recent_failures` | Recent failures, or all currently unresolved failures for durable event-driven work |
 | `gbrain_expected_work_reason` | One-hot reason code |
 
 Labels are only bounded `brain`, `work`, `kind`, `required`, `enabled`,

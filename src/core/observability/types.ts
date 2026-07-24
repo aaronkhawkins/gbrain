@@ -85,6 +85,16 @@ export interface ExpectedWorkEntry {
   scope?: { type: 'global' } | { type: 'source'; source_id: string };
   backlog_warn?: number;
   backlog_fail?: number;
+  /**
+   * Event-driven work may be legitimately idle. A successful evidence query
+   * with no attempts or backlog is healthy instead of missing evidence.
+   */
+  healthy_when_idle?: boolean;
+  /**
+   * Count every row still in failed/dead status. Used for durable jobs whose
+   * retry updates the same row, so unrelated successes cannot supersede it.
+   */
+  track_unresolved_failures?: boolean;
   /** Bounded runbook id, not free-form prose in metrics. */
   repair_runbook?: string;
   /** Bounded implementation version for registered external processors. */
