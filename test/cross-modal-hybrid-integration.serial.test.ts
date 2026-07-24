@@ -12,6 +12,10 @@ import {
   resetGateway,
 } from '../src/core/ai/gateway.ts';
 import { hybridSearch } from '../src/core/search/hybrid.ts';
+import { seedTestEmbeddingIdentity } from './helpers/embedding-identity-fixture.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
 
@@ -20,8 +24,12 @@ let fetchHandler: FetchHandler | null = null;
 const origFetch = globalThis.fetch;
 let fetchUrlsSeen: string[] = [];
 let fetchBodiesSeen: any[] = [];
+let isolatedHome: string;
+const savedGbrainHome = process.env.GBRAIN_HOME;
 
 beforeAll(async () => {
+  isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-cross-modal-home-'));
+  process.env.GBRAIN_HOME = isolatedHome;
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
@@ -29,10 +37,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  if (savedGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = savedGbrainHome;
+  rmSync(isolatedHome, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  await seedTestEmbeddingIdentity(engine);
   fetchHandler = null;
   fetchUrlsSeen = [];
   fetchBodiesSeen = [];

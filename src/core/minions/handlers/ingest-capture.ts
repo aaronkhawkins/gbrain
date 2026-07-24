@@ -20,8 +20,10 @@
  * Slug resolution (in order):
  *   1. `job.data.slug` if caller provided one
  *   2. `job.data.metadata.slug` if event metadata carried one
- *   3. Generated default: `inbox/YYYY-MM-DD-<hash6>` using the event's
- *      content_hash prefix. Stable for the same content.
+ *   3. Native intake: `inbox/native-<identity-hash>` from the admitted
+ *      delivery identity, stable across worker restarts and UTC boundaries
+ *   4. Legacy default: `inbox/YYYY-MM-DD-<hash6>` using the event's
+ *      content_hash prefix
  *
  * The default slug deliberately lives under `inbox/` — that's the
  * triage convention the user will discover when reviewing recent
@@ -34,6 +36,7 @@ import { UnrecoverableError } from '../types.ts';
 import type { BrainEngine } from '../../engine.ts';
 import type { IngestionEvent, NativeIntakeEnvelope } from '../../ingestion/types.ts';
 import {
+  deriveNativeIntakeOutputSlug,
   validateIngestionEvent,
   validateNativeIntakeEnvelope,
 } from '../../ingestion/types.ts';
@@ -64,7 +67,7 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
     const data = job.data as { event?: unknown; slug?: unknown; sourceId?: unknown };
     const event = data.event as IngestionEvent | undefined;
     if (!event) {
-      throw new Error('ingest_capture: job.data.event is required');
+      throw new UnrecoverableError('ingest_capture: job.data.event is required');
     }
     const possibleNativeEvent = event as Partial<NativeIntakeEnvelope>;
     const isNativeIntake =
@@ -92,6 +95,8 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
       typeof (event.metadata as Record<string, unknown>).slug === 'string'
     ) {
       slug = (event.metadata as Record<string, unknown>).slug as string;
+    } else if (isNativeIntake) {
+      slug = deriveNativeIntakeOutputSlug(event as NativeIntakeEnvelope);
     } else {
       slug = defaultSlugForEvent(event);
     }
@@ -114,15 +119,16 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
 
     if (!isText) {
       // Binary content without a processor would land as a path-string
-      // page, which isn't useful. Surface as job-level error so the
-      // operator sees the gap in `gbrain doctor` and can decide whether
-      // to install the appropriate skillpack-distributed processor.
-      throw new Error(
+      // page, which isn't useful. Native admission treats this as unsupported
+      // work and dead-letters immediately; legacy jobs preserve their existing
+      // retryable error while the operator installs a processor.
+      const message =
         `ingest_capture: content_type '${event.content_type}' requires a content-type ` +
           `processor that is not yet installed. Install a processor skillpack ` +
           `(e.g. gbrain-audio-transcribe, gbrain-image-ocr) or pre-extract the ` +
-          `content to text/markdown before emitting.`,
-      );
+          `content to text/markdown before emitting.`;
+      if (isNativeIntake) throw new UnrecoverableError(message);
+      throw new Error(message);
     }
 
     // noEmbed defaults to true. Mirrors the sync handler's pattern:

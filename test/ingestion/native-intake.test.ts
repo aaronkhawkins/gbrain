@@ -9,6 +9,7 @@ import {
 import {
   NATIVE_INTAKE_API_VERSION,
   computeContentHash,
+  deriveNativeIntakeOutputSlug,
   type NativeIntakeEnvelope,
 } from '../../src/core/ingestion/types.ts';
 
@@ -83,6 +84,13 @@ describe('submitNativeIntake', () => {
     expect(job?.name).toBe('ingest_capture');
     expect(job?.data.sourceId).toBe('research');
     expect(job?.data.event).toEqual(envelope());
+    expect(job?.data.slug).toBe(deriveNativeIntakeOutputSlug(envelope()));
+    expect(job?.max_attempts).toBe(5);
+    expect(job?.backoff_type).toBe('exponential');
+    expect(job?.backoff_delay).toBe(5_000);
+    expect(job?.backoff_jitter).toBe(0.2);
+    expect(job?.max_stalled).toBe(3);
+    expect(job?.timeout_ms).toBe(5 * 60_000);
     expect(job?.remove_on_complete).toBe(false);
     expect(job?.remove_on_fail).toBe(false);
   });
@@ -103,6 +111,43 @@ describe('submitNativeIntake', () => {
     const stored = await queue.getJob(first.job_id);
     expect((stored?.data.event as NativeIntakeEnvelope).received_at)
       .toBe('2026-07-23T12:00:00.000Z');
+  });
+
+  test('keeps output identity stable when a delivery retry crosses UTC midnight', async () => {
+    const firstEnvelope = envelope({ received_at: '2026-07-23T23:59:59.999Z' });
+    const retryEnvelope = envelope({ received_at: '2026-07-24T00:00:00.001Z' });
+
+    const first = await submitNativeIntake(engine, queue, firstEnvelope, context);
+    const duplicate = await submitNativeIntake(engine, queue, retryEnvelope, context);
+
+    expect(duplicate.disposition).toBe('duplicate');
+    expect(duplicate.job_id).toBe(first.job_id);
+    const stored = await queue.getJob(first.job_id);
+    expect(stored?.data.slug).toBe(deriveNativeIntakeOutputSlug(firstEnvelope));
+    expect(stored?.data.slug).toBe(deriveNativeIntakeOutputSlug(retryEnvelope));
+  });
+
+  test('reclaims an active native job after worker restart without losing its checkpoint', async () => {
+    const submitted = await submitNativeIntake(engine, queue, envelope(), context);
+    const claimed = await queue.claim('worker-before-restart', 30_000, 'default', ['ingest_capture']);
+    expect(claimed?.id).toBe(submitted.job_id);
+
+    await engine.executeRaw(
+      `UPDATE minion_jobs SET lock_until = now() - interval '1 second' WHERE id = $1`,
+      [submitted.job_id],
+    );
+
+    const restartedQueue = new MinionQueue(engine);
+    const recovered = await restartedQueue.handleStalled();
+    expect(recovered.requeued.map((job) => job.id)).toContain(submitted.job_id);
+    const reclaimed = await restartedQueue.claim(
+      'worker-after-restart',
+      30_000,
+      'default',
+      ['ingest_capture'],
+    );
+    expect(reclaimed?.id).toBe(submitted.job_id);
+    expect(reclaimed?.data).toEqual(claimed?.data);
   });
 
   test('reports duplicate job status for live and successfully completed prior deliveries', async () => {
@@ -138,6 +183,37 @@ describe('submitNativeIntake', () => {
       await expect(submitNativeIntake(engine, queue, item, context))
         .rejects.toMatchObject({ code: 'prior_delivery_terminal' });
     }
+  });
+
+  test('operator retry gives a dead native delivery fresh attempt and stall budgets but not a cancelled one', async () => {
+    const submitted = await submitNativeIntake(engine, queue, envelope(), context);
+    await engine.executeRaw(
+      `UPDATE minion_jobs
+          SET status = 'dead',
+              attempts_made = max_attempts,
+              attempts_started = max_attempts,
+              stalled_counter = max_stalled,
+              started_at = now() - interval '1 hour',
+              finished_at = now(),
+              error_text = 'native target unavailable'
+        WHERE id = $1`,
+      [submitted.job_id],
+    );
+
+    const retried = await queue.retryJob(submitted.job_id);
+    expect(retried).toMatchObject({
+      status: 'waiting',
+      attempts_made: 0,
+      attempts_started: 0,
+      stalled_counter: 0,
+      started_at: null,
+      finished_at: null,
+      error_text: null,
+    });
+
+    await queue.cancelJob(submitted.job_id);
+    expect(await queue.retryJob(submitted.job_id)).toBeNull();
+    expect((await queue.getJob(submitted.job_id))?.status).toBe('cancelled');
   });
 
   test('concurrent retries produce one durable job and one duplicate acknowledgement', async () => {

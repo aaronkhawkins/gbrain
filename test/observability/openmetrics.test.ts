@@ -86,4 +86,45 @@ describe('renderOpenMetrics', () => {
     expect(hits).toContain('database_url');
     expect(scanOpenMetricsForProhibited(renderOpenMetrics(snap()))).toEqual([]);
   });
+
+  test('native-intake telemetry is content-free and uses only opaque target identity', () => {
+    const work = 'minion.ingest_capture.s_0123456789abcdef';
+    const text = renderOpenMetrics({
+      schema_version: 1,
+      brain: 'company',
+      generated_at: '2026-07-23T12:00:00.000Z',
+      state: 'failed',
+      items: [{
+        key: work,
+        kind: 'minion',
+        state: 'failed',
+        last_attempt_at: '2026-07-20T11:05:00.000Z',
+        last_success_at: '2026-07-23T11:01:41.000Z',
+        next_due_at: null,
+        backlog_items: 3,
+        oldest_pending_age_seconds: 7200,
+        recent_failures: 1,
+        reason: 'dead',
+        repair_runbook: 'backlog',
+        required: true,
+        enabled: true,
+      }],
+    });
+
+    expect(text).toContain(
+      `gbrain_expected_work_backlog_items{brain="company",work="${work}"} 3`,
+    );
+    expect(text).toContain(
+      `gbrain_expected_work_oldest_pending_age_seconds{brain="company",work="${work}"} 7200`,
+    );
+    expect(text).toContain(
+      `gbrain_expected_work_recent_failures{brain="company",work="${work}"} 1`,
+    );
+    expect(text).toContain(
+      `gbrain_expected_work_reason{brain="company",work="${work}",reason="dead"} 1`,
+    );
+    expect(text).not.toContain('external-item');
+    expect(text).not.toContain('research');
+    expect(scanOpenMetricsForProhibited(text)).toEqual([]);
+  });
 });

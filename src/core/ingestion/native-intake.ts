@@ -7,6 +7,7 @@ import {
   INTAKE_POSTURES,
   computeContentHash,
   deriveNativeIntakeIdempotencyKey,
+  deriveNativeIntakeOutputSlug,
   isValidPromotionPolicyId,
   validateNativeIntakeEnvelope,
   type IntakePosture,
@@ -21,6 +22,15 @@ const INLINE_TEXT_TYPES = new Set([
   'application/json',
   'unknown',
 ]);
+
+const NATIVE_INTAKE_JOB_POLICY = {
+  max_attempts: 5,
+  backoff_type: 'exponential',
+  backoff_delay: 5_000,
+  backoff_jitter: 0.2,
+  max_stalled: 3,
+  timeout_ms: 5 * 60_000,
+} as const;
 
 export type NativeIntakeAdmissionErrorCode =
   | 'invalid_envelope'
@@ -171,18 +181,16 @@ function sameDurableIdentity(
       storedBoundary.target_posture === incomingBoundary.target_posture &&
       storedBoundary.authority === incomingBoundary.authority &&
       storedBoundary.policy_id === incomingBoundary.policy_id;
-  // Mirror ingest_capture's effective explicit-slug resolution. Other event
-  // metadata is receipt/provenance-only today and may drift across retries.
-  const effectiveSlug = (
-    data: Record<string, unknown>,
-    candidate: NativeIntakeEnvelope,
-  ): string | null => {
-    if (typeof data.slug === 'string' && data.slug.length > 0) return data.slug;
+  // Mirror admission's deterministic output identity. Other event metadata is
+  // receipt/provenance-only today and may drift across retries.
+  const expectedSlug = (candidate: NativeIntakeEnvelope): string => {
     const metadataSlug = candidate.metadata?.slug;
-    return typeof metadataSlug === 'string' ? metadataSlug : null;
+    return typeof metadataSlug === 'string' && metadataSlug.length > 0
+      ? metadataSlug
+      : deriveNativeIntakeOutputSlug(candidate);
   };
-  const storedSlug = effectiveSlug(job.data, event);
-  const incomingSlug = effectiveSlug({}, incoming);
+  const storedSlug = job.data.slug;
+  const incomingSlug = expectedSlug(incoming);
   // Native admission does not request inline embedding. A malformed stored
   // wrapper that flips noEmbed=false would execute materially different work.
   const sameEmbeddingMode = job.data.noEmbed !== false;
@@ -198,6 +206,7 @@ function sameDurableIdentity(
     && event.posture === incoming.posture
     && (event.untrusted_payload === true) === (incoming.untrusted_payload === true)
     && sameBoundary
+    && storedSlug === expectedSlug(event)
     && storedSlug === incomingSlug
     && sameEmbeddingMode;
 }
@@ -265,14 +274,20 @@ export async function submitNativeIntake(
     content_hash: computedHash,
   };
   const idempotencyKey = deriveNativeIntakeIdempotencyKey(normalizedEnvelope);
+  const metadataSlug = normalizedEnvelope.metadata?.slug;
+  const outputSlug = typeof metadataSlug === 'string' && metadataSlug.length > 0
+    ? metadataSlug
+    : deriveNativeIntakeOutputSlug(normalizedEnvelope);
   const queued = await queue.addWithDisposition(
     'ingest_capture',
     {
       sourceId: target.id,
+      slug: outputSlug,
       event: normalizedEnvelope,
     },
     {
       idempotency_key: idempotencyKey,
+      ...NATIVE_INTAKE_JOB_POLICY,
       remove_on_complete: false,
       remove_on_fail: false,
     },

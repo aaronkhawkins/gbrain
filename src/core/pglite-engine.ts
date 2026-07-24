@@ -552,7 +552,11 @@ export class PGLiteEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.tables
                 WHERE table_schema='public' AND table_name='timeline_entries') AS timeline_entries_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='timeline_entries' AND column_name='event_page_id') AS timeline_event_page_id_exists
+                WHERE table_schema='public' AND table_name='timeline_entries' AND column_name='event_page_id') AS timeline_event_page_id_exists,
+        EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema='public' AND table_name='processing_receipts') AS processing_receipts_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='processing_receipts' AND column_name='attempt_token') AS processing_receipts_attempt_token_exists
     `);
     const probe = rows[0] as {
       pages_exists: boolean;
@@ -597,6 +601,8 @@ export class PGLiteEngine implements BrainEngine {
       pages_links_extracted_at_exists: boolean;
       timeline_entries_exists: boolean;
       timeline_event_page_id_exists: boolean;
+      processing_receipts_exists: boolean;
+      processing_receipts_attempt_token_exists: boolean;
     };
 
     const needsPagesBootstrap = probe.pages_exists && !probe.source_id_exists;
@@ -675,6 +681,11 @@ export class PGLiteEngine implements BrainEngine {
     const needsPagesLinksExtractedAt = probe.pages_exists && !probe.pages_links_extracted_at_exists;
     // v121: schema-blob indexes reference event_page_id before migrations run.
     const needsTimelineEventPageId = probe.timeline_entries_exists && !probe.timeline_event_page_id_exists;
+    // v129: add the nullable column before the migration backfills it and
+    // installs NOT NULL. This heals partially applied v129 schemas while
+    // leaving migration v129 as the source of truth for data conversion.
+    const needsProcessingReceiptAttemptToken = probe.processing_receipts_exists
+      && !probe.processing_receipts_attempt_token_exists;
 
     // Fresh installs (no tables yet) and modern brains both no-op.
     if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap
@@ -687,7 +698,8 @@ export class PGLiteEngine implements BrainEngine {
         && !needsContextualRetrievalColumns && !needsPagesGeneration
         && !needsPagesEmbeddingSignature
         && !needsPagesLinksExtractedAt
-        && !needsTimelineEventPageId) return;
+        && !needsTimelineEventPageId
+        && !needsProcessingReceiptAttemptToken) return;
 
     process.stderr.write('  Pre-v0.21 brain detected, applying forward-reference bootstrap\n');
 
@@ -940,6 +952,16 @@ export class PGLiteEngine implements BrainEngine {
       // source of truth for the FK and indexes and runs idempotently afterward.
       await this.db.exec(`
         ALTER TABLE timeline_entries ADD COLUMN IF NOT EXISTS event_page_id INTEGER;
+      `);
+    }
+
+    if (needsProcessingReceiptAttemptToken) {
+      // Migration v129 backfills deterministic tokens and applies NOT NULL.
+      // Bootstrap only restores the additive precondition so interrupted
+      // upgrades can safely resume the idempotent migration.
+      await this.db.exec(`
+        ALTER TABLE processing_receipts
+          ADD COLUMN IF NOT EXISTS attempt_token VARCHAR(64);
       `);
     }
   }

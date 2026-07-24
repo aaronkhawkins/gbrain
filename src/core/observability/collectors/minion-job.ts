@@ -2,8 +2,10 @@
  * Recurring Minion evidence from minion_jobs.
  *
  * Terminal evidence is bounded to the newest attempts per name. Current
- * backlog is queried independently so old history is never scanned and a
- * successful retry supersedes an older dead attempt.
+ * backlog is queried independently. Registrations for durable event-driven
+ * work also aggregate rows still in failed/dead status, so unrelated newer
+ * successes cannot hide unresolved work and an in-place retry clears only
+ * the row that completed.
  */
 
 import type { BrainEngine } from '../../engine.ts';
@@ -36,6 +38,13 @@ interface BacklogAggregateRow {
   oldest_created_at: string | Date | null;
 }
 
+interface FailureAggregateRow {
+  name: string;
+  source_id: string | null;
+  failure_count: string | number;
+  dead_count: string | number;
+}
+
 interface NormalizedAttempt {
   status: string;
   event_at: string | null;
@@ -45,6 +54,11 @@ interface NormalizedAttempt {
 interface NormalizedBacklog {
   count: number;
   created_ms: number | null;
+}
+
+interface NormalizedFailures {
+  count: number;
+  dead: number;
 }
 
 function eventIso(row: JobEvidenceRow): string | null {
@@ -94,9 +108,18 @@ export async function collectMinionJobEvidence(
     ? `AND COALESCE(data->>'source_id', data->>'sourceId') = ANY($2::text[])`
     : '';
   const batchParams = sourceIds ? [names, sourceIds] : [names];
+  const failureNames = [...new Set(
+    entries
+      .filter((entry) => entry.track_unresolved_failures === true)
+      .map((entry) => entry.selector),
+  )];
+  const failureParams = sourceIds
+    ? [failureNames, sourceIds]
+    : [failureNames];
 
   let attempts: JobEvidenceRow[];
   let backlogRows: BacklogAggregateRow[];
+  let failureRows: FailureAggregateRow[] = [];
   try {
     attempts = await engine.executeRaw<JobEvidenceRow>(
       `SELECT recent.name, recent.status, recent.created_at, recent.started_at,
@@ -125,6 +148,20 @@ export async function collectMinionJobEvidence(
        GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
       batchParams,
     );
+    if (failureNames.length > 0) {
+      failureRows = await engine.executeRaw<FailureAggregateRow>(
+        `SELECT name,
+                COALESCE(data->>'source_id', data->>'sourceId') AS source_id,
+                COUNT(*)::bigint AS failure_count,
+                COUNT(*) FILTER (WHERE status = 'dead')::bigint AS dead_count
+           FROM minion_jobs
+          WHERE name = ANY($1::text[])
+            ${sourcePredicate}
+            AND status IN ('failed', 'dead')
+          GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
+        failureParams,
+      );
+    }
   } catch {
     // Engine parity fallback: bounded per-name reads avoid FILTER/window
     // dependencies on older embedded Postgres builds while retaining
@@ -132,6 +169,7 @@ export async function collectMinionJobEvidence(
     try {
       attempts = [];
       backlogRows = [];
+      failureRows = [];
       for (const name of names) {
         const perNameParams = sourceIds ? [name, sourceIds] : [name];
         attempts.push(...await engine.executeRaw<JobEvidenceRow>(
@@ -156,6 +194,20 @@ export async function collectMinionJobEvidence(
            GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
           perNameParams,
         ));
+        if (failureNames.includes(name)) {
+          failureRows.push(...await engine.executeRaw<FailureAggregateRow>(
+            `SELECT name,
+                    COALESCE(data->>'source_id', data->>'sourceId') AS source_id,
+                    COUNT(*)::bigint AS failure_count,
+                    COUNT(*) FILTER (WHERE status = 'dead')::bigint AS dead_count
+               FROM minion_jobs
+              WHERE name = $1
+                ${sourcePredicate}
+                AND status IN ('failed', 'dead')
+              GROUP BY name, COALESCE(data->>'source_id', data->>'sourceId')`,
+            perNameParams,
+          ));
+        }
       }
     } catch {
       for (const entry of entries) {
@@ -194,6 +246,16 @@ export async function collectMinionJobEvidence(
       created_ms: createdAt ? new Date(createdAt).getTime() : null,
     });
   }
+  const failuresByScope = new Map<string, NormalizedFailures>();
+  for (const row of failureRows) {
+    const count = Number(row.failure_count);
+    const dead = Number(row.dead_count);
+    if (!Number.isFinite(count) || count <= 0) continue;
+    failuresByScope.set(scopeKey(row.name, row.source_id), {
+      count,
+      dead: Number.isFinite(dead) && dead > 0 ? dead : 0,
+    });
+  }
 
   for (const entry of entries) {
     const key = entryScopeKey(entry);
@@ -210,7 +272,13 @@ export async function collectMinionJobEvidence(
       if (time === null) return false;
       return time > successMs && time >= failureCutoffMs;
     });
-    const unsupersededDead = unsupersededFailures.some((row) => row.status === 'dead');
+    const durableFailures = failuresByScope.get(key);
+    const failureCount = entry.track_unresolved_failures
+      ? durableFailures?.count ?? 0
+      : unsupersededFailures.length;
+    const hasDeadFailure = entry.track_unresolved_failures
+      ? (durableFailures?.dead ?? 0) > 0
+      : unsupersededFailures.some((row) => row.status === 'dead');
     const oldestPendingMs = scopedBacklog?.created_ms ?? null;
     const oldestPendingAge = oldestPendingMs === null
       ? null
@@ -218,14 +286,19 @@ export async function collectMinionJobEvidence(
 
     const backlogCount = scopedBacklog?.count ?? 0;
     if (scopedAttempts.length === 0 && backlogCount === 0) {
-      out.set(
-        entry.key,
-        unavailableEvidence('evidence_unavailable', {
-          backlog_items: 0,
-          recent_failures: 0,
-        }),
-      );
-      continue;
+      if (!entry.healthy_when_idle) {
+        out.set(
+          entry.key,
+          unavailableEvidence('evidence_unavailable', {
+            backlog_items: 0,
+            recent_failures: 0,
+          }),
+        );
+        continue;
+      }
+      // Event-driven work may be idle, but durable failure aggregates still
+      // flow through the shared state override below. Returning healthy here
+      // would let another source's newer attempts hide this source's failure.
     }
 
     out.set(entry.key, {
@@ -233,12 +306,12 @@ export async function collectMinionJobEvidence(
       last_success_at: lastSuccess,
       backlog_items: backlogCount,
       oldest_pending_age_seconds: oldestPendingAge,
-      recent_failures: unsupersededFailures.length,
-      ...(unsupersededDead
+      recent_failures: failureCount,
+      ...(hasDeadFailure
         ? { force_state: 'failed' as const, force_reason: 'dead' as const }
         : backlogCount > 0 && (oldestPendingAge ?? 0) > 3600
           ? { force_state: 'degraded' as const, force_reason: 'stalled' as const }
-          : unsupersededFailures.length > 0
+          : failureCount > 0
             ? { force_state: 'degraded' as const, force_reason: 'recent_failures' as const }
             : {}),
     });
