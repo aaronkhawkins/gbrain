@@ -3,6 +3,7 @@ import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import type { EngineConfig, EmbeddingColumnConfig } from './types.ts';
 import type { ObservabilityConfig } from './observability/types.ts';
+import { isValidSourceId } from './source-id.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -30,6 +31,12 @@ export interface GBrainConfig {
   engine: 'postgres' | 'pglite';
   database_url?: string;
   database_path?: string;
+  /** Trusted local #39 CLI and acquired-audio root for the Minion ASR adapter. */
+  media_transcription?: {
+    cli_path?: string;
+    audio_root?: string;
+    target_source_id?: string;
+  };
   openai_api_key?: string;
   anthropic_api_key?: string;
   /**
@@ -369,6 +376,69 @@ export interface GBrainConfig {
      * tier so a hosted gbrain never serves its own bundled dev skills).
      */
     skills_dir?: string;
+  };
+}
+
+export interface MediaTranscriptionConfig {
+  cli_path: string;
+  audio_root: string;
+  target_source_id: string;
+}
+
+/**
+ * Resolve the media-transcription control-plane tuple without touching the
+ * filesystem. Status and observability use this declarative view so a missing
+ * binary or temporarily unavailable artifact mount remains diagnosable.
+ *
+ * The environment is one atomic override plane: setting any member requires
+ * all three. This prevents a service restart from silently combining an env
+ * executable with an unrelated file-config root or source.
+ */
+export function resolveMediaTranscriptionConfig(
+  config: GBrainConfig | null = null,
+  env: Record<string, string | undefined> = process.env,
+): MediaTranscriptionConfig | undefined {
+  const envKeys = [
+    'GBRAIN_MEDIA_TRANSCRIPTION_CLI',
+    'GBRAIN_MEDIA_TRANSCRIPTION_AUDIO_ROOT',
+    'GBRAIN_MEDIA_TRANSCRIPTION_TARGET_SOURCE_ID',
+  ] as const;
+  const envPresent = envKeys.map((key) => env[key] !== undefined);
+  const anyEnv = envPresent.some(Boolean);
+  const allEnv = envPresent.every(Boolean);
+  if (anyEnv && !allEnv) {
+    throw new Error(
+      'media transcription environment override requires all three settings',
+    );
+  }
+
+  const selected = anyEnv
+    ? {
+        cli_path: env.GBRAIN_MEDIA_TRANSCRIPTION_CLI,
+        audio_root: env.GBRAIN_MEDIA_TRANSCRIPTION_AUDIO_ROOT,
+        target_source_id: env.GBRAIN_MEDIA_TRANSCRIPTION_TARGET_SOURCE_ID,
+      }
+    : config?.media_transcription;
+  if (!selected) return undefined;
+
+  const cliPath = selected.cli_path;
+  const audioRoot = selected.audio_root;
+  const targetSourceId = selected.target_source_id;
+  if (
+    typeof cliPath !== 'string'
+    || cliPath.length === 0
+    || !isAbsolute(cliPath)
+    || typeof audioRoot !== 'string'
+    || audioRoot.length === 0
+    || !isAbsolute(audioRoot)
+    || !isValidSourceId(targetSourceId)
+  ) {
+    throw new Error('invalid media transcription configuration');
+  }
+  return {
+    cli_path: cliPath,
+    audio_root: audioRoot,
+    target_source_id: targetSourceId,
   };
 }
 

@@ -77,6 +77,13 @@ In `$GBRAIN_HOME/config.json`:
   intake is healthy when its Minion evidence queries succeed. These rows flow
   through the existing generic item panels and alerts; no dashboard allowlist
   or per-adapter declaration is required.
+- A fully configured `media_transcription` worker similarly appears as
+  `minion.media_transcription.s_<opaque>` for its configured target source.
+  It is event-driven: an empty queue is healthy, while backlog and unresolved
+  failed/dead jobs remain visible through the generic Minion metrics and
+  Grafana panels. Invalid configuration or a missing/archived target remains
+  visible as required `discovery.media_transcription` work with unknown state;
+  temporary CLI or artifact-mount outages do not prevent status discovery.
 - Only numeric loopback and Tailscale addresses (`100.64.0.0/10`,
   `fd7a:115c:a1e0::/48`) are accepted by default. Any other bind requires the
   explicit unsafe `allow_public_bind: true` override.
@@ -135,6 +142,7 @@ Absence of evidence is **never** healthy.
 - [Observer missing / stale](../runbooks/observability/observer-missing.md)
 - [Missed work](../runbooks/observability/missed-work.md)
 - [Backlog](../runbooks/observability/backlog.md)
+- [Media transcription](../runbooks/observability/media-transcription.md)
 - [Embedding](../runbooks/observability/embedding.md)
 
 ## External monitoring deployment
