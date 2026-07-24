@@ -30,6 +30,7 @@ import type { RerankInput, RerankResult } from '../../src/core/ai/gateway.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { stampTestEmbeddingIdentity } from '../helpers/embedding-identity-fixture.ts';
 
 let engine: PGLiteEngine;
 let prevGbrainHome: string | undefined;
@@ -84,6 +85,7 @@ beforeAll(async () => {
         model: 'openai:text-embedding-3-large',
       },
     ]);
+    await stampTestEmbeddingIdentity(engine, slug);
   }
 
   // Configure with sk-test + stubbed embed transport. We DO need the

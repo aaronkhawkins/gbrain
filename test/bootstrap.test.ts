@@ -253,4 +253,58 @@ describe('PGLiteEngine#applyForwardReferenceBootstrap', () => {
       await engine.disconnect();
     }
   }, 30000);
+
+  test('pre-v129 receipt shape resumes through bootstrap and migration backfill', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema();
+      const db = (engine as any).db;
+
+      await db.exec(`
+        ALTER TABLE processing_receipts DROP COLUMN IF EXISTS attempt_token;
+        INSERT INTO processing_registrations (
+          processor_key, processor_version, cadence_seconds, runbook
+        ) VALUES ('bootstrap-test', '1', 60, 'bootstrap-test');
+        INSERT INTO processing_receipts (
+          processor_key, processor_version, scope_id, input_fingerprint
+        ) VALUES (
+          'bootstrap-test', '1', 'scope',
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        );
+      `);
+      await engine.setConfig('version', '128');
+
+      await (engine as any).applyForwardReferenceBootstrap();
+
+      const { rows: bootstrapped } = await db.query(`
+        SELECT is_nullable
+          FROM information_schema.columns
+         WHERE table_name = 'processing_receipts'
+           AND column_name = 'attempt_token'
+      `);
+      expect(bootstrapped).toEqual([{ is_nullable: 'YES' }]);
+
+      await engine.initSchema();
+
+      expect(await engine.getConfig('version')).toBe(String(LATEST_VERSION));
+      const { rows: migrated } = await db.query(`
+        SELECT attempt_token
+          FROM processing_receipts
+         WHERE processor_key = 'bootstrap-test'
+      `);
+      expect(migrated).toHaveLength(1);
+      expect(migrated[0].attempt_token).toMatch(/^[0-9a-f]{32}$/);
+
+      const { rows: finalized } = await db.query(`
+        SELECT is_nullable
+          FROM information_schema.columns
+         WHERE table_name = 'processing_receipts'
+           AND column_name = 'attempt_token'
+      `);
+      expect(finalized).toEqual([{ is_nullable: 'NO' }]);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
 });

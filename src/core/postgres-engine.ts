@@ -600,7 +600,11 @@ export class PostgresEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.tables
                 WHERE table_schema = current_schema() AND table_name = 'timeline_entries') AS timeline_entries_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema = current_schema() AND table_name = 'timeline_entries' AND column_name = 'event_page_id') AS timeline_event_page_id_exists
+                WHERE table_schema = current_schema() AND table_name = 'timeline_entries' AND column_name = 'event_page_id') AS timeline_event_page_id_exists,
+        EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = 'processing_receipts') AS processing_receipts_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'processing_receipts' AND column_name = 'attempt_token') AS processing_receipts_attempt_token_exists
     `;
     const probe = probeRows[0]!;
 
@@ -679,6 +683,8 @@ export class PostgresEngine implements BrainEngine {
       pages_links_extracted_at_exists?: boolean;
       timeline_entries_exists?: boolean;
       timeline_event_page_id_exists?: boolean;
+      processing_receipts_exists?: boolean;
+      processing_receipts_attempt_token_exists?: boolean;
     };
     const needsContextualRetrievalColumns = (probe.pages_exists
         && (!probeCr.pages_cr_mode_exists || !probeCr.pages_corpus_generation_exists))
@@ -701,6 +707,10 @@ export class PostgresEngine implements BrainEngine {
     // v121: schema-blob indexes reference event_page_id before migrations run.
     const needsTimelineEventPageId = probeCr.timeline_entries_exists === true
       && !probeCr.timeline_event_page_id_exists;
+    // v129: bootstrap the nullable column only. The idempotent migration owns
+    // the deterministic backfill and NOT NULL constraint.
+    const needsProcessingReceiptAttemptToken = probeCr.processing_receipts_exists === true
+      && !probeCr.processing_receipts_attempt_token_exists;
 
     if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap
         && !needsPagesDeletedAt && !needsMcpLogBootstrap && !needsSubagentProviderId
@@ -712,7 +722,8 @@ export class PostgresEngine implements BrainEngine {
         && !needsContextualRetrievalColumns && !needsPagesGeneration
         && !needsPagesEmbeddingSignature
         && !needsPagesLinksExtractedAt
-        && !needsTimelineEventPageId) return;
+        && !needsTimelineEventPageId
+        && !needsProcessingReceiptAttemptToken) return;
 
     process.stderr.write('  Pre-v0.21 brain detected, applying forward-reference bootstrap\n');
 
@@ -965,6 +976,16 @@ export class PostgresEngine implements BrainEngine {
       // source of truth for the FK and indexes and runs idempotently afterward.
       await conn.unsafe(`
         ALTER TABLE timeline_entries ADD COLUMN IF NOT EXISTS event_page_id INTEGER;
+      `);
+    }
+
+    if (needsProcessingReceiptAttemptToken) {
+      // Migration v129 backfills deterministic tokens and applies NOT NULL.
+      // Bootstrap only restores the additive precondition so interrupted
+      // upgrades can safely resume the idempotent migration.
+      await conn.unsafe(`
+        ALTER TABLE processing_receipts
+          ADD COLUMN IF NOT EXISTS attempt_token VARCHAR(64);
       `);
     }
   }
