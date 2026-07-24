@@ -14,6 +14,7 @@ import {
 import {
   NATIVE_INTAKE_API_VERSION,
   computeContentHash,
+  deriveNativeIntakeOutputSlug,
   type IngestionEvent,
   type NativeIntakeEnvelope,
 } from '../../src/core/ingestion/types.ts';
@@ -334,6 +335,71 @@ describe('ingest_capture handler — provenance write-through (#1522)', () => {
       expect(error).not.toBeInstanceOf(UnrecoverableError);
       expect(String(error)).toContain('native target unavailable');
     }
+  });
+
+  test('native unsupported work dead-letters immediately', async () => {
+    const content = '/private/recordings/capture.wav';
+    const unsupported: NativeIntakeEnvelope = {
+      ...makeEvent({
+        source_id: 'birdclaw',
+        content_type: 'audio/*',
+        content,
+        content_hash: computeContentHash(content),
+      }),
+      api_version: NATIVE_INTAKE_API_VERSION,
+      brain_id: 'host',
+      target_source_id: 'research',
+      external_id: 'unsupported-1',
+      posture: 'research',
+      idempotency_key: 'unsupported-delivery',
+    };
+    const handler = makeIngestCaptureHandler(engine);
+
+    await expect(handler(makeJob({ sourceId: 'research', event: unsupported })))
+      .rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  test('native replay after page write is an idempotent no-op at the deterministic slug', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config)
+       VALUES ('research', 'Research', '{"native_intake":{"posture":"research"}}'::jsonb)`,
+    );
+    const content = '# write completed before worker acknowledgement';
+    const native: NativeIntakeEnvelope = {
+      ...makeEvent({
+        source_id: 'birdclaw',
+        content,
+        content_hash: computeContentHash(content),
+        received_at: '2026-07-23T23:59:59.999Z',
+      }),
+      api_version: NATIVE_INTAKE_API_VERSION,
+      brain_id: 'host',
+      target_source_id: 'research',
+      external_id: 'post-write-1',
+      posture: 'research',
+      promotion_boundary: {
+        target_posture: 'canonical',
+        authority: 'operator',
+      },
+      idempotency_key: 'post-write-delivery',
+    };
+    const slug = deriveNativeIntakeOutputSlug(native);
+    const job = makeJob({ sourceId: 'research', slug, event: native });
+    const handler = makeIngestCaptureHandler(engine);
+
+    const first = await handler(job);
+    const replay = await handler(job);
+
+    expect(first).toMatchObject({ slug, source_id: 'research', status: 'imported' });
+    expect(replay).toMatchObject({ slug, source_id: 'research', status: 'skipped' });
+    const rows = await engine.executeRaw<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pages WHERE source_id = 'research' AND slug = $1`,
+      [slug],
+    );
+    expect(rows[0]?.count).toBe('1');
+    expect(JSON.stringify(replay)).not.toContain(content);
+    expect(JSON.stringify(replay)).not.toContain(native.external_id);
+    expect(JSON.stringify(replay)).not.toContain(native.idempotency_key);
   });
 });
 
