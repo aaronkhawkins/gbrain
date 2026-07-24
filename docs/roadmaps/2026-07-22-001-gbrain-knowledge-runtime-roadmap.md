@@ -31,7 +31,7 @@ Phase 1 delivery:
 
 - Prove deployed capabilities before expanding their scope.
 - Integrate upstream reliability work before building a downstream equivalent.
-- Absorb useful upstream reliability work at phase boundaries (or on a fixed cadence) after Phase 0; keep the integration-report / behavior-ledger habit alive so later phases do not silently re-fork.
+- Absorb useful upstream reliability work at phase boundaries (or on a fixed cadence) after Phase 0; keep the integration-report / behavior-ledger habit alive so later phases do not silently re-fork. Standing contract: [`docs/guides/upstream-sync-cadence.md`](../guides/upstream-sync-cadence.md) + [`docs/operations/upstream-sync-ledger.md`](../operations/upstream-sync-ledger.md) (no mid-slice sync unless blocking; memory-bounded verification).
 - Preserve a clean managed-fork boundary and prefer extension contracts over core divergence.
 - Keep operational telemetry content-free by default.
 - Treat database credentials and policies as the security boundary; agents remain scoped clients.
