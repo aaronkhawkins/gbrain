@@ -354,6 +354,16 @@ describe('MinionQueue: #1737 per-handler default timeout', () => {
     expect(sub.timeout_ms).toBe(30 * 60 * 1000);
   });
 
+  test('media transcription gets a 35-min hard deadline by default', async () => {
+    const job = await queue.add(
+      'media_transcription',
+      {},
+      undefined,
+      { allowProtectedSubmit: true },
+    );
+    expect(job.timeout_ms).toBe(35 * 60 * 1000);
+  });
+
   test('explicit timeout_ms always wins over the default', async () => {
     const job = await queue.add('embed-backfill', { sourceId: 'x' }, { timeout_ms: 5000 });
     expect(job.timeout_ms).toBe(5000);
@@ -701,6 +711,26 @@ describe('MinionQueue: Prune', () => {
 
     const count = await queue.prune({ olderThan: new Date(Date.now() + 86400000) }); // future date = prune everything old enough
     expect(count).toBe(1); // only the cancelled one
+  });
+
+  test('retains durable media processor idempotency rows', async () => {
+    const ordinary = await queue.add('sync', {}, { idempotency_key: 'sync:old' });
+    const media = await queue.add(
+      'media_transcription',
+      {},
+      { idempotency_key: `media-process:${'a'.repeat(64)}` },
+      { allowProtectedSubmit: true },
+    );
+    await queue.cancelJob(ordinary.id);
+    await queue.cancelJob(media.id);
+
+    const count = await queue.prune({
+      olderThan: new Date(Date.now() + 86400000),
+    });
+
+    expect(count).toBe(1);
+    expect(await queue.getJob(ordinary.id)).toBeNull();
+    expect(await queue.getJob(media.id)).not.toBeNull();
   });
 });
 

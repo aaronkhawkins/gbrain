@@ -42,10 +42,26 @@ describe('registerBuiltinHandlers', () => {
     expect(names).toContain('extract');
     expect(names).toContain('backlinks');
     expect(names).toContain('autopilot-cycle');
+    expect(names).not.toContain('media_transcription');
   });
 
   test('total handler count includes all 7 names', () => {
     expect(worker.registeredNames.length).toBeGreaterThanOrEqual(7);
+  });
+
+  test('registers media transcription only when a transport is injected', async () => {
+    const withTransport = new MinionWorker(engine, { queue: 'test' });
+    await registerBuiltinHandlers(withTransport, engine, {
+      quiet: true,
+      mediaTranscriptionTransport: {
+        attempt: async () => ({
+          schema_version: 1,
+          outcome: 'ignored',
+          reason_code: 'no_meaningful_speech',
+        }),
+      },
+    });
+    expect(withTransport.registeredNames).toContain('media_transcription');
   });
 
   test('facts-absorb dispatch rejects a future payload version', async () => {

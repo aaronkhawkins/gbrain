@@ -24,6 +24,7 @@
  */
 
 const THIRTY_MIN_MS = 30 * 60 * 1000;
+const THIRTY_FIVE_MIN_MS = 35 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
 
 /**
@@ -31,6 +32,9 @@ const TEN_MIN_MS = 10 * 60 * 1000;
  * not in this map returns `null` → the short null-default wall-clock applies.
  */
 export const HANDLER_DEFAULT_TIMEOUT_MS: Readonly<Record<string, number>> = {
+  // The injected adapter receives at most 30 minutes and keeps a one-minute
+  // guard before this terminal Minion deadline.
+  media_transcription: THIRTY_FIVE_MIN_MS,
   subagent: THIRTY_MIN_MS,
   subagent_aggregator: THIRTY_MIN_MS,
   'embed-backfill': THIRTY_MIN_MS,
