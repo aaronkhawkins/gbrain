@@ -19,12 +19,20 @@ import {
 } from '../src/core/ai/gateway.ts';
 import { hybridSearch } from '../src/core/search/hybrid.ts';
 import { runReindexMultimodal } from '../src/commands/reindex-multimodal.ts';
+import { seedTestEmbeddingIdentity } from './helpers/embedding-identity-fixture.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let engine: PGLiteEngine;
 let fetchHandler: ((url: string, init: RequestInit) => Promise<Response>) | null = null;
 const origFetch = globalThis.fetch;
+let isolatedHome: string;
+const savedGbrainHome = process.env.GBRAIN_HOME;
 
 beforeAll(async () => {
+  isolatedHome = mkdtempSync(join(tmpdir(), 'gbrain-unified-multimodal-home-'));
+  process.env.GBRAIN_HOME = isolatedHome;
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
@@ -32,6 +40,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  if (savedGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = savedGbrainHome;
+  rmSync(isolatedHome, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
@@ -101,6 +112,7 @@ describe('reindex --multimodal command (Phase 3)', () => {
 
 describe('hybridSearch unified routing (Phase 3)', () => {
   test('search.unified_multimodal=true routes ALL queries through embedding_multimodal', async () => {
+    await seedTestEmbeddingIdentity(engine);
     await engine.setConfig('search.unified_multimodal', 'true');
     let voyageCalled = 0;
     let openaiCalled = 0;
@@ -125,6 +137,7 @@ describe('hybridSearch unified routing (Phase 3)', () => {
   });
 
   test('D8 fail-open: empty unified column + not strict → falls back to text', async () => {
+    await seedTestEmbeddingIdentity(engine);
     // Set unified flag but DON'T set unified_multimodal_only. Empty DB → unified returns [].
     await engine.setConfig('search.unified_multimodal', 'true');
     let openaiCalled = 0;
@@ -147,6 +160,7 @@ describe('hybridSearch unified routing (Phase 3)', () => {
   });
 
   test('D8 strict: unified_multimodal_only=true + empty column → does NOT fall back', async () => {
+    await seedTestEmbeddingIdentity(engine);
     await engine.setConfig('search.unified_multimodal', 'true');
     await engine.setConfig('search.unified_multimodal_only', 'true');
     let openaiCalled = 0;

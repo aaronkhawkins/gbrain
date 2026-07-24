@@ -24,6 +24,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as realEmbedding from '../src/core/embedding.ts';
+import { seedTestEmbeddingIdentity } from './helpers/embedding-identity-fixture.ts';
 
 /** Deterministic 1536d unit vector — same for every call, so an identical
  * query's second consult matches its first write at cosine 1.0. */
@@ -106,6 +107,7 @@ beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  await seedTestEmbeddingIdentity(engine);
 
   // Keyword-findable fixtures so the inner search returns rows (a non-empty
   // result set is what arms the cache writeback). searchKeyword joins

@@ -13,6 +13,7 @@ import { hybridSearch } from '../src/core/search/hybrid.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { stampTestEmbeddingIdentity } from './helpers/embedding-identity-fixture.ts';
 
 let engine: PGLiteEngine;
 const origFetch = globalThis.fetch;
@@ -78,6 +79,7 @@ beforeEach(async () => {
     embedding: new Float32Array(1536).fill(0.1),
     model: 'openai:text-embedding-3-large',
   }]);
+  await stampTestEmbeddingIdentity(engine, 'notes/embedded-fixture');
 });
 
 afterEach(() => {
