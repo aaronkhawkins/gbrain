@@ -38,6 +38,8 @@ import { withObserverReadOnlyEngine } from './read-only-engine.ts';
 import { LATEST_VERSION } from '../migrate.ts';
 import { listProcessingRegistrations } from '../processing-receipts.ts';
 import { parseNativeIntakeTargetPolicy } from '../ingestion/native-intake.ts';
+import { resolveMediaTranscriptionConfig } from '../config.ts';
+import { probeMediaTranscriptionRuntime } from '../media-transcription-operations.ts';
 
 export interface BuildOperationalSnapshotOpts {
   engine: BrainEngine | null;
@@ -135,13 +137,16 @@ export async function discoverRegistryInput(
   engine: BrainEngine | null,
   config?: GBrainConfig | null,
   scope: { sourceId?: string; sourceIds?: string[] } = {},
+  env: Record<string, string | undefined> = process.env,
 ): Promise<RegistryInput> {
   const observability = readObservability(config);
   const sourceIds: string[] = [];
   const nativeIntakeTargetIds: string[] = [];
+  const mediaTranscriptionTargetIds: string[] = [];
   const scheduledSourceIds: string[] = [];
   const discoveryFailures: RegistryInput['discoveryFailures'] = [];
   const allowedSources = allowedSourceSet(scope);
+  let sourceDiscoverySucceeded = false;
   if (engine) {
     try {
       const sources = await loadAllSources(engine, {
@@ -156,6 +161,7 @@ export async function discoverRegistryInput(
         }
         if (s.local_path) scheduledSourceIds.push(s.id);
       }
+      sourceDiscoverySucceeded = true;
     } catch {
       discoveryFailures.push('sources');
     }
@@ -217,6 +223,36 @@ export async function discoverRegistryInput(
     phaseEnabled,
     synthesizeCorpusConfigured,
   });
+
+  try {
+    const mediaTranscription = resolveMediaTranscriptionConfig(config, env);
+    const targetInRequestedScope = mediaTranscription
+      && (!allowedSources || allowedSources.has(mediaTranscription.target_source_id));
+    if (
+      mediaTranscription
+      && targetInRequestedScope
+      && sourceDiscoverySucceeded
+    ) {
+      if (sourceIds.includes(mediaTranscription.target_source_id)) {
+        mediaTranscriptionTargetIds.push(mediaTranscription.target_source_id);
+      } else {
+        discoveryFailures.push('media_transcription');
+      }
+    }
+    if (mediaTranscription && targetInRequestedScope) {
+      try {
+        // Runtime validation is deliberately isolated from declarative
+        // discovery. Missing executable/mount state becomes visible unknown
+        // work without suppressing the configured Minion row or the snapshot.
+        await probeMediaTranscriptionRuntime(mediaTranscription);
+      } catch {
+        discoveryFailures.push('media_transcription');
+      }
+    }
+  } catch {
+    discoveryFailures.push('media_transcription');
+  }
+
   let globalFloorMinutes = AUTOPILOT_GLOBAL_FLOOR_MINUTES;
   let registeredProcessors: RegistryInput['registeredProcessors'] = [];
   if (engine) {
@@ -251,6 +287,7 @@ export async function discoverRegistryInput(
   return {
     sourceIds,
     nativeIntakeTargetIds,
+    mediaTranscriptionTargetIds,
     ...(sourceIds.length > 0
       ? { sourceLabelKey: deriveSourceLabelKey(config) ?? undefined }
       : {}),
@@ -286,6 +323,7 @@ export async function buildOperationalSnapshot(
     if (input.sourceIds.length > 0 && !input.sourceLabelKey) {
       input.sourceIds = [];
       input.scheduledSourceIds = [];
+      input.mediaTranscriptionTargetIds = [];
       input.discoveryFailures = [
         ...new Set([...(input.discoveryFailures ?? []), 'sources' as const]),
       ];

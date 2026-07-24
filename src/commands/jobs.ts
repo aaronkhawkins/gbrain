@@ -4,19 +4,55 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { MinionWorker } from '../core/minions/worker.ts';
 import { WORKER_EXIT_RSS_WATCHDOG } from '../core/minions/worker-exit-codes.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
-import type { MediaTranscriptionTransport } from '../core/media-transcription-transport.ts';
-import { loadConfig, isThinClient } from '../core/config.ts';
+import {
+  MEDIA_TRANSCRIPTION_JOB_NAME,
+  type MediaTranscriptionTransport,
+} from '../core/media-transcription-transport.ts';
+import { assertActiveMediaTranscriptionSource } from '../core/media-transcription-operations.ts';
+import {
+  loadConfig,
+  isThinClient,
+  resolveMediaTranscriptionConfig,
+} from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
 import {
   factsContentHash,
   parseFactsAbsorbJobData,
 } from '../core/facts/durable-job.ts';
+
+const MAX_MEDIA_JSON_BYTES = 1_000_000;
+
+/** Read and parse one media envelope through a single, size-checked descriptor. */
+export function readBoundedMediaJson(path: string): unknown {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.size > MAX_MEDIA_JSON_BYTES) {
+      throw new Error('invalid');
+    }
+    const bytes = Buffer.allocUnsafe(MAX_MEDIA_JSON_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset > MAX_MEDIA_JSON_BYTES) throw new Error('invalid');
+    return JSON.parse(bytes.subarray(0, offset).toString('utf8'));
+  } catch {
+    throw new Error('--media-json must name one bounded JSON file');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -218,6 +254,8 @@ USAGE
   gbrain jobs delete <id>
   gbrain jobs stats
   gbrain jobs smoke
+  gbrain jobs media-transcription submit --media-json PATH
+  gbrain jobs media-transcription status [job-id]
   gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
                    [--health-interval MS] [--nice N]
   gbrain jobs supervisor [start] [--detach] [--json]
@@ -285,6 +323,116 @@ HANDLER TYPES (built in)
   const queue = new MinionQueue(engine);
 
   switch (sub) {
+    case 'media-transcription': {
+      const action = args[1];
+      if (action === 'status') {
+        if (args.length > 3) {
+          console.error('Error: usage: gbrain jobs media-transcription status [job-id]');
+          process.exit(1);
+        }
+        const rawJobId = args[2];
+        if (!rawJobId) {
+          let transportConfig;
+          try {
+            transportConfig = resolveMediaTranscriptionConfig(loadConfig());
+          } catch {
+            console.error('Error: invalid media transcription configuration');
+            process.exit(1);
+          }
+          const {
+            PARAKEET_PROCESSOR_IDENTITY,
+          } = await import('../core/media-transcription-cli-transport.ts');
+          console.log(JSON.stringify({
+            schema_version: 1,
+            configured: transportConfig !== undefined,
+            target_source_id: transportConfig?.target_source_id ?? null,
+            processor: PARAKEET_PROCESSOR_IDENTITY,
+          }));
+          return;
+        }
+        const jobId = Number(rawJobId);
+        if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+          console.error('Error: media transcription job id must be a positive integer');
+          process.exit(1);
+        }
+        await queue.ensureSchema();
+        const job = await queue.getJob(jobId);
+        if (!job || job.name !== MEDIA_TRANSCRIPTION_JOB_NAME) {
+          console.error('Error: media transcription job not found');
+          process.exit(1);
+        }
+        const errorCode = typeof job.error_text === 'string'
+          && /^media_transcription:[a-z_]+$/.test(job.error_text)
+          ? job.error_text.slice('media_transcription:'.length)
+          : null;
+        console.log(JSON.stringify({
+          schema_version: 1,
+          job_id: job.id,
+          status: job.status,
+          attempts_started: job.attempts_started,
+          attempts_made: job.attempts_made,
+          error_code: errorCode,
+        }));
+        return;
+      }
+      if (action === 'submit') {
+        if (args.length !== 4 || args[2] !== '--media-json' || !args[3]) {
+          console.error('Error: --media-json PATH is required');
+          process.exit(1);
+        }
+        let transportConfig;
+        try {
+          transportConfig = resolveMediaTranscriptionConfig(loadConfig());
+        } catch {
+          console.error('Error: invalid media transcription configuration');
+          process.exit(1);
+        }
+        if (!transportConfig) {
+          console.error('Error: media transcription is not configured');
+          process.exit(1);
+        }
+        const mediaJsonPath = args[3];
+        let media: unknown;
+        try {
+          media = readBoundedMediaJson(mediaJsonPath);
+        } catch {
+          console.error('Error: --media-json must name one bounded JSON file');
+          process.exit(1);
+        }
+        if (
+          typeof media !== 'object'
+          || media === null
+          || Array.isArray(media)
+          || (media as { owner?: { target_source_id?: unknown } }).owner?.target_source_id
+            !== transportConfig.target_source_id
+        ) {
+          console.error('Error: media target source does not match configured transcription source');
+          process.exit(1);
+        }
+        const { submitMediaTranscription } = await import(
+          '../core/media-transcription-submit.ts'
+        );
+        const {
+          PARAKEET_PROCESSOR_IDENTITY,
+        } = await import('../core/media-transcription-cli-transport.ts');
+        const result = await submitMediaTranscription(
+          engine,
+          media,
+          PARAKEET_PROCESSOR_IDENTITY,
+        );
+        console.log(JSON.stringify({
+          schema_version: 1,
+          ...result,
+        }));
+        return;
+      }
+      console.error(
+        'Error: usage: gbrain jobs media-transcription submit --media-json PATH | status [job-id]',
+      );
+      process.exit(1);
+      return;
+    }
+
     case 'submit': {
       const name = args[1];
       if (!name) {
@@ -1388,13 +1536,28 @@ export async function registerBuiltinHandlers(
   // terminal with "shell handler registered…" lines. The real `jobs work` path
   // omits opts and prints as before.
   const quiet = opts?.quiet === true;
-  if (opts?.mediaTranscriptionTransport) {
+  let mediaTranscriptionTransport = opts?.mediaTranscriptionTransport;
+  if (!mediaTranscriptionTransport) {
+    const baseConfig = loadConfig();
+    const declarativeConfig = resolveMediaTranscriptionConfig(baseConfig);
+    if (declarativeConfig) {
+      await assertActiveMediaTranscriptionSource(
+        engine,
+        declarativeConfig.target_source_id,
+      );
+      const { CliMediaTranscriptionTransport } = await import(
+        '../core/media-transcription-cli-transport.ts'
+      );
+      mediaTranscriptionTransport = new CliMediaTranscriptionTransport(declarativeConfig);
+    }
+  }
+  if (mediaTranscriptionTransport) {
     const { makeMediaTranscriptionHandler } = await import(
       '../core/minions/handlers/media-transcription.ts'
     );
     worker.register(
-      'media_transcription',
-      makeMediaTranscriptionHandler(opts.mediaTranscriptionTransport),
+      MEDIA_TRANSCRIPTION_JOB_NAME,
+      makeMediaTranscriptionHandler(mediaTranscriptionTransport),
     );
   }
   registerBuiltinJob(worker, engine, 'facts-absorb', async (job) => {

@@ -11,6 +11,7 @@ import type {
 import { MinionQueue } from './minions/queue.ts';
 import type { MinionJobInput, MinionJobStatus } from './minions/types.ts';
 import { MEDIA_TRANSCRIPTION_JOB_NAME } from './media-transcription-transport.ts';
+import { assertActiveMediaTranscriptionSource } from './media-transcription-operations.ts';
 
 export const MEDIA_TRANSCRIPTION_JOB_POLICY = {
   max_attempts: 3,
@@ -120,6 +121,7 @@ export async function submitMediaTranscription(
   if (media.transcript !== undefined) {
     throw new MediaTranscriptionSubmissionError('already_transcribed');
   }
+  await assertActiveMediaTranscriptionSource(engine, media.owner.target_source_id);
 
   let idempotencyKey: string;
   try {

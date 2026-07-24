@@ -127,6 +127,48 @@ gbrain doctor --fast --json | jq '.checks[] | select(.name=="schema_version")'
 #    Without the flag, the shell handler is disabled at worker startup.
 ```
 
+### Optional media-transcription handler
+
+The built-in `media_transcription` handler is dormant unless its trusted local
+transport is fully configured. Configure it on the existing worker or
+supervisor service; do not deploy a separate transcription worker:
+
+```bash
+GBRAIN_MEDIA_TRANSCRIPTION_CLI=/absolute/path/to/transcribe-one
+GBRAIN_MEDIA_TRANSCRIPTION_AUDIO_ROOT=/absolute/path/to/acquired-media
+GBRAIN_MEDIA_TRANSCRIPTION_TARGET_SOURCE_ID=birdclaw
+```
+
+All three values are atomic. If any environment value is present, all three
+must come from the environment; GBrain never fills missing environment values
+from `config.json`. With none present, the handler stays dormant. A partial
+configuration or a relative path is a startup error. The target source must
+already be registered and nonarchived in the brain. The CLI performs one
+attempt only; GBrain remains the sole owner of queueing, retry, deadlines,
+locks, and job status. The same values may instead be stored under
+`media_transcription` in the brain's file-plane `config.json` as `cli_path`,
+`audio_root`, and `target_source_id`. If the observer is a separate service,
+give it the same file-plane configuration or environment so it can discover
+healthy-idle work.
+Status and observer discovery parse this tuple without requiring the CLI or
+audio root to be currently reachable. Worker activation still validates both
+paths and fails closed, while the observer reports configuration or source
+discovery problems as `discovery.media_transcription` instead of disappearing.
+
+After changing the service environment, restart the existing supervisor and
+verify one manually seeded job before enabling production submissions:
+
+```bash
+gbrain jobs supervisor status --json
+gbrain observe snapshot
+```
+
+The snapshot should include `minion.media_transcription.s_<opaque>`. It is
+healthy while idle and reports native Minion backlog and unresolved failures
+through the standard observer metrics. See the
+[media-transcription runbook](../runbooks/observability/media-transcription.md)
+for canary, cutover, and rollback checks.
+
 ## Agent usage (OpenClaw / Hermes / Cursor / Codex)
 
 Three-command pattern an agent can drive without shell archaeology:

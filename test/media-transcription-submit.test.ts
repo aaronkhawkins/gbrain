@@ -11,8 +11,21 @@ import {
   type MediaProcessorIdentity,
 } from '../src/core/ingestion/media-evidence.ts';
 import { isProtectedJobName } from '../src/core/minions/protected-names.ts';
+import type { BrainEngine } from '../src/core/engine.ts';
 
 const SHA_A = 'a'.repeat(64);
+const activeEngine = {
+  executeRaw: async () => [{
+    id: 'research',
+    name: 'Research',
+    local_path: null,
+    last_commit: null,
+    last_sync_at: null,
+    config: {},
+    created_at: new Date(),
+    archived: false,
+  }],
+} as unknown as BrainEngine;
 
 const media: MediaEvidence = {
   api_version: MEDIA_EVIDENCE_API_VERSION,
@@ -112,7 +125,7 @@ describe('submitMediaTranscription', () => {
     };
 
     const result = await submitMediaTranscription(
-      {} as never,
+      activeEngine,
       media,
       processor,
       { queue },
@@ -155,7 +168,7 @@ describe('submitMediaTranscription', () => {
     };
 
     const result = await submitMediaTranscription(
-      {} as never,
+      activeEngine,
       structuredClone(media),
       { ...processor },
       { queue },
@@ -197,7 +210,7 @@ describe('submitMediaTranscription', () => {
       },
     ]) {
       await expect(submitMediaTranscription(
-        {} as never,
+        activeEngine,
         candidate,
         processor,
         { queue: queue as never },
@@ -223,10 +236,41 @@ describe('submitMediaTranscription', () => {
     };
 
     await expect(submitMediaTranscription(
-      {} as never,
+      activeEngine,
       media,
       processor,
       { queue },
     )).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
+  test('rejects trusted submission when the owning source is not active', async () => {
+    let queueCalled = false;
+    const archivedEngine = {
+      executeRaw: async () => [{
+        id: 'research',
+        name: 'Research',
+        local_path: null,
+        last_commit: null,
+        last_sync_at: null,
+        config: {},
+        created_at: new Date(),
+        archived: true,
+      }],
+    } as unknown as BrainEngine;
+
+    await expect(submitMediaTranscription(
+      archivedEngine,
+      media,
+      processor,
+      {
+        queue: {
+          addWithDisposition: async () => {
+            queueCalled = true;
+            throw new Error('must not enqueue');
+          },
+        },
+      },
+    )).rejects.toThrow(/archived/i);
+    expect(queueCalled).toBe(false);
   });
 });
