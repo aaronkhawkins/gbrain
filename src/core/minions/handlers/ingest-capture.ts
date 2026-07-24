@@ -30,9 +30,13 @@
  */
 
 import type { MinionJobContext } from '../types.ts';
+import { UnrecoverableError } from '../types.ts';
 import type { BrainEngine } from '../../engine.ts';
-import type { IngestionEvent } from '../../ingestion/types.ts';
-import { validateIngestionEvent } from '../../ingestion/types.ts';
+import type { IngestionEvent, NativeIntakeEnvelope } from '../../ingestion/types.ts';
+import {
+  validateIngestionEvent,
+  validateNativeIntakeEnvelope,
+} from '../../ingestion/types.ts';
 import { importFromContent } from '../../import-file.ts';
 
 export interface IngestCaptureResult {
@@ -57,14 +61,26 @@ export function defaultSlugForEvent(event: IngestionEvent, now: Date = new Date(
 
 export function makeIngestCaptureHandler(engine: BrainEngine) {
   return async function ingestCaptureHandler(job: MinionJobContext): Promise<IngestCaptureResult> {
-    const data = job.data as { event?: unknown; slug?: unknown };
+    const data = job.data as { event?: unknown; slug?: unknown; sourceId?: unknown };
     const event = data.event as IngestionEvent | undefined;
     if (!event) {
       throw new Error('ingest_capture: job.data.event is required');
     }
-    const validationErr = validateIngestionEvent(event);
+    const possibleNativeEvent = event as Partial<NativeIntakeEnvelope>;
+    const isNativeIntake =
+      possibleNativeEvent.api_version !== undefined ||
+      possibleNativeEvent.target_source_id !== undefined;
+    const validationErr = isNativeIntake
+      ? validateNativeIntakeEnvelope(event)
+      : validateIngestionEvent(event);
     if (validationErr) {
-      throw new Error(`ingest_capture: invalid event payload: ${validationErr.message}`);
+      // Native validation errors intentionally omit the original event because
+      // content and upstream identifiers can be sensitive.
+      throw new UnrecoverableError(
+        isNativeIntake
+          ? `ingest_capture: invalid native event payload (${validationErr.field})`
+          : `ingest_capture: invalid event payload: ${validationErr.message}`,
+      );
     }
 
     // Slug resolution.
@@ -130,7 +146,23 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
     //   - the id names a registered source row.
     // Otherwise the write keeps the pre-fix default-source routing.
     let sourceId: string | undefined;
-    if (!untrustedPayload) {
+    if (isNativeIntake) {
+      const nativeEvent = event as NativeIntakeEnvelope;
+      if (
+        typeof data.sourceId !== 'string' ||
+        data.sourceId !== nativeEvent.target_source_id
+      ) {
+        throw new UnrecoverableError('ingest_capture: native target mismatch');
+      }
+      const rows = await engine.executeRaw<{ id: string }>(
+        `SELECT id FROM sources WHERE id = $1 AND archived = false`,
+        [data.sourceId],
+      );
+      if (rows.length === 0) {
+        throw new Error('ingest_capture: native target unavailable');
+      }
+      sourceId = rows[0].id;
+    } else if (!untrustedPayload) {
       const rows = await engine.executeRaw<{ id: string }>(
         `SELECT id FROM sources WHERE id = $1`,
         [event.source_id],

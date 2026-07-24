@@ -12,10 +12,13 @@ import {
   makeIngestCaptureHandler,
 } from '../../src/core/minions/handlers/ingest-capture.ts';
 import {
+  NATIVE_INTAKE_API_VERSION,
   computeContentHash,
   type IngestionEvent,
+  type NativeIntakeEnvelope,
 } from '../../src/core/ingestion/types.ts';
 import type { MinionJobContext } from '../../src/core/minions/types.ts';
+import { UnrecoverableError } from '../../src/core/minions/types.ts';
 
 let engine: PGLiteEngine;
 
@@ -224,6 +227,113 @@ describe('ingest_capture handler — provenance write-through (#1522)', () => {
     expect(row?.source_id).toBe('default');
     // Provenance strings (no scoping power) still persist.
     expect(row?.source_kind).toBe('webhook');
+  });
+
+  test('native intake uses the server-resolved top-level target instead of producer identity', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('research', 'research') ON CONFLICT (id) DO NOTHING`,
+    );
+    const content = '# native evidence';
+    const ev: NativeIntakeEnvelope = {
+      ...makeEvent({
+        source_id: 'birdclaw',
+        source_kind: 'birdclaw',
+        source_uri: 'birdclaw:item/1',
+        content,
+        content_hash: computeContentHash(content),
+        untrusted_payload: true,
+      }),
+      api_version: NATIVE_INTAKE_API_VERSION,
+      brain_id: 'host',
+      target_source_id: 'research',
+      external_id: 'item-1',
+      posture: 'research',
+      promotion_boundary: {
+        target_posture: 'canonical',
+        authority: 'operator',
+      },
+      idempotency_key: 'delivery-1',
+    };
+    const handler = makeIngestCaptureHandler(engine);
+    const result = await handler(makeJob({
+      sourceId: 'research',
+      event: ev,
+      slug: 'research/native-1',
+    }));
+
+    expect(result.source_id).toBe('research');
+    expect((await pageRow('research/native-1'))?.source_id).toBe('research');
+  });
+
+  test('native intake rejects a target that disagrees with the admitted top-level sourceId', async () => {
+    const content = 'SECRET NATIVE BODY';
+    const ev: NativeIntakeEnvelope = {
+      ...makeEvent({
+        source_id: 'birdclaw',
+        content,
+        content_hash: computeContentHash(content),
+      }),
+      api_version: NATIVE_INTAKE_API_VERSION,
+      brain_id: 'host',
+      target_source_id: 'research',
+      external_id: 'SECRET-EXTERNAL',
+      posture: 'research',
+      promotion_boundary: {
+        target_posture: 'canonical',
+        authority: 'operator',
+      },
+      idempotency_key: 'SECRET-KEY',
+    };
+    const handler = makeIngestCaptureHandler(engine);
+
+    try {
+      await handler(makeJob({ sourceId: 'canonical', event: ev }));
+      throw new Error('expected mismatch rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      const message = String(error);
+      expect(message).toContain('native target mismatch');
+      expect(message).not.toContain('SECRET NATIVE BODY');
+      expect(message).not.toContain('SECRET-EXTERNAL');
+      expect(message).not.toContain('SECRET-KEY');
+    }
+  });
+
+  test('native validation failures are unrecoverable but target unavailability remains retryable', async () => {
+    const handler = makeIngestCaptureHandler(engine);
+    const invalid = {
+      ...makeEvent(),
+      api_version: NATIVE_INTAKE_API_VERSION,
+      target_source_id: 'research',
+    };
+    try {
+      await handler(makeJob({ sourceId: 'research', event: invalid }));
+      throw new Error('expected native validation rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnrecoverableError);
+    }
+
+    const content = '# target disappears';
+    const valid: NativeIntakeEnvelope = {
+      ...makeEvent({ content, content_hash: computeContentHash(content) }),
+      api_version: NATIVE_INTAKE_API_VERSION,
+      brain_id: 'host',
+      target_source_id: 'missing-target',
+      external_id: 'missing-target-1',
+      posture: 'research',
+      promotion_boundary: {
+        target_posture: 'canonical',
+        authority: 'operator',
+      },
+      idempotency_key: 'missing-target-delivery',
+    };
+    try {
+      await handler(makeJob({ sourceId: 'missing-target', event: valid }));
+      throw new Error('expected unavailable target');
+    } catch (error) {
+      expect(error).not.toBeInstanceOf(UnrecoverableError);
+      expect(String(error)).toContain('native target unavailable');
+    }
   });
 });
 

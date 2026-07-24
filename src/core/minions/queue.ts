@@ -30,9 +30,16 @@ import {
  *  4th arg to `MinionQueue.add()` (NOT folded into `opts`) so user-spread
  *  `{...userOpts}` payloads can't accidentally carry the trust flag. */
 export interface TrustedSubmitOpts {
-  /** When true, allow submission of names in PROTECTED_JOB_NAMES (currently 'shell').
-   *  Set only by the CLI path and by `submit_job` when `ctx.remote === false`. */
+  /** When true, allow submission of names in PROTECTED_JOB_NAMES.
+   * Set only by trusted local/internal paths, never generic remote submit_job. */
   allowProtectedSubmit?: boolean;
+}
+
+export type MinionAddDisposition = 'inserted' | 'duplicate' | 'coalesced';
+
+export interface MinionAddResult {
+  job: MinionJob;
+  disposition: MinionAddDisposition;
 }
 
 const MIGRATION_VERSION = 7;
@@ -80,6 +87,23 @@ export class MinionQueue {
     opts?: Partial<MinionJobInput>,
     trusted?: TrustedSubmitOpts,
   ): Promise<MinionJob> {
+    return (await this.addWithDisposition(name, data, opts, trusted)).job;
+  }
+
+  /**
+   * Submit a job and report whether this call inserted it, hit the global
+   * idempotency key, or was coalesced by maxWaiting backpressure.
+   *
+   * This is the same transaction path as add(); callers that need to
+   * distinguish a durable duplicate from backpressure can opt into the
+   * disposition without reimplementing queue concurrency.
+   */
+  async addWithDisposition(
+    name: string,
+    data?: Record<string, unknown>,
+    opts?: Partial<MinionJobInput>,
+    trusted?: TrustedSubmitOpts,
+  ): Promise<MinionAddResult> {
     // Normalize first so the protected-name check and the insert use the same
     // canonical form. Without the trim-before-check, `queue.add(' shell ', ...)`
     // would evade the guard and insert a job literally named 'shell'.
@@ -130,15 +154,21 @@ export class MinionQueue {
     const maxSpawnDepth = opts?.max_spawn_depth ?? this.maxSpawnDepth;
 
     return this.engine.transaction(async (tx) => {
+      const findIdempotentExisting = async (): Promise<MinionJob | null> => {
+        if (!opts?.idempotency_key) return null;
+        const existing = await tx.executeRaw<Record<string, unknown>>(
+          `SELECT * FROM minion_jobs WHERE idempotency_key = $1`,
+          [opts.idempotency_key],
+        );
+        return existing.length > 0 ? rowToMinionJob(existing[0]) : null;
+      };
+
       // 1. Idempotency fast path — if a row already exists for this key, return it
       //    without doing any other work. The unique partial index guarantees
       //    no second row can be inserted with the same non-null key.
       if (opts?.idempotency_key) {
-        const existing = await tx.executeRaw<Record<string, unknown>>(
-          `SELECT * FROM minion_jobs WHERE idempotency_key = $1`,
-          [opts.idempotency_key]
-        );
-        if (existing.length > 0) return rowToMinionJob(existing[0]);
+        const existing = await findIdempotentExisting();
+        if (existing) return { job: existing, disposition: 'duplicate' };
       }
 
       // 1b. Submission-time backpressure for high-frequency named jobs.
@@ -177,6 +207,13 @@ export class MinionQueue {
           `SELECT pg_advisory_xact_lock(hashtext('minion_maxwaiting:' || $1 || ':' || $2 || ':' || coalesce($3, '')))`,
           [jobName, backpressureQueue, bpSourceId]
         );
+        // The advisory-lock wait can let another submission commit this exact
+        // idempotency key. Duplicate identity takes precedence over generic
+        // maxWaiting coalescing classification.
+        const existingAfterBackpressureLock = await findIdempotentExisting();
+        if (existingAfterBackpressureLock) {
+          return { job: existingAfterBackpressureLock, disposition: 'duplicate' };
+        }
         const waitingCountRows = await tx.executeRaw<{ count: string }>(
           `SELECT count(*)::text AS count
            FROM minion_jobs
@@ -206,7 +243,7 @@ export class MinionQueue {
                 returned_job_id: coalesced.id,
               });
             } catch { /* audit failures never block submission */ }
-            return coalesced;
+            return { job: coalesced, disposition: 'coalesced' };
           }
         }
       }
@@ -218,6 +255,14 @@ export class MinionQueue {
           `SELECT * FROM minion_jobs WHERE id = $1 FOR UPDATE`,
           [opts.parent_job_id]
         );
+        // SELECT ... FOR UPDATE may wait behind the transaction that inserted
+        // the same durable key. Recheck before parent existence/depth/cap
+        // validation so a retry returns the first writer instead of surfacing
+        // a validation error that only applies to a fresh child.
+        const existingAfterParentLock = await findIdempotentExisting();
+        if (existingAfterParentLock) {
+          return { job: existingAfterParentLock, disposition: 'duplicate' };
+        }
         if (parentRows.length === 0) {
           throw new Error(`parent_job_id ${opts.parent_job_id} not found`);
         }
@@ -315,7 +360,7 @@ export class MinionQueue {
         if (existing.length === 0) {
           throw new Error(`idempotency_key ${opts.idempotency_key} insert returned no row and no existing row found`);
         }
-        return rowToMinionJob(existing[0]);
+        return { job: rowToMinionJob(existing[0]), disposition: 'duplicate' };
       }
 
       const child = rowToMinionJob(inserted[0]);
@@ -330,7 +375,7 @@ export class MinionQueue {
         );
       }
 
-      return child;
+      return { job: child, disposition: 'inserted' };
     });
   }
 
@@ -518,7 +563,15 @@ export class MinionQueue {
     return rows.length > 0 ? rowToMinionJob(rows[0]) : null;
   }
 
-  /** Prune old jobs in terminal statuses. Returns count of deleted rows. */
+  /**
+   * Prune old jobs in terminal statuses. Returns count of deleted rows.
+   *
+   * Native-intake rows intentionally trade storage for durable idempotency:
+   * their globally scoped key and original event survive generic queue
+   * retention so a retry after 30 days cannot become a second delivery.
+   * A future compact receipt may reduce this retained-row cost, but generic
+   * prune must never silently weaken the admission contract.
+   */
   async prune(opts?: { olderThan?: Date; status?: MinionJobStatus[] }): Promise<number> {
     const statuses = opts?.status ?? ['completed', 'dead', 'cancelled'];
     const olderThan = opts?.olderThan ?? new Date(Date.now() - 30 * 86400000);
@@ -527,6 +580,7 @@ export class MinionQueue {
       `WITH pruned AS (
          DELETE FROM minion_jobs
          WHERE status = ANY($1) AND updated_at < $2
+           AND (idempotency_key IS NULL OR idempotency_key NOT LIKE 'native-intake:%')
          RETURNING id
        )
        SELECT count(*)::text as count FROM pruned`,

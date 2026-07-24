@@ -19,15 +19,41 @@
 export type {
   IngestionContentType,
   IngestionEvent,
+  IntakePosture,
+  IntakePromotionAuthority,
+  IntakePromotionBoundary,
   IngestionSource,
   IngestionSourceContext,
   IngestionSourceHealth,
+  NativeIntakeDiagnosticIdentity,
+  NativeIntakeIdempotencyInput,
+  NativeIntakeEnvelope,
 } from './types.ts';
 
 export {
   INGESTION_CONTENT_TYPES,
+  INTAKE_POSTURES,
+  INTAKE_PROMOTION_AUTHORITIES,
   INGESTION_SOURCE_API_VERSION,
+  NATIVE_INTAKE_API_VERSION,
   IngestionEventError,
   computeContentHash,
+  deriveNativeIntakeIdempotencyKey,
   validateIngestionEvent,
+  validateNativeIntakeEnvelope,
 } from './types.ts';
+
+export {
+  NativeIntakeAdmissionError,
+  parseNativeIntakeProducerPolicy,
+  parseNativeIntakeTargetPolicy,
+  submitNativeIntake,
+} from './native-intake.ts';
+
+export type {
+  NativeIntakeAdmissionContext,
+  NativeIntakeAdmissionErrorCode,
+  NativeIntakeProducerPolicy,
+  NativeIntakeSubmissionResult,
+  NativeIntakeTargetPolicy,
+} from './native-intake.ts';
