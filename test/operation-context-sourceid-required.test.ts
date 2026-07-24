@@ -17,6 +17,7 @@ import { describe, test, expect } from 'bun:test';
 import { buildOperationContext } from '../src/mcp/dispatch.ts';
 import type { OperationContext } from '../src/core/operations.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
+import { HOST_BRAIN_ID } from '../src/core/brain-registry.ts';
 
 describe('OperationContext.sourceId — REQUIRED contract', () => {
   test('omitting sourceId from an OperationContext literal is a type error', () => {
@@ -82,5 +83,17 @@ describe('buildOperationContext — auto-fill safety net', () => {
     const ctx = buildOperationContext(engine, {}, { sourceId: '' });
     // The ?? operator returns 'default' for null/undefined only; '' passes through.
     expect(ctx.sourceId).toBe('');
+  });
+
+  test('omitting brainId stamps the host runtime identity', () => {
+    const engine = {} as BrainEngine;
+    const ctx = buildOperationContext(engine, {}, {});
+    expect(ctx.brainId).toBe(HOST_BRAIN_ID);
+  });
+
+  test('explicit selected runtime identity is preserved', () => {
+    const engine = {} as BrainEngine;
+    const ctx = buildOperationContext(engine, {}, { brainId: 'team-brain' });
+    expect(ctx.brainId).toBe('team-brain');
   });
 });
