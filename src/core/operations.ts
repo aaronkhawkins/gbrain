@@ -30,6 +30,17 @@ import * as db from './db.ts';
 import { VERSION } from '../version.ts';
 import { isValidSourceId } from './source-id.ts';
 import {
+  NativeIntakeAdmissionError,
+  submitNativeIntake,
+} from './ingestion/native-intake.ts';
+import {
+  INGESTION_CONTENT_TYPES,
+  INTAKE_POSTURES,
+  INTAKE_PROMOTION_AUTHORITIES,
+  NATIVE_INTAKE_API_VERSION,
+} from './ingestion/types.ts';
+import { HOST_BRAIN_ID } from './brain-registry.ts';
+import {
   GET_RECENT_SALIENCE_DESCRIPTION,
   FIND_ANOMALIES_DESCRIPTION,
   FIND_EXPERTS_DESCRIPTION,
@@ -247,13 +258,32 @@ export function validateFilename(name: string): void {
   }
 }
 
+export type ParamType = 'string' | 'number' | 'boolean' | 'object' | 'array';
+
+/**
+ * Conditional JSON Schema fragment used by ParamDef composition keywords.
+ * `required` is an array here because it describes object-property presence,
+ * unlike ParamDef.required, which marks a property as required by its parent.
+ */
+export interface ParamDefComposition {
+  type?: ParamType;
+  properties?: Record<string, ParamDef>;
+  required?: string[];
+  oneOf?: ParamDefComposition[];
+  not?: ParamDefComposition;
+}
+
 export interface ParamDef {
-  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  type: ParamType;
   required?: boolean;
   description?: string;
   default?: unknown;
   enum?: string[];
+  const?: unknown;
   items?: ParamDef;
+  properties?: Record<string, ParamDef>;
+  oneOf?: ParamDefComposition[];
+  not?: ParamDefComposition;
 }
 
 export interface Logger {
@@ -2309,7 +2339,7 @@ const get_health: Operation = {
  */
 const get_brain_identity: Operation = {
   name: 'get_brain_identity',
-  description: 'Brain identity + counters for thin-client banner. Returns version, engine kind, and page/chunk counts. Read-scope.',
+  description: 'Brain identity + counters for thin-client banner. Returns active brain id, version, engine kind, and page/chunk counts. Read-scope.',
   params: {},
   handler: async (ctx) => {
     const stats = await ctx.engine.getStats();
@@ -2330,6 +2360,7 @@ const get_brain_identity: Operation = {
     }
     return {
       version: VERSION,
+      brain_id: ctx.brainId ?? HOST_BRAIN_ID,
       engine: ctx.engine.kind,
       page_count: stats.page_count,
       chunk_count: stats.chunk_count,
@@ -2918,6 +2949,145 @@ const file_url: Operation = {
 };
 
 // --- Jobs (Minions) ---
+
+const submit_native_intake: Operation = {
+  name: 'submit_native_intake',
+  description: 'Submit a versioned native intake envelope from an authenticated adapter.',
+  params: {
+    envelope: {
+      type: 'object',
+      required: true,
+      description: 'Versioned NativeIntakeEnvelope payload',
+      properties: {
+        api_version: {
+          type: 'string',
+          const: NATIVE_INTAKE_API_VERSION,
+          required: true,
+        },
+        brain_id: { type: 'string', required: true },
+        source_id: { type: 'string', required: true },
+        target_source_id: { type: 'string', required: true },
+        source_kind: { type: 'string', required: true },
+        source_uri: { type: 'string', required: true },
+        received_at: { type: 'string', required: true },
+        source_created_at: { type: 'string' },
+        content_type: {
+          type: 'string',
+          enum: [...INGESTION_CONTENT_TYPES],
+          required: true,
+        },
+        content: { type: 'string', required: true },
+        content_hash: { type: 'string', required: true },
+        external_id: { type: 'string', required: true },
+        posture: {
+          type: 'string',
+          enum: [...INTAKE_POSTURES],
+          required: true,
+        },
+        promotion_boundary: {
+          type: 'object',
+          properties: {
+            target_posture: {
+              type: 'string',
+              const: 'canonical',
+              required: true,
+            },
+            authority: {
+              type: 'string',
+              enum: [...INTAKE_PROMOTION_AUTHORITIES],
+              required: true,
+            },
+            policy_id: { type: 'string' },
+          },
+          oneOf: [
+            {
+              properties: {
+                authority: { type: 'string', const: 'policy' },
+              },
+              required: ['policy_id'],
+            },
+            {
+              properties: {
+                authority: { type: 'string', const: 'operator' },
+              },
+              not: { required: ['policy_id'] },
+            },
+          ],
+        },
+        idempotency_key: { type: 'string', required: true },
+        untrusted_payload: { type: 'boolean' },
+        metadata: { type: 'object' },
+      },
+      oneOf: [
+        {
+          properties: {
+            posture: { type: 'string', const: 'canonical' },
+          },
+          not: { required: ['promotion_boundary'] },
+        },
+        {
+          properties: {
+            posture: {
+              type: 'string',
+              enum: ['inbox', 'research', 'session-evidence'],
+            },
+          },
+          required: ['promotion_boundary'],
+        },
+      ],
+    },
+  },
+  mutating: true,
+  scope: 'write',
+  handler: async (ctx, p) => {
+    // This is an authenticated adapter seam, not a second trusted-local path.
+    // Fail closed for stdio MCP, local CLI, and cast contexts missing either
+    // the remote marker or the OAuth-bound producer source.
+    const authenticatedSourceId = ctx.auth?.sourceId;
+    if (ctx.remote !== true || !authenticatedSourceId) {
+      throw new OperationError(
+        'permission_denied',
+        'Native intake requires an authenticated adapter source binding.',
+      );
+    }
+    if (!ctx.brainId) {
+      throw new OperationError(
+        'native_intake_unavailable',
+        'Native intake runtime identity is unavailable.',
+      );
+    }
+
+    const { MinionQueue } = await import('./minions/queue.ts');
+    try {
+      const result = await submitNativeIntake(
+        ctx.engine,
+        new MinionQueue(ctx.engine),
+        p.envelope,
+        {
+          activeBrainId: ctx.brainId,
+          authenticatedSourceId,
+        },
+      );
+      return {
+        disposition: result.disposition,
+        job_status: result.job_status,
+      };
+    } catch (error) {
+      if (error instanceof NativeIntakeAdmissionError) {
+        throw new OperationError(
+          error.code,
+          `Native intake rejected: ${error.code}`,
+        );
+      }
+      // Never let queue/database exception text turn this content-free adapter
+      // protocol into a source URI, external identity, or payload oracle.
+      throw new OperationError(
+        'native_intake_unavailable',
+        'Native intake submission unavailable.',
+      );
+    }
+  },
+};
 
 const submit_job: Operation = {
   name: 'submit_job',
@@ -5484,7 +5654,7 @@ export const operations: Operation[] = [
   // Files
   file_list, file_upload, file_url,
   // Jobs (Minions)
-  submit_job, get_job, list_jobs, cancel_job, retry_job, get_job_progress,
+  submit_native_intake, submit_job, get_job, list_jobs, cancel_job, retry_job, get_job_progress,
   pause_job, resume_job, replay_job, send_job_message,
   // v0.38 Slice 3: remote-callable agent dispatch with OAuth-bound trust boundary
   submit_agent,
