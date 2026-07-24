@@ -31,16 +31,67 @@ type ParamDefLike = {
   type: 'string' | 'number' | 'boolean' | 'object' | 'array';
   description?: string;
   enum?: string[];
+  const?: unknown;
   default?: unknown;
   items?: ParamDefLike;
+  properties?: Record<string, ParamDefLike & { required?: boolean }>;
+  oneOf?: ParamDefCompositionLike[];
+  not?: ParamDefCompositionLike;
 };
+type ParamDefCompositionLike = {
+  type?: ParamDefLike['type'];
+  properties?: Record<string, ParamDefLike>;
+  required?: string[];
+  oneOf?: ParamDefCompositionLike[];
+  not?: ParamDefCompositionLike;
+};
+function referenceCompositionToSchema(
+  composition: ParamDefCompositionLike,
+): Record<string, unknown> {
+  return {
+    ...(composition.type ? { type: composition.type } : {}),
+    ...(composition.properties ? {
+      properties: Object.fromEntries(
+        Object.entries(composition.properties).map(([key, value]) => [
+          key,
+          referenceParamDefToSchema(value),
+        ]),
+      ),
+    } : {}),
+    ...(composition.required ? { required: composition.required } : {}),
+    ...(composition.oneOf ? {
+      oneOf: composition.oneOf.map(referenceCompositionToSchema),
+    } : {}),
+    ...(composition.not ? {
+      not: referenceCompositionToSchema(composition.not),
+    } : {}),
+  };
+}
 function referenceParamDefToSchema(p: ParamDefLike): Record<string, unknown> {
   return {
     type: p.type === 'array' ? 'array' : p.type,
     ...(p.description ? { description: p.description } : {}),
     ...(p.enum ? { enum: p.enum } : {}),
+    ...(p.const !== undefined ? { const: p.const } : {}),
     ...(p.default !== undefined ? { default: p.default } : {}),
     ...(p.items ? { items: referenceParamDefToSchema(p.items) } : {}),
+    ...(p.properties ? {
+      properties: Object.fromEntries(
+        Object.entries(p.properties).map(([key, value]) => [
+          key,
+          referenceParamDefToSchema(value),
+        ]),
+      ),
+      required: Object.entries(p.properties)
+        .filter(([, value]) => value.required)
+        .map(([key]) => key),
+    } : {}),
+    ...(p.oneOf ? {
+      oneOf: p.oneOf.map(referenceCompositionToSchema),
+    } : {}),
+    ...(p.not ? {
+      not: referenceCompositionToSchema(p.not),
+    } : {}),
   };
 }
 function legacyInlineMap(ops: typeof operations) {
@@ -107,7 +158,49 @@ interface SchemaNode {
   type?: unknown;
   properties?: Record<string, SchemaNode>;
   items?: SchemaNode;
+  required?: string[];
+  enum?: unknown[];
+  const?: unknown;
+  oneOf?: SchemaNode[];
+  not?: SchemaNode;
   [k: string]: unknown;
+}
+
+function matchesSchema(value: unknown, schema: SchemaNode): boolean {
+  if (schema.type === 'object' && (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value)
+  )) return false;
+  if (schema.type === 'string' && typeof value !== 'string') return false;
+  if (schema.type === 'number' && typeof value !== 'number') return false;
+  if (schema.type === 'boolean' && typeof value !== 'boolean') return false;
+  if (schema.type === 'array' && !Array.isArray(value)) return false;
+  if (schema.const !== undefined && value !== schema.const) return false;
+  if (schema.enum && !schema.enum.includes(value)) return false;
+
+  if (schema.required) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    if (!schema.required.every(key => Object.hasOwn(value, key))) return false;
+  }
+  if (
+    schema.properties &&
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value)
+  ) {
+    for (const [key, child] of Object.entries(schema.properties)) {
+      if (Object.hasOwn(value, key) && !matchesSchema(
+        (value as Record<string, unknown>)[key],
+        child,
+      )) return false;
+    }
+  }
+  if (schema.oneOf) {
+    if (schema.oneOf.filter(branch => matchesSchema(value, branch)).length !== 1) return false;
+  }
+  if (schema.not && matchesSchema(value, schema.not)) return false;
+  return true;
 }
 
 function findArrayWithoutItems(node: SchemaNode, path: string[]): string[] {
@@ -182,5 +275,200 @@ describe('paramDefToSchema structural guard', () => {
     const schema = paramDefToSchema(p) as SchemaNode;
     expect(schema.description).toBe('outer');
     expect((schema.items as SchemaNode).description).toBe('inner');
+  });
+
+  test('paramDefToSchema recursively maps object properties and required fields', () => {
+    const p: ParamDef = {
+      type: 'object',
+      properties: {
+        version: { type: 'string', const: 'v1', required: true },
+        mode: { type: 'string', enum: ['one', 'two'] },
+        nested: {
+          type: 'object',
+          required: true,
+          properties: {
+            enabled: { type: 'boolean', required: true },
+          },
+        },
+      },
+    };
+
+    expect(paramDefToSchema(p)).toEqual({
+      type: 'object',
+      properties: {
+        version: { type: 'string', const: 'v1' },
+        mode: { type: 'string', enum: ['one', 'two'] },
+        nested: {
+          type: 'object',
+          properties: {
+            enabled: { type: 'boolean' },
+          },
+          required: ['enabled'],
+        },
+      },
+      required: ['version', 'nested'],
+    });
+  });
+
+  test('submit_native_intake publishes the complete NativeIntakeEnvelope v1 schema', () => {
+    const def = buildToolDefs(operations).find(d => d.name === 'submit_native_intake');
+    expect(def).toBeDefined();
+
+    expect(def!.inputSchema.properties.envelope).toEqual({
+      type: 'object',
+      description: 'Versioned NativeIntakeEnvelope payload',
+      properties: {
+        api_version: { type: 'string', const: 'gbrain-native-intake-v1' },
+        brain_id: { type: 'string' },
+        source_id: { type: 'string' },
+        target_source_id: { type: 'string' },
+        source_kind: { type: 'string' },
+        source_uri: { type: 'string' },
+        received_at: { type: 'string' },
+        source_created_at: { type: 'string' },
+        content_type: {
+          type: 'string',
+          enum: [
+            'text/markdown',
+            'text/plain',
+            'text/html',
+            'application/pdf',
+            'application/json',
+            'image/*',
+            'audio/*',
+            'video/*',
+            'unknown',
+          ],
+        },
+        content: { type: 'string' },
+        content_hash: { type: 'string' },
+        external_id: { type: 'string' },
+        posture: {
+          type: 'string',
+          enum: ['canonical', 'inbox', 'research', 'session-evidence'],
+        },
+        promotion_boundary: {
+          type: 'object',
+          properties: {
+            target_posture: { type: 'string', const: 'canonical' },
+            authority: { type: 'string', enum: ['operator', 'policy'] },
+            policy_id: { type: 'string' },
+          },
+          required: ['target_posture', 'authority'],
+          oneOf: [
+            {
+              properties: {
+                authority: { type: 'string', const: 'policy' },
+              },
+              required: ['policy_id'],
+            },
+            {
+              properties: {
+                authority: { type: 'string', const: 'operator' },
+              },
+              not: { required: ['policy_id'] },
+            },
+          ],
+        },
+        idempotency_key: { type: 'string' },
+        untrusted_payload: { type: 'boolean' },
+        metadata: { type: 'object' },
+      },
+      required: [
+        'api_version',
+        'brain_id',
+        'source_id',
+        'target_source_id',
+        'source_kind',
+        'source_uri',
+        'received_at',
+        'content_type',
+        'content',
+        'content_hash',
+        'external_id',
+        'posture',
+        'idempotency_key',
+      ],
+      oneOf: [
+        {
+          properties: {
+            posture: { type: 'string', const: 'canonical' },
+          },
+          not: { required: ['promotion_boundary'] },
+        },
+        {
+          properties: {
+            posture: {
+              type: 'string',
+              enum: ['inbox', 'research', 'session-evidence'],
+            },
+          },
+          required: ['promotion_boundary'],
+        },
+      ],
+    });
+  });
+
+  test('submit_native_intake schema enforces posture and authority combinations', () => {
+    const def = buildToolDefs(operations).find(d => d.name === 'submit_native_intake');
+    const envelope = def!.inputSchema.properties.envelope as SchemaNode;
+    const base = {
+      api_version: 'gbrain-native-intake-v1',
+      brain_id: 'brain',
+      source_id: 'producer',
+      target_source_id: 'target',
+      source_kind: 'test',
+      source_uri: 'test://item',
+      received_at: '2026-07-23T00:00:00.000Z',
+      content_type: 'text/plain',
+      content: 'content',
+      content_hash: 'hash',
+      external_id: 'item',
+      idempotency_key: 'item',
+    };
+    const policyBoundary = {
+      target_posture: 'canonical',
+      authority: 'policy',
+      policy_id: 'reviewed-evidence',
+    };
+    const operatorBoundary = {
+      target_posture: 'canonical',
+      authority: 'operator',
+    };
+
+    for (const posture of ['inbox', 'research', 'session-evidence']) {
+      expect(matchesSchema(
+        { ...base, posture, promotion_boundary: policyBoundary },
+        envelope,
+      )).toBe(true);
+      expect(matchesSchema(
+        { ...base, posture, promotion_boundary: operatorBoundary },
+        envelope,
+      )).toBe(true);
+      expect(matchesSchema({ ...base, posture }, envelope)).toBe(false);
+    }
+
+    expect(matchesSchema({ ...base, posture: 'canonical' }, envelope)).toBe(true);
+    expect(matchesSchema({
+      ...base,
+      posture: 'canonical',
+      promotion_boundary: operatorBoundary,
+    }, envelope)).toBe(false);
+    expect(matchesSchema({
+      ...base,
+      posture: 'research',
+      promotion_boundary: {
+        target_posture: 'canonical',
+        authority: 'policy',
+      },
+    }, envelope)).toBe(false);
+    expect(matchesSchema({
+      ...base,
+      posture: 'research',
+      promotion_boundary: {
+        ...operatorBoundary,
+        policy_id: 'not-applicable',
+      },
+    }, envelope)).toBe(false);
   });
 });

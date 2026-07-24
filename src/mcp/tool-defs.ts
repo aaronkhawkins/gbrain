@@ -1,4 +1,8 @@
-import type { Operation, ParamDef } from '../core/operations.ts';
+import type {
+  Operation,
+  ParamDef,
+  ParamDefComposition,
+} from '../core/operations.ts';
 
 export interface McpToolDef {
   name: string;
@@ -23,17 +27,60 @@ export interface McpToolDef {
  * v0.32 PR review). Centralizing here closes the bug class at the
  * architecture level instead of patching one site at a time.
  *
- * Key ordering (type, description, enum, default, items) is intentional —
+ * Key ordering (type, description, enum, const, default, items, properties,
+ * required, oneOf, not) is intentional —
  * matches the pre-v0.34 inline mappers so JSON.stringify output stays
- * byte-stable for the byte-equality regression test.
+ * byte-stable for ParamDefs that do not use the additive object-contract
+ * fields.
  */
+function paramDefCompositionToSchema(
+  composition: ParamDefComposition,
+): Record<string, unknown> {
+  return {
+    ...(composition.type ? { type: composition.type } : {}),
+    ...(composition.properties ? {
+      properties: Object.fromEntries(
+        Object.entries(composition.properties).map(([key, value]) => [
+          key,
+          paramDefToSchema(value),
+        ]),
+      ),
+    } : {}),
+    ...(composition.required ? { required: composition.required } : {}),
+    ...(composition.oneOf ? {
+      oneOf: composition.oneOf.map(paramDefCompositionToSchema),
+    } : {}),
+    ...(composition.not ? {
+      not: paramDefCompositionToSchema(composition.not),
+    } : {}),
+  };
+}
+
 export function paramDefToSchema(p: ParamDef): Record<string, unknown> {
   return {
     type: p.type === 'array' ? 'array' : p.type,
     ...(p.description ? { description: p.description } : {}),
     ...(p.enum ? { enum: p.enum } : {}),
+    ...(p.const !== undefined ? { const: p.const } : {}),
     ...(p.default !== undefined ? { default: p.default } : {}),
     ...(p.items ? { items: paramDefToSchema(p.items) } : {}),
+    ...(p.properties ? {
+      properties: Object.fromEntries(
+        Object.entries(p.properties).map(([key, value]) => [
+          key,
+          paramDefToSchema(value),
+        ]),
+      ),
+      required: Object.entries(p.properties)
+        .filter(([, value]) => value.required)
+        .map(([key]) => key),
+    } : {}),
+    ...(p.oneOf ? {
+      oneOf: p.oneOf.map(paramDefCompositionToSchema),
+    } : {}),
+    ...(p.not ? {
+      not: paramDefCompositionToSchema(p.not),
+    } : {}),
   };
 }
 

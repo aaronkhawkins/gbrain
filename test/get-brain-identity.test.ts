@@ -2,7 +2,8 @@
  * v0.31.1 (Issue #734): tests for `get_brain_identity` MCP op.
  *
  * The op is the data source for the thin-client identity banner. Returns
- * {version, engine, page_count, chunk_count, last_sync_iso}. Read-scope.
+ * {brain_id, version, engine, page_count, chunk_count, last_sync_iso}.
+ * Read-scope.
  * Reuses engine.getStats() — banner's 60s TTL cache bounds frequency.
  */
 
@@ -12,6 +13,7 @@ import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { operationsByName } from '../src/core/operations.ts';
 import { VERSION } from '../src/version.ts';
 import type { OperationContext } from '../src/core/operations.ts';
+import { HOST_BRAIN_ID } from '../src/core/brain-registry.ts';
 
 let engine: PGLiteEngine;
 
@@ -61,10 +63,11 @@ describe('get_brain_identity op', () => {
     expect(operationsByName.get_brain_identity.cliHints).toBeUndefined();
   });
 
-  test('returns identity packet with VERSION + engine kind on empty brain', async () => {
+  test('returns identity packet with brain id, VERSION + engine kind on empty brain', async () => {
     const op = operationsByName.get_brain_identity;
     const result = (await op.handler(buildCtx(), {})) as {
       version: string;
+      brain_id: string;
       engine: 'postgres' | 'pglite';
       page_count: number;
       chunk_count: number;
@@ -72,6 +75,7 @@ describe('get_brain_identity op', () => {
     };
 
     expect(result.version).toBe(VERSION);
+    expect(result.brain_id).toBe(HOST_BRAIN_ID);
     expect(result.engine).toBe('pglite');
     expect(result.page_count).toBe(0);
     expect(result.chunk_count).toBe(0);
@@ -106,6 +110,7 @@ describe('get_brain_identity op', () => {
     const result = (await op.handler(buildCtx(), {})) as Record<string, unknown>;
     const keys = Object.keys(result).sort();
     expect(keys).toEqual([
+      'brain_id',
       'chunk_count',
       'engine',
       'last_sync_iso',
@@ -114,6 +119,16 @@ describe('get_brain_identity op', () => {
       'update_available',
       'version',
     ]);
+  });
+
+  test('returns the active mounted brain id from the operation context', async () => {
+    const op = operationsByName.get_brain_identity;
+    const result = (await op.handler({
+      ...buildCtx(),
+      brainId: 'research',
+    }, {})) as { brain_id: string };
+
+    expect(result.brain_id).toBe('research');
   });
 
   test('last_sync_iso is null in v0.31.1 (deferred to v0.31.x — see plan)', async () => {

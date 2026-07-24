@@ -10,6 +10,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError } from '../core/operations.ts';
 import type { Operation, OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
+import { HOST_BRAIN_ID } from '../core/brain-registry.ts';
 
 export interface ToolResult {
   content: { type: 'text'; text: string }[];
@@ -70,6 +71,12 @@ export interface DispatchOpts {
    * was replaced by dispatchToolCall.
    */
   auth?: AuthInfo;
+  /**
+   * Identity of the already-selected runtime. The engine is authoritative;
+   * callers may stamp its registry id here but operations cannot use request
+   * parameters to switch databases. Defaults to the host runtime.
+   */
+  brainId?: string;
 }
 
 /**
@@ -209,6 +216,7 @@ export function buildOperationContext(
     // CLI / HTTP / stdio transports SHOULD pass an explicit sourceId via opts;
     // this fallback covers code paths that historically passed undefined.
     sourceId: opts.sourceId ?? 'default',
+    brainId: opts.brainId ?? HOST_BRAIN_ID,
     auth: opts.auth,
   };
 }
@@ -256,7 +264,10 @@ export async function dispatchToolCall(
     // The hook is wrapped in its own try/catch — any DB blip / cache miss /
     // helper crash degrades to no `_meta` rather than flipping the whole
     // tool call to error.
-    if (opts.metaHook) {
+    // Native intake is a content-free adapter protocol. Its success envelope
+    // must stay bounded and must not trigger or attach unrelated hot-memory
+    // data for the authenticated producer.
+    if (opts.metaHook && name !== 'submit_native_intake') {
       try {
         const meta = await opts.metaHook(name, ctx);
         if (meta && Object.keys(meta).length > 0) out._meta = meta;
