@@ -28,6 +28,29 @@ import {
 } from '../core/facts/durable-job.ts';
 
 const MAX_MEDIA_JSON_BYTES = 1_000_000;
+const MAX_MEDIA_TRANSCRIPTION_RESULT_BYTES = 5_000_000;
+
+function boundedMediaTranscriptionResult(
+  job: MinionJob,
+): Record<string, unknown> | null {
+  if (
+    job.status !== 'completed'
+    || job.result === null
+    || job.result.schema_version !== 1
+    || !['complete', 'partial', 'ignored'].includes(String(job.result.outcome))
+  ) {
+    return null;
+  }
+  try {
+    const serialized = JSON.stringify(job.result);
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_MEDIA_TRANSCRIPTION_RESULT_BYTES) {
+      return null;
+    }
+    return JSON.parse(serialized) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
 
 /** Read and parse one media envelope through a single, size-checked descriptor. */
 export function readBoundedMediaJson(path: string): unknown {
@@ -255,7 +278,7 @@ USAGE
   gbrain jobs stats
   gbrain jobs smoke
   gbrain jobs media-transcription submit --media-json PATH
-  gbrain jobs media-transcription status [job-id]
+  gbrain jobs media-transcription status [job-id] [--include-result]
   gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
                    [--health-interval MS] [--nice N]
   gbrain jobs supervisor [start] [--detach] [--json]
@@ -326,8 +349,11 @@ HANDLER TYPES (built in)
     case 'media-transcription': {
       const action = args[1];
       if (action === 'status') {
-        if (args.length > 3) {
-          console.error('Error: usage: gbrain jobs media-transcription status [job-id]');
+        const includeResult = args[3] === '--include-result';
+        if (args.length > 4 || (args.length === 4 && !includeResult)) {
+          console.error(
+            'Error: usage: gbrain jobs media-transcription status [job-id] [--include-result]',
+          );
           process.exit(1);
         }
         const rawJobId = args[2];
@@ -365,14 +391,20 @@ HANDLER TYPES (built in)
           && /^media_transcription:[a-z_]+$/.test(job.error_text)
           ? job.error_text.slice('media_transcription:'.length)
           : null;
-        console.log(JSON.stringify({
+        const status: Record<string, unknown> = {
           schema_version: 1,
           job_id: job.id,
           status: job.status,
           attempts_started: job.attempts_started,
           attempts_made: job.attempts_made,
           error_code: errorCode,
-        }));
+        };
+        if (includeResult) {
+          const result = boundedMediaTranscriptionResult(job);
+          status.result_available = result !== null;
+          status.result = result;
+        }
+        console.log(JSON.stringify(status));
         return;
       }
       if (action === 'submit') {
@@ -427,7 +459,8 @@ HANDLER TYPES (built in)
         return;
       }
       console.error(
-        'Error: usage: gbrain jobs media-transcription submit --media-json PATH | status [job-id]',
+        'Error: usage: gbrain jobs media-transcription submit --media-json PATH'
+          + ' | status [job-id] [--include-result]',
       );
       process.exit(1);
       return;
