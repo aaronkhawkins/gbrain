@@ -12,6 +12,8 @@ import type {
   FactRow, FactKind, FactVisibility, FactInsertStatus,
   NewFact, FactListOpts, FactsHealth,
   SourceRow,
+  DeliveryReceipt, ReadinessAssessment, RecordDeliveryInput,
+  PageSupersession, SupersedePageInput,
 } from './engine.ts';
 import { withRetry, BULK_RETRY_OPTS, resolveBulkRetryOpts, computeNextDelay, type BatchAuditSite } from './retry.ts';
 import { logBatchRetry as auditLogBatchRetry, logBatchExhausted as auditLogBatchExhausted } from './audit/batch-retry-audit.ts';
@@ -70,6 +72,11 @@ import { DELETE_BATCH_SIZE } from './engine-constants.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
 import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
 import { assertValidSourceId } from './source-id.ts';
+import {
+  getReadinessStatus as getReadinessStatusReceipt,
+  recordDelivery as recordDeliveryReceipt,
+  supersedePage as supersedePageReceipt,
+} from './delivery-receipts.ts';
 
 function escapeSqlStringLiteral(value: string): string {
   return value.replace(/'/g, "''");
@@ -5787,6 +5794,21 @@ export class PostgresEngine implements BrainEngine {
     } finally {
       this._reconnecting = false;
     }
+  }
+
+  async recordDelivery(input: RecordDeliveryInput): Promise<DeliveryReceipt> {
+    return recordDeliveryReceipt(this, input);
+  }
+
+  async getReadinessStatus(
+    deliveryKey: string,
+    opts: { sourceId: string },
+  ): Promise<ReadinessAssessment | null> {
+    return getReadinessStatusReceipt(this, deliveryKey, opts);
+  }
+
+  async supersedePage(input: SupersedePageInput): Promise<PageSupersession> {
+    return supersedePageReceipt(this, input);
   }
 
   /**

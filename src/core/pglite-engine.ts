@@ -15,6 +15,8 @@ import type {
   FactRow, FactKind, FactVisibility, FactInsertStatus,
   NewFact, FactListOpts, FactsHealth,
   SourceRow,
+  DeliveryReceipt, ReadinessAssessment, RecordDeliveryInput,
+  PageSupersession, SupersedePageInput,
 } from './engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
 import { withRetry, BULK_RETRY_OPTS, resolveBulkRetryOpts, computeNextDelay, type BatchAuditSite } from './retry.ts';
@@ -67,6 +69,11 @@ import {
   EmbeddingColumnNotRegisteredError,
 } from './search/embedding-column.ts';
 import { hasCJK, escapeLikePattern } from './cjk.ts';
+import {
+  getReadinessStatus as getReadinessStatusReceipt,
+  recordDelivery as recordDeliveryReceipt,
+  supersedePage as supersedePageReceipt,
+} from './delivery-receipts.ts';
 
 type PGLiteDB = PGlite;
 
@@ -5551,6 +5558,21 @@ export class PGLiteEngine implements BrainEngine {
           [slug]
         );
     return (rows as Record<string, unknown>[]).map(r => rowToChunk(r, true));
+  }
+
+  async recordDelivery(input: RecordDeliveryInput): Promise<DeliveryReceipt> {
+    return recordDeliveryReceipt(this, input);
+  }
+
+  async getReadinessStatus(
+    deliveryKey: string,
+    opts: { sourceId: string },
+  ): Promise<ReadinessAssessment | null> {
+    return getReadinessStatusReceipt(this, deliveryKey, opts);
+  }
+
+  async supersedePage(input: SupersedePageInput): Promise<PageSupersession> {
+    return supersedePageReceipt(this, input);
   }
 
   async executeRaw<T = Record<string, unknown>>(

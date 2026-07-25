@@ -763,3 +763,99 @@ describeBoth('Engine parity — federated sourceIds[] secondary reads (#2200)', 
     }
   });
 });
+
+describeBoth('Engine parity — delivery and readiness receipts', () => {
+  let pgEngine: BrainEngine;
+  let pgliteEngine: PGLiteEngine;
+
+  beforeAll(async () => {
+    pgEngine = await setupDB();
+    pgliteEngine = new PGLiteEngine();
+    await pgliteEngine.connect({});
+    await pgliteEngine.initSchema();
+    for (const engine of [pgEngine, pgliteEngine]) {
+      await engine.putPage('parity/delivery-original', {
+        type: 'note',
+        title: 'Delivery original',
+        compiled_truth: 'fixture',
+        timeline: '',
+      });
+      await engine.putPage('parity/delivery-replacement', {
+        type: 'note',
+        title: 'Delivery replacement',
+        compiled_truth: 'fixture',
+        timeline: '',
+      });
+    }
+  }, 90_000);
+
+  afterAll(async () => {
+    await pgliteEngine.disconnect();
+    await teardownDB();
+  }, 30_000);
+
+  test('receipt replay, readiness retry, and supersession have the same shape', async () => {
+    const run = async (engine: BrainEngine) => {
+      const input = {
+        deliveryKey: 'parity:delivery:1',
+        slug: 'parity/delivery-original',
+        sourceId: 'default',
+        contentDigest: 'd'.repeat(64),
+        readinessStatus: 'failed' as const,
+        assessmentVersion: '1',
+        reasonCode: 'enrichment_failed',
+      };
+      const first = await engine.recordDelivery(input);
+      const replay = await engine.recordDelivery(input);
+      await engine.recordDelivery({
+        ...input,
+        readinessStatus: 'ready',
+        reasonCode: null,
+      });
+      const readiness = await engine.getReadinessStatus(input.deliveryKey, {
+        sourceId: 'default',
+      });
+      const supersession = await engine.supersedePage({
+        slug: input.slug,
+        sourceId: 'default',
+        supersessionKey: 'parity:correction:1',
+        supersededByBrain: 'host',
+        supersededBySourceId: 'default',
+        supersededBySlug: 'parity/delivery-replacement',
+      });
+      return {
+        replay_same: first.receipt_id === replay.receipt_id,
+        receipt: {
+          delivery_key: first.delivery_key,
+          source_id: first.source_id,
+          page_slug: first.page_slug,
+          content_digest: first.content_digest,
+        },
+        readiness: readiness && {
+          status: readiness.status,
+          knowledge_ready: readiness.knowledge_ready,
+          assessment_version: readiness.assessment_version,
+          reason_code: readiness.reason_code,
+        },
+        supersession: {
+          source_id: supersession.source_id,
+          page_slug: supersession.page_slug,
+          superseded_by_brain: supersession.superseded_by_brain,
+          superseded_by_source_id: supersession.superseded_by_source_id,
+          superseded_by_slug: supersession.superseded_by_slug,
+        },
+      };
+    };
+
+    const pg = await run(pgEngine);
+    const pglite = await run(pgliteEngine);
+    expect(pg).toEqual(pglite);
+    expect(pg.replay_same).toBe(true);
+    expect(pg.readiness).toEqual({
+      status: 'ready',
+      knowledge_ready: true,
+      assessment_version: '1',
+      reason_code: null,
+    });
+  });
+});

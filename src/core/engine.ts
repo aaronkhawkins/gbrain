@@ -656,6 +656,55 @@ export function clampSearchLimit(limit: number | undefined, defaultLimit = 20, c
   return Math.min(Math.floor(limit), cap);
 }
 
+export type ReadinessState = 'pending' | 'ready' | 'failed';
+
+export interface RecordDeliveryInput {
+  deliveryKey: string;
+  slug: string;
+  sourceId: string;
+  contentDigest: string;
+  readinessStatus?: ReadinessState;
+  assessmentVersion?: string;
+  reasonCode?: string | null;
+}
+
+export interface DeliveryReceipt {
+  receipt_id: number;
+  delivery_key: string;
+  source_id: string;
+  page_slug: string;
+  content_digest: string;
+  delivered_at: string;
+}
+
+export interface ReadinessAssessment extends DeliveryReceipt {
+  status: ReadinessState;
+  knowledge_ready: boolean;
+  assessment_version: string;
+  reason_code: string | null;
+  assessed_at: string;
+}
+
+export interface SupersedePageInput {
+  slug: string;
+  sourceId: string;
+  supersessionKey: string;
+  supersededByBrain: string;
+  supersededBySourceId: string;
+  supersededBySlug: string;
+}
+
+export interface PageSupersession {
+  supersession_id: number;
+  supersession_key: string;
+  source_id: string;
+  page_slug: string;
+  superseded_by_brain: string;
+  superseded_by_source_id: string;
+  superseded_by_slug: string;
+  superseded_at: string;
+}
+
 export interface BrainEngine {
   /** Discriminator: lets migrations and other consumers branch on engine kind without instanceof + dynamic imports. */
   readonly kind: 'postgres' | 'pglite';
@@ -680,6 +729,11 @@ export interface BrainEngine {
    * usage constraints. Release is automatic.
    */
   withReservedConnection<T>(fn: (conn: ReservedConnection) => Promise<T>): Promise<T>;
+
+  // Delivery/readiness contract (PersonalOS U4; implemented by both engines).
+  recordDelivery(input: RecordDeliveryInput): Promise<DeliveryReceipt>;
+  getReadinessStatus(deliveryKey: string, opts: { sourceId: string }): Promise<ReadinessAssessment | null>;
+  supersedePage(input: SupersedePageInput): Promise<PageSupersession>;
 
   // Pages CRUD
   /**
