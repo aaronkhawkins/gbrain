@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { operationsByName, type OperationContext } from '../src/core/operations.ts';
+import {
+  finishProcessingReceipt,
+  registerProcessor,
+  startProcessingReceipt,
+} from '../src/core/processing-receipts.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 
 let engine: PGLiteEngine;
@@ -41,6 +46,13 @@ async function seedPage(slug: string, sourceId = 'default'): Promise<void> {
     compiled_truth: 'Fixture content',
     timeline: '',
   }, { sourceId });
+  await engine.upsertChunks(slug, [{
+    chunk_index: 0,
+    chunk_text: 'Fixture content',
+    chunk_source: 'compiled_truth',
+    token_count: 2,
+    embedding: undefined,
+  }], { sourceId });
 }
 
 describe('delivery receipts', () => {
@@ -77,13 +89,37 @@ describe('delivery receipts', () => {
       delivery_key: 'birdclaw:bookmark:43',
       slug: 'inbox/bookmark-43',
       content_digest: 'b'.repeat(64),
-      assessment_version: '1',
     };
+    const identity = {
+      processorKey: 'required-enrichment',
+      processorVersion: '1',
+      scopeId: params.delivery_key,
+      inputFingerprint: params.content_digest,
+    };
+    await registerProcessor(engine, {
+      key: identity.processorKey,
+      version: identity.processorVersion,
+      required: true,
+      cadenceSeconds: 60,
+      runbook: 'enrichment',
+    });
 
-    await record.handler(context(), {
-      ...params,
-      readiness_status: 'failed',
-      reason_code: 'enrichment_failed',
+    await record.handler(context(), params);
+    expect(await readiness.handler(context(), {
+      delivery_key: params.delivery_key,
+    })).toEqual(expect.objectContaining({
+      status: 'pending',
+      knowledge_ready: false,
+      assessment_version: 'delivery-v1',
+      reason_code: null,
+    }));
+
+    const failed = await startProcessingReceipt(engine, identity);
+    await finishProcessingReceipt(engine, {
+      ...identity,
+      attemptToken: failed.attempt_token,
+      outcome: 'failed',
+      reasonCode: 'enrichment_failed',
     });
     expect(await readiness.handler(context(), {
       delivery_key: params.delivery_key,
@@ -91,33 +127,49 @@ describe('delivery receipts', () => {
       delivery_key: params.delivery_key,
       status: 'failed',
       knowledge_ready: false,
-      assessment_version: '1',
+      assessment_version: 'delivery-v1',
       reason_code: 'enrichment_failed',
     }));
 
-    await record.handler(context(), {
-      ...params,
-      readiness_status: 'ready',
-    });
+    const repeatedFailure = await startProcessingReceipt(engine, identity);
     expect(await readiness.handler(context(), {
       delivery_key: params.delivery_key,
     })).toEqual(expect.objectContaining({
-      status: 'ready',
-      knowledge_ready: true,
-      assessment_version: '1',
-      reason_code: null,
+      status: 'pending',
+      knowledge_ready: false,
     }));
+    await finishProcessingReceipt(engine, {
+      ...identity,
+      attemptToken: repeatedFailure.attempt_token,
+      outcome: 'failed',
+      reasonCode: 'enrichment_failed',
+    });
+    expect(await readiness.handler(context(), {
+      delivery_key: params.delivery_key,
+    })).toEqual(expect.objectContaining({
+      status: 'failed',
+      knowledge_ready: false,
+      reason_code: 'enrichment_failed',
+    }));
+    expect(await engine.executeRaw<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM readiness_assessments
+        WHERE status = 'failed' AND reason_code = 'enrichment_failed'`,
+    )).toEqual([{ count: 2 }]);
 
-    await record.handler(context(), {
-      ...params,
-      readiness_status: 'failed',
-      reason_code: 'late_failure',
+    const successfulRetry = await startProcessingReceipt(engine, identity);
+    await finishProcessingReceipt(engine, {
+      ...identity,
+      attemptToken: successfulRetry.attempt_token,
+      outcome: 'completed',
     });
     expect(await readiness.handler(context(), {
       delivery_key: params.delivery_key,
     })).toEqual(expect.objectContaining({
       status: 'ready',
       knowledge_ready: true,
+      assessment_version: 'delivery-v1',
+      reason_code: null,
     }));
   }, 30_000);
 
@@ -182,8 +234,6 @@ describe('delivery receipts', () => {
       delivery_key: 'private:item:1',
       slug: 'inbox/private-item',
       content_digest: 'c'.repeat(64),
-      readiness_status: 'ready',
-      assessment_version: '1',
     });
 
     await expect(operationsByName.get_readiness_status.handler(

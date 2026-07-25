@@ -17,6 +17,11 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import type { ChunkInput, SearchResult } from '../../src/core/types.ts';
 import type { BrainEngine } from '../../src/core/engine.ts';
+import {
+  finishProcessingReceipt,
+  registerProcessor,
+  startProcessingReceipt,
+} from '../../src/core/processing-receipts.ts';
 import { hasDatabase, setupDB, teardownDB, getEngine } from './helpers.ts';
 
 const SKIP_PG = !hasDatabase();
@@ -780,11 +785,25 @@ describeBoth('Engine parity — delivery and readiness receipts', () => {
         compiled_truth: 'fixture',
         timeline: '',
       });
+      await engine.upsertChunks('parity/delivery-original', [{
+        chunk_index: 0,
+        chunk_text: 'fixture',
+        chunk_source: 'compiled_truth',
+        token_count: 1,
+        embedding: undefined,
+      }]);
       await engine.putPage('parity/delivery-replacement', {
         type: 'note',
         title: 'Delivery replacement',
         compiled_truth: 'fixture',
         timeline: '',
+      });
+      await registerProcessor(engine, {
+        key: 'parity-enrichment',
+        version: '1',
+        required: true,
+        cadenceSeconds: 60,
+        runbook: 'enrichment',
       });
     }
   }, 90_000);
@@ -801,16 +820,28 @@ describeBoth('Engine parity — delivery and readiness receipts', () => {
         slug: 'parity/delivery-original',
         sourceId: 'default',
         contentDigest: 'd'.repeat(64),
-        readinessStatus: 'failed' as const,
-        assessmentVersion: '1',
-        reasonCode: 'enrichment_failed',
       };
       const first = await engine.recordDelivery(input);
       const replay = await engine.recordDelivery(input);
-      await engine.recordDelivery({
-        ...input,
-        readinessStatus: 'ready',
-        reasonCode: null,
+      const identity = {
+        processorKey: 'parity-enrichment',
+        processorVersion: '1',
+        scopeId: input.deliveryKey,
+        inputFingerprint: input.contentDigest,
+      };
+      const failed = await startProcessingReceipt(engine, identity);
+      await finishProcessingReceipt(engine, {
+        ...identity,
+        attemptToken: failed.attempt_token,
+        outcome: 'failed',
+        reasonCode: 'enrichment_failed',
+      });
+      await engine.getReadinessStatus(input.deliveryKey, { sourceId: 'default' });
+      const retry = await startProcessingReceipt(engine, identity);
+      await finishProcessingReceipt(engine, {
+        ...identity,
+        attemptToken: retry.attempt_token,
+        outcome: 'completed',
       });
       const readiness = await engine.getReadinessStatus(input.deliveryKey, {
         sourceId: 'default',
@@ -854,7 +885,7 @@ describeBoth('Engine parity — delivery and readiness receipts', () => {
     expect(pg.readiness).toEqual({
       status: 'ready',
       knowledge_ready: true,
-      assessment_version: '1',
+      assessment_version: 'delivery-v1',
       reason_code: null,
     });
   });

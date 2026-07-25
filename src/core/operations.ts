@@ -772,9 +772,6 @@ const record_delivery: Operation = {
     delivery_key: { type: 'string', required: true, description: 'Stable ledger delivery key (max 128 chars)' },
     slug: { type: 'string', required: true, description: 'Existing delivered page slug' },
     content_digest: { type: 'string', required: true, description: 'Lowercase SHA-256 digest of delivered content' },
-    readiness_status: { type: 'string', description: 'Optional assessment: pending | ready | failed' },
-    assessment_version: { type: 'string', description: 'Readiness contract version (default: 1)' },
-    reason_code: { type: 'string', description: 'Bounded snake_case failure reason; valid only with failed status' },
   },
   mutating: true,
   scope: 'write',
@@ -785,9 +782,6 @@ const record_delivery: Operation = {
         slug: p.slug as string,
         sourceId: ctx.sourceId,
         contentDigest: p.content_digest as string,
-        readinessStatus: p.readiness_status as 'pending' | 'ready' | 'failed' | undefined,
-        assessmentVersion: p.assessment_version as string | undefined,
-        reasonCode: p.reason_code as string | undefined,
       });
     } catch (error) {
       return asDeliveryOperationError(error);

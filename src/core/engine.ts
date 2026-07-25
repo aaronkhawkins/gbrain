@@ -663,9 +663,6 @@ export interface RecordDeliveryInput {
   slug: string;
   sourceId: string;
   contentDigest: string;
-  readinessStatus?: ReadinessState;
-  assessmentVersion?: string;
-  reasonCode?: string | null;
 }
 
 export interface DeliveryReceipt {

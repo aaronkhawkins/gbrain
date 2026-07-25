@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   BrainEngine,
   DeliveryReceipt,
@@ -11,9 +12,8 @@ import { validateSlug } from './utils.ts';
 
 const DELIVERY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST_RE = /^[a-f0-9]{64}$/;
-const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
-const REASON_RE = /^[a-z][a-z0-9_]{0,47}$/;
 const BRAIN_RE = /^(?:host|[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?)$/;
+const READINESS_ASSESSMENT_VERSION = 'delivery-v1';
 
 export class DeliveryContractError extends Error {
   constructor(
@@ -50,19 +50,119 @@ function validateDelivery(input: RecordDeliveryInput): void {
   normalizedSlug(input.slug);
   assertSourceId(input.sourceId);
   assertMatch('content digest', input.contentDigest, DIGEST_RE);
-  const status = input.readinessStatus ?? 'pending';
-  if (!['pending', 'ready', 'failed'].includes(status)) {
-    throw new DeliveryContractError('invalid', 'invalid readiness status');
+}
+
+interface RequiredProcessorEvidence {
+  processor_key: string;
+  processor_version: string;
+  receipt_id: number | null;
+  attempt: number | null;
+  outcome: string | null;
+  reason_code: string | null;
+}
+
+interface DeliveryEvidence {
+  receipt_id: number;
+  delivery_key: string;
+  source_id: string;
+  page_slug: string;
+  content_digest: string;
+  delivered_at: string;
+  searchable: boolean;
+}
+
+async function loadLatestReadiness(
+  engine: BrainEngine,
+  receiptId: number,
+): Promise<ReadinessAssessment | null> {
+  const rows = await engine.executeRaw<ReadinessAssessment>(
+    `SELECT d.id::int AS receipt_id, d.delivery_key, d.source_id, d.page_slug,
+            d.content_digest, d.delivered_at, a.status,
+            (a.status = 'ready') AS knowledge_ready, a.assessment_version,
+            a.reason_code, a.assessed_at
+       FROM delivery_receipts d
+       JOIN readiness_assessments a ON a.delivery_receipt_id = d.id
+      WHERE d.id = $1
+      ORDER BY a.assessed_at DESC, a.id DESC
+      LIMIT 1`,
+    [receiptId],
+  );
+  return rows[0] ?? null;
+}
+
+async function reconcileReadiness(
+  engine: BrainEngine,
+  receiptId: number,
+): Promise<ReadinessAssessment> {
+  await engine.executeRaw(
+    'SELECT id FROM delivery_receipts WHERE id = $1 FOR UPDATE',
+    [receiptId],
+  );
+  const latest = await loadLatestReadiness(engine, receiptId);
+  if (latest?.status === 'ready') return latest;
+
+  const deliveries = await engine.executeRaw<DeliveryEvidence>(
+    `SELECT d.id::int AS receipt_id, d.delivery_key, d.source_id, d.page_slug,
+            d.content_digest, d.delivered_at,
+            EXISTS (
+              SELECT 1 FROM content_chunks c
+               WHERE c.page_id = d.page_id
+                 AND length(trim(c.chunk_text)) > 0
+            ) AS searchable
+       FROM delivery_receipts d
+      WHERE d.id = $1`,
+    [receiptId],
+  );
+  const delivery = deliveries[0];
+  if (!delivery) {
+    throw new DeliveryContractError('missing_delivery', 'delivery receipt does not exist');
   }
-  const version = input.assessmentVersion ?? '1';
-  assertMatch('assessment version', version, VERSION_RE);
-  if (input.reasonCode != null) assertMatch('reason code', input.reasonCode, REASON_RE);
-  if (status === 'failed' && input.reasonCode == null) {
-    throw new DeliveryContractError('invalid', 'failed readiness requires a reason code');
-  }
-  if (status !== 'failed' && input.reasonCode != null) {
-    throw new DeliveryContractError('invalid', 'reason code is only valid for failed readiness');
-  }
+
+  const processors = await engine.executeRaw<RequiredProcessorEvidence>(
+    `SELECT r.processor_key, r.processor_version,
+            p.id::int AS receipt_id, p.attempt, p.outcome, p.reason_code
+       FROM processing_registrations r
+       LEFT JOIN processing_receipts p ON p.id = (
+         SELECT p2.id
+           FROM processing_receipts p2
+          WHERE p2.processor_key = r.processor_key
+            AND p2.processor_version = r.processor_version
+            AND p2.scope_id = $1
+          ORDER BY COALESCE(p2.finished_at, p2.started_at) DESC, p2.id DESC
+          LIMIT 1
+       )
+      WHERE r.enabled = TRUE AND r.required = TRUE
+      ORDER BY r.processor_key`,
+    [delivery.delivery_key],
+  );
+
+  const failure = processors.find(
+    processor => processor.outcome === 'failed' || processor.outcome === 'partial',
+  );
+  const incomplete = processors.some(
+    processor => processor.outcome == null || processor.outcome === 'running',
+  );
+  const status: ReadinessAssessment['status'] = failure
+    ? 'failed'
+    : (!delivery.searchable || incomplete ? 'pending' : 'ready');
+  const reasonCode = failure
+    ? (failure.reason_code ?? 'required_processing_failed')
+    : null;
+  const assessmentKey = createHash('sha256').update(JSON.stringify({
+    version: READINESS_ASSESSMENT_VERSION,
+    content_digest: delivery.content_digest,
+    searchable: delivery.searchable,
+    processors,
+  })).digest('hex');
+
+  await engine.executeRaw(
+    `INSERT INTO readiness_assessments (
+       delivery_receipt_id, assessment_key, assessment_version, status, reason_code
+     ) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (delivery_receipt_id, assessment_key) DO NOTHING`,
+    [receiptId, assessmentKey, READINESS_ASSESSMENT_VERSION, status, reasonCode],
+  );
+  return (await loadLatestReadiness(engine, receiptId))!;
 }
 
 export async function recordDelivery(
@@ -106,34 +206,7 @@ export async function recordDelivery(
       );
     }
 
-    // Serialize assessment writers on the immutable receipt so a late failed
-    // or pending assessment can never race a ready assessment and become the
-    // newest visible state.
-    await tx.executeRaw(
-      'SELECT id FROM delivery_receipts WHERE id = $1 FOR UPDATE',
-      [receipt.receipt_id],
-    );
-    const status = input.readinessStatus ?? 'pending';
-    const version = input.assessmentVersion ?? '1';
-    const latest = await tx.executeRaw<{ status: string }>(
-      `SELECT status FROM readiness_assessments
-        WHERE delivery_receipt_id = $1
-        ORDER BY assessed_at DESC, id DESC
-        LIMIT 1`,
-      [receipt.receipt_id],
-    );
-    if (latest[0]?.status === 'ready' && status !== 'ready') return receipt;
-
-    await tx.executeRaw(
-      `INSERT INTO readiness_assessments (
-         delivery_receipt_id, assessment_version, status, reason_code
-       ) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (
-         delivery_receipt_id, assessment_version, status,
-         (COALESCE(reason_code, ''))
-       ) DO NOTHING`,
-      [receipt.receipt_id, version, status, input.reasonCode ?? null],
-    );
+    await reconcileReadiness(tx, receipt.receipt_id);
     return receipt;
   });
 }
@@ -145,19 +218,14 @@ export async function getReadinessStatus(
 ): Promise<ReadinessAssessment | null> {
   assertMatch('delivery key', deliveryKey, DELIVERY_KEY_RE);
   assertSourceId(opts.sourceId);
-  const rows = await engine.executeRaw<Omit<ReadinessAssessment, 'knowledge_ready'> & { status: ReadinessAssessment['status'] }>(
-    `SELECT d.id::int AS receipt_id, d.delivery_key, d.source_id, d.page_slug,
-            d.content_digest, d.delivered_at, a.status, a.assessment_version,
-            a.reason_code, a.assessed_at
-       FROM delivery_receipts d
-       JOIN readiness_assessments a ON a.delivery_receipt_id = d.id
-      WHERE d.delivery_key = $1 AND d.source_id = $2
-      ORDER BY a.assessed_at DESC, a.id DESC
-      LIMIT 1`,
+  const rows = await engine.executeRaw<{ receipt_id: number }>(
+    `SELECT id::int AS receipt_id
+       FROM delivery_receipts
+      WHERE delivery_key = $1 AND source_id = $2`,
     [deliveryKey, opts.sourceId],
   );
   if (!rows[0]) return null;
-  return { ...rows[0], knowledge_ready: rows[0].status === 'ready' };
+  return engine.transaction(tx => reconcileReadiness(tx, rows[0]!.receipt_id));
 }
 
 function validateSupersession(input: SupersedePageInput): void {

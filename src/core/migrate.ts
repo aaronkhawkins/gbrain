@@ -5949,6 +5949,33 @@ export const MIGRATIONS: Migration[] = [
         ON page_supersessions(source_id, page_slug);
     `,
   },
+  {
+    version: 131,
+    name: 'readiness_assessment_evidence_key',
+    idempotent: true,
+    sql: `
+      ALTER TABLE readiness_assessments
+        ADD COLUMN IF NOT EXISTS assessment_key CHAR(64);
+      UPDATE readiness_assessments
+         SET assessment_key =
+           md5(
+             delivery_receipt_id::text || ':' || assessment_version || ':' ||
+             status || ':' || COALESCE(reason_code, '') || ':' || id::text
+           ) ||
+           md5(
+             'readiness:' || delivery_receipt_id::text || ':' ||
+             assessment_version || ':' || status || ':' ||
+             COALESCE(reason_code, '') || ':' || id::text
+           )
+       WHERE assessment_key IS NULL;
+      ALTER TABLE readiness_assessments
+        ALTER COLUMN assessment_key SET NOT NULL;
+
+      DROP INDEX IF EXISTS idx_readiness_assessments_idempotency;
+      CREATE UNIQUE INDEX idx_readiness_assessments_idempotency
+        ON readiness_assessments (delivery_receipt_id, assessment_key);
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
