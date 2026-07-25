@@ -56,7 +56,11 @@ import {
   CODE_REFS_DESCRIPTION,
   LIST_SKILLS_DESCRIPTION,
   GET_SKILL_DESCRIPTION,
+  RECORD_DELIVERY_DESCRIPTION,
+  GET_READINESS_STATUS_DESCRIPTION,
+  SUPERSEDE_PAGE_DESCRIPTION,
 } from './operations-descriptions.ts';
+import { DeliveryContractError } from './delivery-receipts.ts';
 
 // --- Types ---
 
@@ -743,6 +747,99 @@ export interface Operation {
 }
 
 // --- Page CRUD ---
+
+function asDeliveryOperationError(error: unknown): never {
+  if (!(error instanceof DeliveryContractError)) throw error;
+  let code: ErrorCode;
+  switch (error.kind) {
+    case 'missing_page':
+    case 'missing_delivery':
+      code = 'page_not_found';
+      break;
+    case 'conflict':
+      code = 'storage_error';
+      break;
+    default:
+      code = 'invalid_params';
+  }
+  throw new OperationError(code, error.message);
+}
+
+const record_delivery: Operation = {
+  name: 'record_delivery',
+  description: RECORD_DELIVERY_DESCRIPTION,
+  params: {
+    delivery_key: { type: 'string', required: true, description: 'Stable ledger delivery key (max 128 chars)' },
+    slug: { type: 'string', required: true, description: 'Existing delivered page slug' },
+    content_digest: { type: 'string', required: true, description: 'Lowercase SHA-256 digest of delivered content' },
+  },
+  mutating: true,
+  scope: 'write',
+  handler: async (ctx, p) => {
+    try {
+      return await ctx.engine.recordDelivery({
+        deliveryKey: p.delivery_key as string,
+        slug: p.slug as string,
+        sourceId: ctx.sourceId,
+        contentDigest: p.content_digest as string,
+      });
+    } catch (error) {
+      return asDeliveryOperationError(error);
+    }
+  },
+};
+
+const get_readiness_status: Operation = {
+  name: 'get_readiness_status',
+  description: GET_READINESS_STATUS_DESCRIPTION,
+  params: {
+    delivery_key: { type: 'string', required: true, description: 'Stable ledger delivery key' },
+  },
+  scope: 'read',
+  handler: async (ctx, p) => {
+    try {
+      const result = await ctx.engine.getReadinessStatus(
+        p.delivery_key as string,
+        { sourceId: ctx.sourceId },
+      );
+      if (!result) {
+        throw new OperationError('page_not_found', 'Delivery receipt not found in the active source');
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof OperationError) throw error;
+      return asDeliveryOperationError(error);
+    }
+  },
+};
+
+const supersede_page: Operation = {
+  name: 'supersede_page',
+  description: SUPERSEDE_PAGE_DESCRIPTION,
+  params: {
+    slug: { type: 'string', required: true, description: 'Existing page slug to mark superseded' },
+    supersession_key: { type: 'string', required: true, description: 'Stable correction/supersession key' },
+    superseded_by_brain: { type: 'string', required: true, description: 'Target brain id (for example host or a mount id)' },
+    superseded_by_source_id: { type: 'string', required: true, description: 'Target source id' },
+    superseded_by_slug: { type: 'string', required: true, description: 'Replacement page slug' },
+  },
+  mutating: true,
+  scope: 'write',
+  handler: async (ctx, p) => {
+    try {
+      return await ctx.engine.supersedePage({
+        slug: p.slug as string,
+        sourceId: ctx.sourceId,
+        supersessionKey: p.supersession_key as string,
+        supersededByBrain: p.superseded_by_brain as string,
+        supersededBySourceId: p.superseded_by_source_id as string,
+        supersededBySlug: p.superseded_by_slug as string,
+      });
+    } catch (error) {
+      return asDeliveryOperationError(error);
+    }
+  },
+};
 
 const get_page: Operation = {
   name: 'get_page',
@@ -5621,6 +5718,8 @@ const chronicle_backfill: Operation = {
 export const operations: Operation[] = [
   // Page CRUD
   get_page, put_page, delete_page, list_pages,
+  // Content-free delivery, readiness, and supersession receipts.
+  record_delivery, get_readiness_status, supersede_page,
   // v0.26.5 destructive-guard ops (page-level soft-delete + recovery + admin purge)
   restore_page, purge_deleted_pages,
   // Search

@@ -5891,6 +5891,91 @@ export const MIGRATIONS: Migration[] = [
       DROP INDEX IF EXISTS idx_processing_receipts_observer;
     `,
   },
+  {
+    version: 130,
+    name: 'delivery_readiness_and_supersession_receipts',
+    // PersonalOS U4: bounded, content-free receipts around the existing
+    // filesystem-first page write. A delivery key is immutable and globally
+    // idempotent within one brain. Readiness assessments are append-only so a
+    // failed enrichment attempt remains auditable after a successful retry.
+    // Supersession is an audit marker, never a page delete.
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS delivery_receipts (
+        id             BIGSERIAL PRIMARY KEY,
+        delivery_key   VARCHAR(128) NOT NULL UNIQUE,
+        page_id        BIGINT NOT NULL REFERENCES pages(id) ON DELETE RESTRICT,
+        source_id      TEXT NOT NULL,
+        page_slug      TEXT NOT NULL,
+        content_digest CHAR(64) NOT NULL,
+        delivered_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_delivery_receipts_page
+        ON delivery_receipts(source_id, page_slug, delivered_at DESC);
+
+      CREATE TABLE IF NOT EXISTS readiness_assessments (
+        id                   BIGSERIAL PRIMARY KEY,
+        delivery_receipt_id  BIGINT NOT NULL REFERENCES delivery_receipts(id) ON DELETE CASCADE,
+        assessment_version   VARCHAR(32) NOT NULL,
+        status               VARCHAR(16) NOT NULL
+          CHECK (status IN ('pending', 'ready', 'failed')),
+        reason_code          VARCHAR(48),
+        assessed_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (
+          (status = 'failed' AND reason_code IS NOT NULL) OR
+          (status <> 'failed' AND reason_code IS NULL)
+        )
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_readiness_assessments_idempotency
+        ON readiness_assessments (
+          delivery_receipt_id, assessment_version, status, (COALESCE(reason_code, ''))
+        );
+      CREATE INDEX IF NOT EXISTS idx_readiness_assessments_latest
+        ON readiness_assessments(delivery_receipt_id, assessed_at DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS page_supersessions (
+        id                       BIGSERIAL PRIMARY KEY,
+        supersession_key         VARCHAR(128) NOT NULL UNIQUE,
+        page_id                  BIGINT NOT NULL REFERENCES pages(id) ON DELETE RESTRICT,
+        source_id                TEXT NOT NULL,
+        page_slug                TEXT NOT NULL,
+        superseded_by_brain      VARCHAR(64) NOT NULL,
+        superseded_by_source_id  VARCHAR(128) NOT NULL,
+        superseded_by_slug       TEXT NOT NULL,
+        superseded_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (page_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_page_supersessions_page
+        ON page_supersessions(source_id, page_slug);
+    `,
+  },
+  {
+    version: 131,
+    name: 'readiness_assessment_evidence_key',
+    idempotent: true,
+    sql: `
+      ALTER TABLE readiness_assessments
+        ADD COLUMN IF NOT EXISTS assessment_key CHAR(64);
+      UPDATE readiness_assessments
+         SET assessment_key =
+           md5(
+             delivery_receipt_id::text || ':' || assessment_version || ':' ||
+             status || ':' || COALESCE(reason_code, '') || ':' || id::text
+           ) ||
+           md5(
+             'readiness:' || delivery_receipt_id::text || ':' ||
+             assessment_version || ':' || status || ':' ||
+             COALESCE(reason_code, '') || ':' || id::text
+           )
+       WHERE assessment_key IS NULL;
+      ALTER TABLE readiness_assessments
+        ALTER COLUMN assessment_key SET NOT NULL;
+
+      DROP INDEX IF EXISTS idx_readiness_assessments_idempotency;
+      CREATE UNIQUE INDEX idx_readiness_assessments_idempotency
+        ON readiness_assessments (delivery_receipt_id, assessment_key);
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

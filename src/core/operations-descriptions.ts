@@ -14,6 +14,21 @@
  *     "Do NOT run a semantic search for these."
  */
 
+export const RECORD_DELIVERY_DESCRIPTION =
+  "Record an idempotent, content-free delivery receipt for an existing page. " +
+  "Use this after the normal filesystem-first page write succeeds. The delivery " +
+  "key is immutable: retries return the original receipt, while a key reused for " +
+  "another page or digest is rejected. GBrain derives readiness from its required processing.";
+
+export const GET_READINESS_STATUS_DESCRIPTION =
+  "Reconcile and return the latest versioned readiness assessment for a delivery key. " +
+  "Use this to distinguish accepted delivery from completed enrichment without " +
+  "exposing internal Dream, Minion, or database table shapes.";
+
+export const SUPERSEDE_PAGE_DESCRIPTION =
+  "Mark an existing page as superseded by another page and retain an idempotent " +
+  "audit marker. This never hard-deletes content and can point across brains.";
+
 // ──────────────────────────────────────────────────────────────────────────────
 // New v0.29 ops
 // ──────────────────────────────────────────────────────────────────────────────
