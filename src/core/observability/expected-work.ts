@@ -160,7 +160,7 @@ export interface RegistryInput {
    * unioned with core phases and config-enabled opt-in phases.
    */
   enabledDreamPhases: string[];
-  /** Sources with scheduler-owned recurring cycles (normally local-path sources). */
+  /** Sources with scheduler-owned recurring cycles (the sync-managed local-path sources). */
   scheduledSourceIds?: string[];
   /** Scheduler registrations/cadence. Defaults to the native autopilot registry. */
   recurringMinions?: RecurringMinionRegistration[];
@@ -187,7 +187,13 @@ export function buildExpectedWorkRegistry(input: RegistryInput): ExpectedWorkEnt
     throw new Error('observability source label key is required for source-scoped work');
   }
 
-  for (const sourceId of input.sourceIds) {
+  // A registered source is not necessarily a repository. Database-native
+  // sources (webhooks, inbox adapters, external archives) have no local path
+  // and therefore can never produce repo-sync cadence evidence. They retain
+  // their source-scoped fact/link/processor observations below, but only the
+  // scheduler-owned local-path set gets required source-sync work.
+  const syncSourceIds = input.scheduledSourceIds ?? input.sourceIds;
+  for (const sourceId of syncSourceIds) {
     const key = sourceWorkKey(sourceId, input.sourceLabelKey!);
     entries.push(applyOverride({
       key,

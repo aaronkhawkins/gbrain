@@ -5,7 +5,7 @@ GBrain owns operational meaning. Prometheus only transports metrics; Grafana onl
 ## What Phase 1A answers
 
 - Is each configured brain reachable via its observer?
-- Are registered sources healthy (commit-relative lag, queue depth, recent failures)?
+- Are sync-managed local-path sources healthy (commit-relative lag, queue depth, recent failures)?
 - Did expected recurring Minion work and Dream phases complete inside cadence + grace?
 - Are embeddings ready and identity-compatible?
 - Which items need destashing attention?
@@ -72,6 +72,10 @@ In `$GBRAIN_HOME/config.json`:
 - Source-scoped Minion work keys end in the registry's sanitized opaque source
   segment: `minion.<job-name>.<source-id>`. Overrides match the full generated
   key exactly. Global work such as `minion.maintain` has no source suffix.
+- Required `source.s_<opaque>` cadence work exists only for sync-managed
+  local-path sources. Database-native sources cannot produce repo-sync
+  timestamps, so they retain their fact, link, intake, processor, embedding,
+  and retrieval observations without an impossible source-sync requirement.
 - Every enabled native-intake target is discovered from its registered source
   policy and appears as `minion.ingest_capture.s_<opaque>`. Idle event-driven
   intake is healthy when its Minion evidence queries succeed. These rows flow
