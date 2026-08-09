@@ -8,6 +8,7 @@ import {
 import {
   buildExpectedWorkRegistry,
   nativeIntakeWorkKey,
+  sourceWorkKey,
 } from '../../src/core/observability/expected-work.ts';
 
 describe('operational registry discovery failures', () => {
@@ -175,6 +176,9 @@ describe('operational registry discovery failures', () => {
       selector: 'ingest_capture',
       scope: { type: 'source', source_id: 'research' },
     }));
+    expect(registry.map((entry) => entry.key)).not.toContain(
+      sourceWorkKey('research', sourceLabelKey),
+    );
     expect(registry.some((entry) => entry.scope?.type === 'source' &&
       entry.scope.source_id === 'producer' &&
       entry.selector === 'ingest_capture')).toBe(false);

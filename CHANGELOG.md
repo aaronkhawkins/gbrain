@@ -2,6 +2,26 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.64.2] - 2026-08-09
+
+**Operational alerts now reflect work a source can actually perform.**
+
+Database-native sources, such as webhook or archive-backed sources, do not
+have repositories to sync. Observers no longer report those sources as unknown
+required repo-sync work. Real local-path sources keep the same required cadence,
+and database-native sources keep their fact, link, intake, processor, embedding,
+and retrieval health signals.
+
+### Itemized changes
+
+#### Fixed
+
+- Required source-sync work is registered only for scheduler-owned local-path
+  sources. This removes persistent false alerts without hiding genuine sync,
+  backlog, processing, embedding, or retrieval failures.
+
+No new schema migrations.
+
 ## [0.42.64.1] - 2026-07-23
 
 ### Changed

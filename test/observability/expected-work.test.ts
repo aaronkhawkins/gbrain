@@ -74,6 +74,23 @@ describe('buildExpectedWorkRegistry', () => {
     }));
   });
 
+  test('does not require repo-sync cadence from database-native sources', () => {
+    const reg = buildExpectedWorkRegistry({
+      sourceIds: ['repo', 'database-native'],
+      sourceLabelKey: SOURCE_LABEL_KEY,
+      scheduledSourceIds: ['repo'],
+      enabledDreamPhases: [],
+      includeInfrastructure: false,
+    });
+    const keys = reg.map((entry) => entry.key);
+    const nativeSegment = opaqueSourceSegment('database-native', SOURCE_LABEL_KEY);
+
+    expect(keys).toContain(sourceWorkKey('repo', SOURCE_LABEL_KEY));
+    expect(keys).not.toContain(sourceWorkKey('database-native', SOURCE_LABEL_KEY));
+    expect(keys).toContain(`facts.pending.${nativeSegment}`);
+    expect(keys).toContain(`links.extraction.${nativeSegment}`);
+  });
+
   test('discovers enabled native-intake targets as opaque event-driven Minion work', () => {
     const reg = buildExpectedWorkRegistry({
       sourceIds: ['producer', 'research', 'canonical'],
