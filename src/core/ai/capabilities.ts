@@ -28,6 +28,8 @@ import { listRecipes } from './recipes/index.ts';
 import { AIConfigError } from './errors.ts';
 
 export interface ProviderCapabilities {
+  /** Whether repeated prompt tokens incur a metered API charge. */
+  hasMeteredTokenCost: boolean;
   /** Provider returns native function/tool calling. Required for the subagent loop. */
   supportsToolCalling: boolean;
 
@@ -114,6 +116,9 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
 
   const subagentLoop = chat.supports_subagent_loop;
   return {
+    hasMeteredTokenCost:
+      (chat.cost_per_1m_input_usd ?? 0) > 0 ||
+      (chat.cost_per_1m_output_usd ?? 0) > 0,
     supportsToolCalling: chat.supports_tools === true,
     supportsSubagentLoop: typeof subagentLoop === 'function'
       ? subagentLoop(parsed.modelId)
@@ -175,7 +180,7 @@ export function classifyCapabilities(modelString: string): CapabilityVerdict {
   }
   if (!caps.supportsToolCalling) return 'unusable:no_tools';
   if (!caps.supportsSubagentLoop) return 'unusable:no_subagent_loop';
-  if (!caps.supportsPromptCaching) return 'degraded:no_caching';
+  if (!caps.supportsPromptCaching && caps.hasMeteredTokenCost) return 'degraded:no_caching';
   if (!caps.supportsParallelTools) return 'degraded:no_parallel';
   return 'ok';
 }

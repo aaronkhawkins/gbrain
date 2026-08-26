@@ -205,6 +205,18 @@ describe('BudgetTracker.reserve', () => {
     ]);
   });
 
+  test('subscription-backed Codex chat has zero incremental API cost', () => {
+    const t = new BudgetTracker({ maxCostUsd: 0.000001, label: 'test', auditPath });
+    expect(() =>
+      t.reserve({
+        modelId: 'codex-app-server:gpt-5.6-sol',
+        estimatedInputTokens: 1_000_000,
+        maxOutputTokens: 1_000_000,
+        kind: 'chat',
+      }),
+    ).not.toThrow();
+  });
+
   test('no cap + unknown pricing: warns once per process, no throw', () => {
     const t = new BudgetTracker({ label: 'test', auditPath });
     expect(() =>

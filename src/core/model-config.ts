@@ -61,15 +61,15 @@ export interface ResolveModelOpts {
  *  cause `resolveRecipe()` to throw "unknown provider" and the queue rejects
  *  the submit. */
 export const DEFAULT_ALIASES: Record<string, string> = {
-  opus:   'anthropic:claude-opus-4-7',
-  sonnet: 'anthropic:claude-sonnet-4-6',
-  haiku:  'anthropic:claude-haiku-4-5-20251001',
+  opus:   'codex-app-server:gpt-5.6-sol',
+  sonnet: 'codex-app-server:gpt-5.6-sol',
+  haiku:  'codex-app-server:gpt-5.4',
   gemini: 'google:gemini-3-pro',
   // `gpt` resolves DYNAMICALLY in resolveAlias (account-discovered OpenAI
   // flagship, recipe-ranked static floor) — this entry keeps the alias
   // enumerable but the value here is only the documentation floor; a pinned
   // id would 404 within months (the previous 'openai:gpt-5' already did).
-  gpt:    'openai:gpt-5.6',
+  gpt:    'codex-app-server:gpt-5.6-sol',
 };
 
 /**
@@ -82,10 +82,10 @@ export const DEFAULT_ALIASES: Record<string, string> = {
  * Users override via `gbrain config set models.tier.<tier> <model>`.
  */
 export const TIER_DEFAULTS: Record<ModelTier, string> = {
-  utility:   'anthropic:claude-haiku-4-5-20251001',
-  reasoning: 'anthropic:claude-sonnet-4-6',
-  deep:      'anthropic:claude-opus-4-7',
-  subagent:  'anthropic:claude-sonnet-4-6',
+  utility:   'codex-app-server:gpt-5.4',
+  reasoning: 'codex-app-server:gpt-5.6-sol',
+  deep:      'codex-app-server:gpt-5.6-sol',
+  subagent:  'codex-app-server:gpt-5.6-sol',
 };
 
 /**

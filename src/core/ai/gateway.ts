@@ -64,6 +64,7 @@ import { loadConfig } from '../config.ts';
 import type { GBrainConfig } from '../config.ts';
 import { mergedProviderEnv } from './provider-env.ts';
 import { buildGatewayConfig, foldNativeBaseUrlsFromFilePlane } from './build-gateway-config.ts';
+import { CodexAppServerLanguageModel } from './providers/codex-app-server-language-model.ts';
 
 // ---- Gateway-wide AI-HTTP timeout (v0.42.20.0, #1762/#1775) ----
 //
@@ -118,8 +119,8 @@ import {
   LEGACY_DEFAULT_RERANKER_MODEL,
   renderCanonicalMigrationCommands,
 } from './defaults.ts';
-const DEFAULT_EXPANSION_MODEL = 'anthropic:claude-haiku-4-5-20251001';
-const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
+const DEFAULT_EXPANSION_MODEL = 'codex-app-server:gpt-5.6-sol';
+const DEFAULT_CHAT_MODEL = 'codex-app-server:gpt-5.6-sol';
 // v0.35.0.0+: reranker default. Used only when search.reranker.enabled is set
 // AND no explicit reranker_model is configured. Mode bundles' per-mode
 // `reranker_model` default to this same value but can be overridden.
@@ -1632,6 +1633,10 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
       throw new AIConfigError(
         `claude-cli has no embedding model. Use openai or google for embeddings.`,
       );
+    case 'codex-app-server':
+      throw new AIConfigError(
+        `codex-app-server has no embedding model. Use a local or hosted embedding provider.`,
+      );
     case 'openai-compatible': {
       // D12=A: unified auth via Recipe.resolveAuth (or default).
       const auth = applyResolveAuth(recipe, cfg, 'embedding');
@@ -2613,6 +2618,8 @@ function instantiateExpansion(recipe: Recipe, modelId: string, cfg: AIGatewayCon
       const { ClaudeCliLanguageModel } = require('./providers/claude-cli-language-model.ts');
       return new ClaudeCliLanguageModel(modelId);
     }
+    case 'codex-app-server':
+      return new CodexAppServerLanguageModel(modelId);
     case 'openai-compatible': {
       // D12=A: unified auth via Recipe.resolveAuth (or default).
       const auth = applyResolveAuth(recipe, cfg, 'expansion');
@@ -3415,6 +3422,8 @@ function instantiateChat(recipe: Recipe, modelId: string, cfg: AIGatewayConfig):
       const { ClaudeCliLanguageModel } = require('./providers/claude-cli-language-model.ts');
       return new ClaudeCliLanguageModel(modelId);
     }
+    case 'codex-app-server':
+      return new CodexAppServerLanguageModel(modelId);
     case 'openai-compatible': {
       // D12=A: unified auth via Recipe.resolveAuth (or default).
       const auth = applyResolveAuth(recipe, cfg, 'chat');

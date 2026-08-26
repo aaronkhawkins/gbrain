@@ -23,7 +23,8 @@ export type Implementation =
   | 'native-google'
   | 'native-anthropic'
   | 'openai-compatible'
-  | 'claude-cli';
+  | 'claude-cli'
+  | 'codex-app-server';
 
 export interface EmbeddingTouchpoint {
   models: string[];

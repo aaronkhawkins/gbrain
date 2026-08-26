@@ -256,6 +256,11 @@ const FREE_LOCAL_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
   'llama-server',
 ]);
 
+/** Subscription-authenticated chat providers with zero incremental API cost. */
+const FREE_ENTITLED_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
+  'codex-app-server',
+]);
+
 /**
  * Look up `modelId` in the chat or embedding pricing maps. Returns a
  * per-1M-token price tuple, or null when unknown.
@@ -300,6 +305,9 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
   if (modelTail) {
     const tailHit = ANTHROPIC_PRICING[modelTail];
     if (tailHit) return tailHit;
+  }
+  if (kind === 'chat' && providerId && FREE_ENTITLED_CHAT_PROVIDERS.has(providerId)) {
+    return { input: 0, output: 0 };
   }
   // Paid rerank providers (e.g. ZeroEntropy's zerank-2) aren't Claude-priced,
   // so they miss the ANTHROPIC_PRICING checks above. Reuse the embedding

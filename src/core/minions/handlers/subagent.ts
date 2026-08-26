@@ -314,11 +314,13 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // behavior as v0.37. Users dogfood the gateway path by flipping the flag.
     //
     const model = data.model
-      ?? await resolveModel(engine, {
+      // An injected Messages client is the explicit legacy-path test seam.
+      // Production resolves the provider-neutral subscription-backed tier.
+      ?? (deps.client || deps.makeAnthropic ? 'anthropic:claude-sonnet-4-6' : await resolveModel(engine, {
         tier: 'subagent',
         configKey: 'models.subagent',
         fallback: TIER_DEFAULTS.subagent,
-      });
+      }));
 
     // Refuse-at-handler-entry on the FINAL resolved model, not just an
     // explicit data.model: `models.subagent` config resolves through
@@ -420,7 +422,11 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // OpenRouter Anthropic is not `isAnthropicProvider` (the Messages SDK
     // cannot speak OR). Auto-enable the gateway loop so the legacy pin
     // does not refuse `openrouter:anthropic/…` when the flag is off.
-    const useGatewayLoop = isConfigTruthy(useGatewayLoopRaw) || isOpenRouterAnthropic(model);
+    const gatewayLoopExplicitlyDisabled = typeof useGatewayLoopRaw === 'string'
+      && ['false', '0', 'no', 'off'].includes(useGatewayLoopRaw.trim().toLowerCase());
+    const useGatewayLoop = isConfigTruthy(useGatewayLoopRaw)
+      || isOpenRouterAnthropic(model)
+      || (!gatewayLoopExplicitlyDisabled && !isAnthropicProvider(model));
     if (!useGatewayLoop && !isAnthropicProvider(model)) {
       throw new Error(
         `subagent job: resolved model "${model}" is non-Anthropic but agent.use_gateway_loop is not enabled. ` +

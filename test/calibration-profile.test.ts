@@ -260,7 +260,7 @@ describe('runPhaseCalibrationProfile — phase integration', () => {
     // Pre-fix this was a bare 'claude-sonnet-4-6' → gateway.chat() throws
     // "missing a provider prefix". The fix routes the default through TIER_DEFAULTS.
     expect(insert!.params).toContain(TIER_DEFAULTS.reasoning);
-    expect(parseModelId(TIER_DEFAULTS.reasoning).providerId).toBe('anthropic');
+    expect(parseModelId(TIER_DEFAULTS.reasoning).providerId).toBe('codex-app-server');
   });
 
   test('calibration + voice-gate tier defaults are provider-prefixed (#2451)', () => {
@@ -268,7 +268,7 @@ describe('runPhaseCalibrationProfile — phase integration', () => {
     // route through TIER_DEFAULTS; a bare id would throw "missing a provider prefix".
     for (const m of [TIER_DEFAULTS.reasoning, TIER_DEFAULTS.utility]) {
       expect(() => parseModelId(m)).not.toThrow();
-      expect(parseModelId(m).providerId).toBe('anthropic');
+      expect(parseModelId(m).providerId).toBe('codex-app-server');
     }
   });
 
@@ -279,6 +279,7 @@ describe('runPhaseCalibrationProfile — phase integration', () => {
     ];
     const result = await runPhaseCalibrationProfile(buildCtx(engine), {
       patternsGenerator,
+      biasTagsGenerator: async () => [],
       voiceGateJudge: rejectJudge,
     });
     const details = result.details as Record<string, unknown>;
@@ -299,6 +300,7 @@ describe('runPhaseCalibrationProfile — phase integration', () => {
     const patternsGenerator: PatternStatementsGenerator = async () => ['fine pattern'];
     await runPhaseCalibrationProfile(buildCtx(engine), {
       patternsGenerator,
+      biasTagsGenerator: async () => [],
       voiceGateJudge: passJudge,
       gradeCompletion: 0.6,
     });
@@ -329,6 +331,7 @@ describe('runPhaseCalibrationProfile — phase integration', () => {
     const ctx = { ...buildCtx(engine), sourceId: 'tenant-b' };
     await runPhaseCalibrationProfile(ctx, {
       patternsGenerator,
+      biasTagsGenerator: async () => [],
       voiceGateJudge: passJudge,
     });
     const insert = captured.find(c => c.sql.includes('INSERT INTO calibration_profiles'));
