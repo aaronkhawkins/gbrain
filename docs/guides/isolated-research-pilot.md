@@ -74,13 +74,13 @@ scripts/run-isolated-research-pilot.sh \
   --scorecard-input /path/to/private-pilot/scorecard.json \
   --evaluation-input /path/to/private-pilot/evaluation.json \
   --gbrain-bin /path/to/isolated-release/current/gbrain \
-  --chat-model opencode-server:gpt-5.5
+  --chat-model codex-app-server:gpt-5.6-sol
 ```
 
-The default chat model is `opencode-server:gpt-5.5`. The isolated child
-processes inherit only the existing loopback OpenCode connection settings;
-hosted provider keys and production database URLs are removed. Override the
-model only for a deliberate isolated comparison.
+The default chat model is `codex-app-server:gpt-5.6-sol`. The isolated child
+processes use the host's existing Codex ChatGPT login; hosted provider keys and
+production database URLs are removed. Override the model only for a deliberate
+isolated comparison.
 
 The harness creates a dedicated PGLite brain and one source, then runs this
 same command sequence twice:

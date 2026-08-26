@@ -23,7 +23,7 @@ export type Implementation =
   | 'native-google'
   | 'native-anthropic'
   | 'openai-compatible'
-  | 'opencode-server';
+  | 'codex-app-server';
 
 export interface EmbeddingTouchpoint {
   models: string[];

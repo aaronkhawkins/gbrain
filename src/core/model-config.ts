@@ -39,9 +39,8 @@ export interface ResolveModelOpts {
    * before the env var. Routing groups: `utility` (haiku-class, classification
    * + expansion + verdict), `reasoning` (sonnet-class, default chat +
    * synthesis + fact extraction), `deep` (opus-class, expensive reasoning),
-   * `subagent` (Anthropic-only multi-turn tool loop — never inherits a
-   * non-Anthropic `models.default`; falls back to TIER_DEFAULTS.subagent
-   * with a one-shot stderr warn instead).
+   * `subagent` (provider-neutral GBrain-owned tool loop; falls back to the
+   * subscription-backed `TIER_DEFAULTS.subagent`).
    */
   tier?: ModelTier;
   /** Hardcoded last-resort fallback. */
@@ -55,38 +54,35 @@ export interface ResolveModelOpts {
  *  cause `resolveRecipe()` to throw "unknown provider" and the queue rejects
  *  the submit. */
 export const DEFAULT_ALIASES: Record<string, string> = {
-  opus:   'anthropic:claude-opus-4-7',
-  sonnet: 'anthropic:claude-sonnet-4-6',
-  haiku:  'anthropic:claude-haiku-4-5-20251001',
+  opus:   'codex-app-server:gpt-5.6-sol',
+  sonnet: 'codex-app-server:gpt-5.6-sol',
+  haiku:  'codex-app-server:gpt-5.4',
   gemini: 'google:gemini-3-pro',
-  gpt:    'openai:gpt-5',
+  gpt:    'codex-app-server:gpt-5.6-sol',
 };
 
 /**
  * Default model for each tier. Used as the hardcoded fallback when no
- * `models.tier.<tier>` config + no `models.default` is set. Subagent gets
- * Sonnet (Anthropic Messages API tool-loop shape required); reasoning gets
- * Sonnet (default workhorse); deep gets Opus 4.7 (expensive reasoning);
- * utility gets Haiku (fast classification).
+ * `models.tier.<tier>` config + no `models.default` is set. All last-resort
+ * tiers use the host's ChatGPT subscription through Codex.
+ * Installations with self-hosted utility models should override the utility
+ * tier, as the personal and work brains do on Skippy.
  *
  * Users override via `gbrain config set models.tier.<tier> <model>`.
  */
 export const TIER_DEFAULTS: Record<ModelTier, string> = {
-  utility:   'anthropic:claude-haiku-4-5-20251001',
-  reasoning: 'anthropic:claude-sonnet-4-6',
-  deep:      'anthropic:claude-opus-4-7',
-  subagent:  'anthropic:claude-sonnet-4-6',
+  utility:   'codex-app-server:gpt-5.4',
+  reasoning: 'codex-app-server:gpt-5.6-sol',
+  deep:      'codex-app-server:gpt-5.6-sol',
+  subagent:  'codex-app-server:gpt-5.6-sol',
 };
 
 /**
  * v0.31.12 subagent runtime enforcement (layer 2).
  *
  * Returns true if a resolved `provider:model` (or bare model id) points at
- * an Anthropic-shape API. The subagent loop in
- * `src/core/minions/handlers/subagent.ts` makes Anthropic Messages API calls
- * with prompt caching on system + tools; routing it elsewhere silently
- * breaks. When `tier === 'subagent'` resolves to a non-Anthropic provider,
- * we log a stderr warn AND fall back to `TIER_DEFAULTS.subagent`.
+ * an Anthropic-shape API. This remains for the explicitly selected legacy
+ * Messages API path; the default gateway loop is provider-neutral.
  */
 export function isAnthropicProvider(modelString: string): boolean {
   if (!modelString) return false;
@@ -271,8 +267,7 @@ function enforceSubagentCapable(resolved: string, tier: ModelTier | undefined, s
       _subagentTierWarningsEmitted.add(key);
       process.stderr.write(
         `[models] tier.subagent resolved to "${resolved}" via "${source}" — provider does not support prompt caching. ` +
-        `The loop will run hot (cost scales linearly with conversation length). ` +
-        `For lower cost on long loops, set models.tier.subagent to an Anthropic model.\n`,
+        `The loop will not reuse provider-side prompt caches; prefer a subscription-backed or self-hosted model.\n`,
       );
     }
   }

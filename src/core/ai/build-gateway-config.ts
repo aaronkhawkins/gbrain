@@ -38,12 +38,6 @@ export function buildGatewayConfig(c: GBrainConfig): AIGatewayConfig {
   // config.json) must reach the openrouter recipe's OPENROUTER_API_KEY.
   // process.env still wins via the later spread.
   if (c.openrouter_api_key) envFromConfig.OPENROUTER_API_KEY = c.openrouter_api_key;
-  if (c.opencode_server_url) envFromConfig.GBRAIN_OPENCODE_SERVER_URL = c.opencode_server_url;
-  if (c.opencode_server_username) envFromConfig.GBRAIN_OPENCODE_SERVER_USERNAME = c.opencode_server_username;
-  if (c.opencode_server_password) envFromConfig.GBRAIN_OPENCODE_SERVER_PASSWORD = c.opencode_server_password;
-  if (c.opencode_server_provider_id) envFromConfig.GBRAIN_OPENCODE_PROVIDER_ID = c.opencode_server_provider_id;
-  if (c.opencode_server_agent) envFromConfig.GBRAIN_OPENCODE_AGENT = c.opencode_server_agent;
-
   // v0.32 codex finding #4+#5 fix: thread local-server _BASE_URL env vars
   // into base_urls so the gateway hits the user's configured port. Without
   // this, `LLAMA_SERVER_BASE_URL=http://localhost:9000` would let the probe

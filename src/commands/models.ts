@@ -528,9 +528,9 @@ async function probeModel(modelStr: string, touchpoint: 'chat' | 'expansion'): P
   const start = Date.now();
   try {
     const { chat } = await import('../core/ai/gateway.ts');
-    // OpenCode includes local session setup plus subscription-backed inference;
+    // Codex includes local app-server setup plus subscription-backed inference;
     // five seconds is routinely too short even when both sides are healthy.
-    const timeoutMs = modelStr.startsWith('opencode-server:') ? 20_000 : 5_000;
+    const timeoutMs = modelStr.startsWith('codex-app-server:') ? 20_000 : 5_000;
     const controller = new AbortController();
     const timeoutId = setTimeout(
       () => controller.abort(new Error(`probe timed out after ${timeoutMs}ms`)),
@@ -593,7 +593,7 @@ Configure routing:
   gbrain config set models.tier.<tier> <model>       # per-tier (utility/reasoning/deep/subagent)
   gbrain config set models.aliases.<name> <model>    # custom alias
 
-Tiers: utility (haiku-class) | reasoning (sonnet) | deep (opus) | subagent (Anthropic-only)
+Tiers: utility | reasoning | deep | subagent (provider-neutral tool loop)
 `);
     return;
   }

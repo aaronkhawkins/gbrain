@@ -25,7 +25,7 @@ cannot enter the run.
 1. Leave the existing combined BirdClaw job running while preparing the pilot. Do not let the custom and native synthesizers own the same concept namespace.
 2. Create an isolated brain/database and import a small, representative set of marked bookmarks into a dedicated source.
 3. Activate `gbrain-creator` or `gbrain-everything`; other packs intentionally skip these phases.
-4. Preflight the configured AI gateway and confirm the model route is `opencode-server:*`. Native phases use the gateway; no direct Anthropic or OpenCode HTTP call belongs in the collector.
+4. Preflight the configured AI gateway and confirm the model route is `codex-app-server:*`. Native phases use the gateway; no direct model call belongs in the collector.
 5. Run `gbrain dream --phase extract_atoms --drain --window 300` until its backlog reaches zero. Inspect atoms for normalized `concepts`, `source_slug`, and `source_hash`.
 6. Run `gbrain dream --phase synthesize_concepts`. Inspect concept pages for distinct-source support, bounded provenance, and readable bookmark links.
 7. Run the normal dream again. Graph and fact phases precede atom/concept generation in a cycle, so this second pass is required to project links and facts from newly generated pages. Embedding runs after synthesis in the generating cycle.
@@ -38,7 +38,7 @@ cannot enter the run.
 - `extract_atoms` receipts advance through the backlog with no unrelated media admitted.
 - Native concepts have useful summaries and at least two distinct original sources.
 - Search returns a topic and its supporting research links resolve to imported bookmarks.
-- Provider diagnostics identify the OpenCode gateway route; provider failures appear as native warnings or deterministic fallback, never as a legacy processor invocation.
+- Provider diagnostics identify the Codex app-server gateway route; provider failures appear as native warnings or deterministic fallback, never as a legacy processor invocation.
 - A second dream pass creates the expected graph/fact projections.
 
 ## Read-only operations

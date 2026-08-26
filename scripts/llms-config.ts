@@ -191,10 +191,10 @@ export const SECTIONS: DocSection[] = [
         includeInFull: false,
       },
       {
-        title: "docs/ai-providers/opencode-server.md",
+        title: "docs/ai-providers/codex-app-server.md",
         description:
-          "OpenAI subscription transport through a loopback OpenCode server for interactive reasoning and GBrain-owned tool execution.",
-        path: "docs/ai-providers/opencode-server.md",
+          "ChatGPT subscription transport through local Codex app-server for reasoning and GBrain-owned tool execution.",
+        path: "docs/ai-providers/codex-app-server.md",
         includeInFull: false,
       },
     ],

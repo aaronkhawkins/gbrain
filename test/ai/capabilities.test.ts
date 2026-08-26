@@ -14,6 +14,7 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     const caps = getProviderCapabilities('openai:gpt-5.2');
     expect(caps.supportsToolCalling).toBe(true);
     expect(caps.supportsPromptCaching).toBe(false); // OpenAI implicit caching doesn't get marked
+    expect(caps.hasMeteredTokenCost).toBe(true);
     expect(caps.maxContext).toBe(200000);
   });
 
@@ -56,6 +57,13 @@ describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
 
   it('returns degraded:no_caching for Google Gemini', () => {
     expect(classifyCapabilities('google:gemini-1.5-pro')).toBe('degraded:no_caching');
+  });
+
+  it('does not emit a cost degradation for zero-metered Codex subscription access', () => {
+    const caps = getProviderCapabilities('codex-app-server:gpt-5.6-sol');
+    expect(caps.supportsPromptCaching).toBe(false);
+    expect(caps.hasMeteredTokenCost).toBe(false);
+    expect(classifyCapabilities('codex-app-server:gpt-5.6-sol')).toBe('ok');
   });
 
   it('returns unknown for unrecognized providers', () => {

@@ -9,8 +9,6 @@ export const EXTRACTABLE_PAGE_TYPES = [
   'meeting', 'source', 'article', 'video', 'book', 'original', 'media',
 ] as const;
 
-export type ExtractionResponsePolicy = 'json' | 'labeled';
-
 export interface ExtractionCandidate {
   type: string;
   frontmatter?: Record<string, unknown> | null;
@@ -65,11 +63,4 @@ export function extractionAdmissionSql(alias = 'p'): string {
       )
     )
   )`;
-}
-
-/** Labeled output is a narrow OpenCode compatibility rule for marked research. */
-export function extractionResponsePolicy(researchPolicy: string | undefined, model: string): ExtractionResponsePolicy {
-  return researchPolicy === BIRDCLAW_RESEARCH_POLICY && model.startsWith('opencode-server:')
-    ? 'labeled'
-    : 'json';
 }

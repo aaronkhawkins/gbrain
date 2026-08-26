@@ -55,7 +55,7 @@ import { AIConfigError, AITransientError, normalizeAIError } from './errors.ts';
 import { runGuardrails, hasGuardrails, type GuardrailHook } from '../guardrails.ts';
 import { loadConfig } from '../config.ts';
 import { buildGatewayConfig } from './build-gateway-config.ts';
-import { OpenCodeServerLanguageModel } from './providers/opencode-server-language-model.ts';
+import { CodexAppServerLanguageModel } from './providers/codex-app-server-language-model.ts';
 
 // ---- Gateway-wide AI-HTTP timeout (v0.42.20.0, #1762/#1775) ----
 //
@@ -110,8 +110,8 @@ const MAX_CHARS = 8000;
 // don't transitively load every provider SDK just to read the defaults.
 export { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './defaults.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './defaults.ts';
-const DEFAULT_EXPANSION_MODEL = 'anthropic:claude-haiku-4-5-20251001';
-const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
+const DEFAULT_EXPANSION_MODEL = 'codex-app-server:gpt-5.6-sol';
+const DEFAULT_CHAT_MODEL = 'codex-app-server:gpt-5.6-sol';
 // v0.35.0.0+: reranker default. Used only when search.reranker.enabled is set
 // AND no explicit reranker_model is configured. Mode bundles' per-mode
 // `reranker_model` default to this same value but can be overridden.
@@ -2288,14 +2288,8 @@ function instantiateExpansion(recipe: Recipe, modelId: string, cfg: AIGatewayCon
       const baseURL = resolveNativeBaseUrl('anthropic', cfg);
       return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) }).languageModel(modelId);
     }
-    case 'opencode-server':
-      return new OpenCodeServerLanguageModel(modelId, {
-        baseUrl: cfg.env.GBRAIN_OPENCODE_SERVER_URL,
-        username: cfg.env.GBRAIN_OPENCODE_SERVER_USERNAME,
-        password: cfg.env.GBRAIN_OPENCODE_SERVER_PASSWORD,
-        providerId: cfg.env.GBRAIN_OPENCODE_PROVIDER_ID,
-        agent: cfg.env.GBRAIN_OPENCODE_AGENT,
-      });
+    case 'codex-app-server':
+      return new CodexAppServerLanguageModel(modelId);
     case 'openai-compatible': {
       // D12=A: unified auth via Recipe.resolveAuth (or default).
       const auth = applyResolveAuth(recipe, cfg, 'expansion');
@@ -2814,14 +2808,8 @@ function instantiateChat(recipe: Recipe, modelId: string, cfg: AIGatewayConfig):
       const baseURL = resolveNativeBaseUrl('anthropic', cfg);
       return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) }).languageModel(modelId);
     }
-    case 'opencode-server':
-      return new OpenCodeServerLanguageModel(modelId, {
-        baseUrl: cfg.env.GBRAIN_OPENCODE_SERVER_URL,
-        username: cfg.env.GBRAIN_OPENCODE_SERVER_USERNAME,
-        password: cfg.env.GBRAIN_OPENCODE_SERVER_PASSWORD,
-        providerId: cfg.env.GBRAIN_OPENCODE_PROVIDER_ID,
-        agent: cfg.env.GBRAIN_OPENCODE_AGENT,
-      });
+    case 'codex-app-server':
+      return new CodexAppServerLanguageModel(modelId);
     case 'openai-compatible': {
       // D12=A: unified auth via Recipe.resolveAuth (or default).
       const auth = applyResolveAuth(recipe, cfg, 'chat');
