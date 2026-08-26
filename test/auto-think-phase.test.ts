@@ -133,23 +133,30 @@ describe('runPhaseAutoThink', () => {
   });
 
   test('budget exhausted denies further submits, returns partial', async () => {
-    await engine.setConfig('dream.auto_think.enabled', 'true');
-    await engine.setConfig('dream.auto_think.questions', JSON.stringify(['Q1', 'Q2', 'Q3']));
-    await engine.setConfig('dream.auto_think.max_per_cycle', '3');
-    await engine.setConfig('dream.auto_think.budget', '0.001');  // tiny cap forces budget_exhausted on first submit
-    await engine.setConfig('dream.auto_think.cooldown_days', '0');
-    await engine.setConfig('dream.auto_think.last_completion_ts', '');
-    // Ensure a clean meter state (no warn-once leftover)
-    _resetBudgetMeterWarningsForTest();
-    const r = await runPhaseAutoThink(engine, {
-      dryRun: false,
-      client: makeStubClient('test'),
-      auditPath: join(tmpDir, 'b4.jsonl'),
-    });
-    // First submit denied → no syntheses → status 'partial' if any attempts, else 'skipped'.
-    // Our impl returns 'partial' when results.length > 0 and anyComplete=false.
-    expect(['partial', 'skipped']).toContain(r.status);
-    await engine.setConfig('dream.auto_think.enabled', 'false');
+    // The default Codex route is subscription-backed and therefore has no
+    // metered API cost. Pin a metered model for this budget-gate test.
+    await engine.setConfig('models.auto_think', 'anthropic:claude-sonnet-4-6');
+    try {
+      await engine.setConfig('dream.auto_think.enabled', 'true');
+      await engine.setConfig('dream.auto_think.questions', JSON.stringify(['Q1', 'Q2', 'Q3']));
+      await engine.setConfig('dream.auto_think.max_per_cycle', '3');
+      await engine.setConfig('dream.auto_think.budget', '0.001');  // tiny cap forces budget_exhausted on first submit
+      await engine.setConfig('dream.auto_think.cooldown_days', '0');
+      await engine.setConfig('dream.auto_think.last_completion_ts', '');
+      // Ensure a clean meter state (no warn-once leftover)
+      _resetBudgetMeterWarningsForTest();
+      const r = await runPhaseAutoThink(engine, {
+        dryRun: false,
+        client: makeStubClient('test'),
+        auditPath: join(tmpDir, 'b4.jsonl'),
+      });
+      // First submit denied → no syntheses → status 'partial' if any attempts, else 'skipped'.
+      // Our impl returns 'partial' when results.length > 0 and anyComplete=false.
+      expect(['partial', 'skipped']).toContain(r.status);
+    } finally {
+      await engine.setConfig('dream.auto_think.enabled', 'false');
+      await engine.unsetConfig('models.auto_think');
+    }
   });
 });
 

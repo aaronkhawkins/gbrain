@@ -211,10 +211,15 @@ describe('runThink (with stub client)', () => {
     // Hermetic: neutralize BOTH the env var AND ~/.gbrain config key, else a
     // developer/CI machine with a configured key fires a real LLM call and this
     // assertion flips to LLM_OUTPUT_NOT_JSON.
-    const result = await withoutAnthropicKey(() => runThink(engine, { question: 'no key test' }));
-    expect(result.warnings).toContain('NO_ANTHROPIC_API_KEY');
-    expect(result.answer).toContain('no LLM available');
-    expect(result.rounds).toBe(0);
+    await engine.setConfig('models.think', 'anthropic:claude-sonnet-4-6');
+    try {
+      const result = await withoutAnthropicKey(() => runThink(engine, { question: 'no key test' }));
+      expect(result.warnings).toContain('NO_ANTHROPIC_API_KEY');
+      expect(result.answer).toContain('no LLM available');
+      expect(result.rounds).toBe(0);
+    } finally {
+      await engine.unsetConfig('models.think');
+    }
   });
 
   test('labels an unusable CONFIGURED model honestly (MODEL_NOT_USABLE, not NO_ANTHROPIC_API_KEY)', async () => {
