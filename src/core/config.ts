@@ -56,16 +56,6 @@ export interface GBrainConfig {
    * reads OPENROUTER_API_KEY.
    */
   openrouter_api_key?: string;
-  /**
-   * Persistent local OpenCode server used for subscription-backed chat.
-   * These are private file-plane settings; they are intentionally not listed
-   * in KNOWN_CONFIG_KEYS because database config must not store credentials.
-   */
-  opencode_server_url?: string;
-  opencode_server_username?: string;
-  opencode_server_password?: string;
-  opencode_server_provider_id?: string;
-  opencode_server_agent?: string;
   /** AI gateway config (v0.14+). v0.36+ default: "zeroentropyai:zembed-1" / 1280 / "anthropic:claude-haiku-4-5-20251001". */
   embedding_model?: string;
   embedding_dimensions?: number;

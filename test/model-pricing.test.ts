@@ -102,7 +102,7 @@ describe('estimateChatCostUsd — task budget accounting', () => {
   });
 
   test('treats unpriced subscription transports as zero metered API spend', () => {
-    expect(estimateChatCostUsd('opencode-server:gpt-5.5', 1_000_000, 1_000_000)).toBe(0);
+    expect(estimateChatCostUsd('codex-app-server:gpt-5.6-sol', 1_000_000, 1_000_000)).toBe(0);
   });
 
   test('distinguishes unknown provider pricing from explicitly free transport', () => {

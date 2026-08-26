@@ -9,9 +9,8 @@
  * Anthropic call:
  *   - disabled: dream.patterns.enabled=false → skipped
  *   - insufficient_evidence: <min_evidence reflections → skipped
- *   - no_provider: enough reflections, no reachable provider for the
- *     resolved patterns model (default: Anthropic with no key in env OR
- *     config) → skipped
+ *   - no_provider: enough reflections, an explicitly configured provider
+ *     with no credentials → skipped
  *   - dry-run: passes through with reflections_considered + zero pages
  *
  * The Sonnet detection path is structurally covered in
@@ -173,15 +172,14 @@ describe('E2E patterns — insufficient_evidence', () => {
 });
 
 describe('E2E patterns — no reachable provider', () => {
-  test('enough reflections, no Anthropic key in env OR config → skipped no_provider', async () => {
+  test('enough reflections, explicitly configured Anthropic with no key → skipped no_provider', async () => {
     const rig = await setupRig();
     try {
       await seedReflections(rig.engine, 5); // above default min_evidence (3)
-      // Default patterns model resolves to Anthropic; with no key reachable
-      // from EITHER source (env + config file — the shared helper neuters
-      // both) the gateway probe reports the provider unavailable. A
-      // non-Anthropic stack (litellm, deepseek, ...) passes this gate and
-      // dispatches through the gateway instead (PR #2279).
+      // Keep this test about the no-provider gate, independent of the shipped
+      // default (which is subscription-backed Codex). The shared helper
+      // removes Anthropic credentials from both env and config.
+      await rig.engine.setConfig('models.dream.patterns', 'anthropic:claude-sonnet-4-6');
       await withoutAnthropicKey(async () => {
         const result = await runPhasePatterns(rig.engine, {
           brainDir: rig.brainDir,

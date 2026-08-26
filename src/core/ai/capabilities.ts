@@ -35,6 +35,9 @@ export interface ProviderCapabilities {
    */
   supportsPromptCaching: boolean;
 
+  /** Whether repeated prompt tokens can increase the operator's API bill. */
+  hasMeteredTokenCost: boolean;
+
   /**
    * Provider can return multiple `tool_use` blocks in a single assistant turn
    * and accepts a single follow-up `user` message with matching `tool_result`
@@ -91,6 +94,9 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
   return {
     supportsToolCalling: chat.supports_tools === true,
     supportsPromptCaching: chat.supports_prompt_cache === true,
+    hasMeteredTokenCost:
+      (chat.cost_per_1m_input_usd ?? 1) > 0 ||
+      (chat.cost_per_1m_output_usd ?? 1) > 0,
     // No recipe exposes parallel-tools-specifically yet; gate on supports_tools.
     // Subsequent waves can split this into its own recipe field if a provider
     // ever supports tools without parallel dispatch.
@@ -114,9 +120,9 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
  *
  *   - `'ok'` — provider has tool-calling, prompt caching, and parallel tools.
  *     Loop runs at full speed.
- *   - `'degraded:no_caching'` — provider supports tools but lacks prompt
- *     caching. Loop runs but per-turn cost is higher. Warn once per
- *     (source, model) pair.
+ *   - `'degraded:no_caching'` — a metered provider supports tools but lacks
+ *     prompt caching. Loop runs but per-turn cost is higher. Zero-metered
+ *     local and subscription routes do not get a billing warning.
  *   - `'degraded:no_parallel'` — provider supports tools and caching but the
  *     loop will dispatch serially. Info-log; no warn.
  *   - `'unusable:no_tools'` — provider lacks tool calling entirely. Refuse at
@@ -142,7 +148,7 @@ export function classifyCapabilities(modelString: string): CapabilityVerdict {
     return 'unknown';
   }
   if (!caps.supportsToolCalling) return 'unusable:no_tools';
-  if (!caps.supportsPromptCaching) return 'degraded:no_caching';
+  if (!caps.supportsPromptCaching && caps.hasMeteredTokenCost) return 'degraded:no_caching';
   if (!caps.supportsParallelTools) return 'degraded:no_parallel';
   return 'ok';
 }

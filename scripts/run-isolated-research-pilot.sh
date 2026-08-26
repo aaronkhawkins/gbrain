@@ -10,7 +10,7 @@ Usage: scripts/run-isolated-research-pilot.sh \
   --work-root /private/owner-only/pilot \
   --scorecard-input scorecard.json \
   --evaluation-input evaluation.json \
-  [--gbrain-bin /path/to/gbrain] [--chat-model opencode-server:gpt-5.5] [--synthetic]
+  [--gbrain-bin /path/to/gbrain] [--chat-model codex-app-server:gpt-5.6-sol] [--synthetic]
 
 Replays an already-collected immutable cohort into a dedicated PGLite brain.
 It never contacts X and never reads the default GBrain home or DATABASE_URL.
@@ -22,7 +22,7 @@ work_root=
 scorecard_input=
 evaluation_input=
 gbrain_bin="${GBRAIN_PILOT_BIN:-gbrain}"
-chat_model="${GBRAIN_PILOT_CHAT_MODEL:-opencode-server:gpt-5.5}"
+chat_model="${GBRAIN_PILOT_CHAT_MODEL:-codex-app-server:gpt-5.6-sol}"
 synthetic=false
 
 while (($#)); do

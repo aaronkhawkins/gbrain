@@ -227,11 +227,14 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       }
     }
     const model = data.model
-      ?? await resolveModel(engine, {
+      // An injected MessagesClient is the explicit legacy-path test seam.
+      // Production construction has no injected client and resolves the
+      // subscription-backed/provider-neutral tier normally.
+      ?? (deps.client || deps.makeAnthropic ? 'anthropic:claude-sonnet-4-6' : await resolveModel(engine, {
         tier: 'subagent',
         configKey: 'models.subagent',
         fallback: TIER_DEFAULTS.subagent,
-      });
+      }));
     const maxTurns = data.max_turns ?? DEFAULT_MAX_TURNS;
     // #2778: per-turn output cap — data.max_tokens → config → 8192 default.
     const maxOutputTokens = resolveMaxOutputTokens(
@@ -249,8 +252,12 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // provider in src/core/ai/recipes/). When OFF, route through the legacy
     // Anthropic-direct path AND refuse non-Anthropic models loudly.
     const useGatewayLoopRaw = await engine.getConfig('agent.use_gateway_loop').catch(() => null);
-    const useGatewayLoop = typeof useGatewayLoopRaw === 'string' &&
+    const gatewayLoopExplicitlyEnabled = typeof useGatewayLoopRaw === 'string' &&
       (useGatewayLoopRaw === 'true' || useGatewayLoopRaw === '1');
+    const gatewayLoopExplicitlyDisabled = typeof useGatewayLoopRaw === 'string' &&
+      (useGatewayLoopRaw === 'false' || useGatewayLoopRaw === '0');
+    const useGatewayLoop = gatewayLoopExplicitlyEnabled ||
+      (!gatewayLoopExplicitlyDisabled && !isAnthropicProvider(model));
     if (!useGatewayLoop && !isAnthropicProvider(model)) {
       throw new Error(
         `subagent job: resolved model "${model}" is non-Anthropic but agent.use_gateway_loop is not enabled. ` +
