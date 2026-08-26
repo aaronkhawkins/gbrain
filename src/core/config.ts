@@ -56,7 +56,7 @@ export interface GBrainConfig {
    * reads OPENROUTER_API_KEY.
    */
   openrouter_api_key?: string;
-  /** AI gateway config (v0.14+). v0.36+ default: "zeroentropyai:zembed-1" / 1280 / "anthropic:claude-haiku-4-5-20251001". */
+  /** AI gateway config (v0.14+). Defaults: ZE 1280d embeddings and subscription-backed Codex expansion. */
   embedding_model?: string;
   embedding_dimensions?: number;
   /**
@@ -71,7 +71,7 @@ export interface GBrainConfig {
   expansion_model?: string;
   /**
    * Default chat model for `gateway.chat()` callers (v0.27+).
-   * Default: "anthropic:claude-sonnet-4-6" (dateless per Anthropic's v0.31.12+ model-ID format).
+   * Default: "codex-app-server:gpt-5.6-sol" (uses the installed Codex subscription).
    */
   chat_model?: string;
   /**

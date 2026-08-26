@@ -248,6 +248,19 @@ describe('BudgetTracker.reserve', () => {
     expect((caught as BudgetExhausted).reason).toBe('no_pricing');
   });
 
+  test('subscription-backed Codex chat prices at $0 under a cost cap', () => {
+    const t = new BudgetTracker({ maxCostUsd: 0.0001, label: 'test', auditPath });
+    expect(() =>
+      t.reserve({
+        modelId: 'codex-app-server:gpt-5.6-sol',
+        estimatedInputTokens: 50_000,
+        maxOutputTokens: 32_000,
+        kind: 'chat',
+      }),
+    ).not.toThrow();
+    expect(t.totalSpent).toBe(0);
+  });
+
   test('v0.40.x: local embed providers price at $0 (no TX2 throw under --max-cost)', () => {
     // FREE_LOCAL_EMBED_PROVIDERS run on local inference
     // (electricity, not tokens). Pre-fix a --max-cost embed/reindex job

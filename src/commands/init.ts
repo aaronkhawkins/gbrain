@@ -495,8 +495,7 @@ async function resolveExpansionByEnv(out: ResolvedAIOptions): Promise<void> {
       console.error(`Detected ${r.auth_env?.required?.[0] ?? r.id} env var. Using ${out.expansion_model} for expansion.`);
     }
   }
-  // 0 or >1 → silent: gateway default (`anthropic:claude-haiku-4-5-…`) wins
-  // and falls back gracefully at call time when key isn't set.
+  // 0 or >1 → silent: the subscription-backed Codex gateway default wins.
 }
 
 async function resolveChatByEnv(out: ResolvedAIOptions): Promise<void> {
@@ -509,11 +508,7 @@ async function resolveChatByEnv(out: ResolvedAIOptions): Promise<void> {
       console.error(`Detected ${r.auth_env?.required?.[0] ?? r.id} env var. Using ${out.chat_model} for chat.`);
     }
   }
-  // 0 or >1 → silent: gateway default (`anthropic:claude-sonnet-4-6`) wins.
-  // The subagent enforcement at minions/queue.ts already routes subagent jobs
-  // to Anthropic regardless of the chat_model setting (D7 caveat fires from
-  // T6's initPGLite post-config branch when chat_model is non-Anthropic and
-  // ANTHROPIC_API_KEY is missing).
+  // 0 or >1 → silent: the subscription-backed Codex gateway default wins.
 }
 
 /**
@@ -1492,7 +1487,7 @@ OPTIONS
   --embedding-dimensions <N>
                         Embedding dimensions (must match the model)
   --expansion-model <PROVIDER:MODEL>
-                        Model for query expansion (default: anthropic:claude-haiku)
+                        Model for query expansion (default: codex-app-server:gpt-5.6-sol)
   --chat-model <PROVIDER:MODEL>
                         Default subagent driver (v0.27+)
   --no-embedding        Defer embedding setup (skips the embedding-key check)

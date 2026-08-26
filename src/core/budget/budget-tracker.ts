@@ -157,6 +157,15 @@ const FREE_LOCAL_EMBED_PROVIDERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Chat providers whose calls are covered by an existing local/subscription
+ * entitlement instead of metered API billing. Cost caps should not reject
+ * these calls as "unpriced": their incremental API cost is zero.
+ */
+const FREE_ENTITLED_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
+  'codex-app-server',
+]);
+
+/**
  * Look up `modelId` in the chat or embedding pricing maps. Returns a
  * per-1M-token price tuple, or null when unknown.
  *
@@ -194,6 +203,9 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
   if (modelTail) {
     const tailHit = ANTHROPIC_PRICING[modelTail];
     if (tailHit) return tailHit;
+  }
+  if (kind === 'chat' && providerId && FREE_ENTITLED_CHAT_PROVIDERS.has(providerId)) {
+    return { input: 0, output: 0 };
   }
   // v0.40.6.1: zero-price local-inference rerank providers so the budget
   // tracker's TX2 hard-fail doesn't trip on `llama-server-reranker:<model>`

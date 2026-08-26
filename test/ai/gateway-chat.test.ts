@@ -135,9 +135,9 @@ describe('chat touchpoint — model resolver + aliases (Codex F-OV-5)', () => {
 describe('chat touchpoint — gateway config plumbing', () => {
   beforeEach(() => resetGateway());
 
-  test('default chat_model is anthropic:claude-sonnet-4-6', () => {
+  test('default chat_model is subscription-backed Codex', () => {
     configureGateway({ env: {} });
-    expect(getChatModel()).toBe('anthropic:claude-sonnet-4-6');
+    expect(getChatModel()).toBe('codex-app-server:gpt-5.6-sol');
   });
 
   test('explicit chat_model overrides the default', () => {
@@ -167,8 +167,8 @@ describe('chat touchpoint — gateway config plumbing', () => {
     expect(getChatFallbackChain()).toEqual([]);
   });
 
-  test('isAvailable("chat") returns true when default Anthropic + key present', () => {
-    configureGateway({ env: { ANTHROPIC_API_KEY: 'fake' } });
+  test('isAvailable("chat") returns true for the default Codex route', () => {
+    configureGateway({ env: {} });
     expect(isAvailable('chat')).toBe(true);
   });
 

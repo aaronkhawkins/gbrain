@@ -209,10 +209,11 @@ describe('think op — read-only on remote callers (Lane D landed)', () => {
     // Hermetic no-key: neutralize BOTH env var AND ~/.gbrain config key, else a
     // configured machine fires a real LLM call and the warning flips to
     // LLM_OUTPUT_NOT_JSON. runThink then returns gather-only + NO_ANTHROPIC_API_KEY.
+    await engine.setConfig('models.think', 'anthropic:claude-sonnet-4-6');
     const result = await withoutAnthropicKey(() => dispatchToolCall(engine, 'think', { question: 'q', save: true, take: true }, {
       remote: true,
       takesHoldersAllowList: ['world', 'garry', 'brain'],
-    }));
+    })).finally(() => engine.unsetConfig('models.think'));
     const env = parseResult(result) as {
       remote_persisted_blocked: boolean;
       saved_slug: string | null;
@@ -226,9 +227,10 @@ describe('think op — read-only on remote callers (Lane D landed)', () => {
   });
 
   test('local-CLI think runs full pipeline (gather-only without API key)', async () => {
+    await engine.setConfig('models.think', 'anthropic:claude-sonnet-4-6');
     const result = await withoutAnthropicKey(() => dispatchToolCall(engine, 'think', { question: 'q', save: true }, {
       remote: false,
-    }));
+    })).finally(() => engine.unsetConfig('models.think'));
     const env = parseResult(result) as {
       warnings: string[];
       remote_persisted_blocked: boolean;
