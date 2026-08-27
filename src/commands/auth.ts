@@ -24,6 +24,8 @@ import { loadConfig, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { sqlQueryForEngine, executeRawJsonb, type SqlQuery } from '../core/sql-query.ts';
+import { assertValidSourceId } from '../core/source-id.ts';
+import { hasScope, parseScopeString } from '../core/scope.ts';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -301,6 +303,149 @@ async function test(url: string, token: string) {
   console.log(`\n🧠 Your brain is live! (${elapsed}s)`);
 }
 
+interface OAuthClientReadScope {
+  client_id: string;
+  client_name: string;
+  scope: string;
+  source_id: string | null;
+  federated_read: string[];
+  deleted_at: Date | string | null;
+}
+
+export type GrantReadOutcome =
+  | { kind: 'noop'; client: OAuthClientReadScope }
+  | { kind: 'updated'; client: OAuthClientReadScope };
+
+function normalizeOAuthClient(row: Record<string, unknown>): OAuthClientReadScope {
+  return {
+    client_id: String(row.client_id),
+    client_name: String(row.client_name),
+    scope: String(row.scope),
+    source_id: row.source_id == null ? null : String(row.source_id),
+    federated_read: Array.isArray(row.federated_read)
+      ? (row.federated_read as unknown[]).map(String)
+      : [],
+    deleted_at: row.deleted_at == null ? null : row.deleted_at as Date | string,
+  };
+}
+
+export function sanitizeForTerminal(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f-\x9f]/g, (character) =>
+    `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`,
+  );
+}
+
+async function resolveOAuthClient(sql: SqlQuery, nameOrId: string): Promise<OAuthClientReadScope> {
+  const byId = await sql`
+    SELECT client_id, client_name, scope, source_id, federated_read, deleted_at
+    FROM oauth_clients
+    WHERE client_id = ${nameOrId} AND deleted_at IS NULL
+  `;
+  if (byId.length === 1) return normalizeOAuthClient(byId[0]);
+
+  const byName = await sql`
+    SELECT client_id, client_name, scope, source_id, federated_read, deleted_at
+    FROM oauth_clients
+    WHERE client_name = ${nameOrId} AND deleted_at IS NULL
+  `;
+  if (byName.length === 0) {
+    throw new Error(`No active OAuth client found with name or id "${nameOrId}".`);
+  }
+  if (byName.length > 1) {
+    throw new Error(
+      `Multiple active OAuth clients named "${nameOrId}"; ` +
+      'run `gbrain auth list-clients` and pass the full client id.',
+    );
+  }
+  return normalizeOAuthClient(byName[0]);
+}
+
+/** Add one readable source to an OAuth client without changing its write source. */
+export async function grantReadCore(
+  sql: SqlQuery,
+  nameOrId: string,
+  sourceId: string,
+): Promise<GrantReadOutcome> {
+  assertValidSourceId(sourceId);
+  const sources = await sql`SELECT id FROM sources WHERE id = ${sourceId}`;
+  if (sources.length === 0) {
+    throw new Error(`Source "${sourceId}" does not exist.`);
+  }
+
+  const client = await resolveOAuthClient(sql, nameOrId);
+  if (!hasScope(parseScopeString(client.scope), 'read')) {
+    throw new Error(`OAuth client "${client.client_name}" does not have a read-capable scope.`);
+  }
+  if (client.federated_read.includes(sourceId)) return { kind: 'noop', client };
+
+  const rows = await sql`
+    UPDATE oauth_clients
+    SET federated_read = array_append(federated_read, ${sourceId})
+    WHERE client_id = ${client.client_id}
+      AND deleted_at IS NULL
+      AND NOT (${sourceId} = ANY(federated_read))
+    RETURNING client_id, client_name, scope, source_id, federated_read, deleted_at
+  `;
+  if (rows.length === 0) {
+    const current = await resolveOAuthClient(sql, client.client_id);
+    if (current.federated_read.includes(sourceId)) return { kind: 'noop', client: current };
+    throw new Error(`OAuth client "${client.client_name}" changed before the grant was applied.`);
+  }
+
+  return { kind: 'updated', client: normalizeOAuthClient(rows[0]) };
+}
+
+async function grantRead(nameOrId: string, sourceId: string): Promise<void> {
+  if (!nameOrId || !sourceId) {
+    console.error('Usage: auth grant-read <client-name-or-id> <source-id>');
+    process.exit(1);
+  }
+  try {
+    await withConfiguredSql(async (sql) => {
+      const result = await grantReadCore(sql, nameOrId, sourceId);
+      const action = result.kind === 'updated' ? 'Granted' : 'Already granted';
+      console.log(`${action}: "${sanitizeForTerminal(result.client.client_name)}" can read "${sourceId}".`);
+      console.log(`Federated reads: ${result.client.federated_read.map(sanitizeForTerminal).join(', ')}`);
+    });
+  } catch (e: any) {
+    console.error('Error:', e.message);
+    process.exit(1);
+  }
+}
+
+export async function listOAuthClientsCore(sql: SqlQuery): Promise<OAuthClientReadScope[]> {
+  const rows = await sql`
+    SELECT client_id, client_name, scope, source_id, federated_read, deleted_at
+    FROM oauth_clients
+    ORDER BY client_name, client_id
+  `;
+  return rows.map(normalizeOAuthClient);
+}
+
+async function listClients(json: boolean): Promise<void> {
+  await withConfiguredSql(async (sql) => {
+    const clients = await listOAuthClientsCore(sql);
+    if (json) {
+      console.log(JSON.stringify(clients.map(client => ({
+        ...client,
+        status: client.deleted_at == null ? 'active' : 'deleted',
+      })), null, 2));
+      return;
+    }
+    if (clients.length === 0) {
+      console.log('No OAuth clients found.');
+      return;
+    }
+    for (const client of clients) {
+      const status = client.deleted_at == null ? 'active' : 'deleted';
+      console.log(`${sanitizeForTerminal(client.client_name)} (${client.client_id}) [${status}]`);
+      console.log(`  scope: ${sanitizeForTerminal(client.scope)}`);
+      console.log(`  write source: ${client.source_id ? sanitizeForTerminal(client.source_id) : '(none)'}`);
+      console.log(`  federated reads: ${client.federated_read.map(sanitizeForTerminal).join(', ') || '(none)'}`);
+    }
+  });
+}
+
 async function revokeClient(clientId: string) {
   if (!clientId) {
     console.error('Usage: auth revoke-client <client_id>');
@@ -557,6 +702,8 @@ export async function runAuth(args: string[]): Promise<void> {
     }
     case 'register-client': await registerClient(rest[0], rest.slice(1)); return;
     case 'revoke-client': await revokeClient(rest[0]); return;
+    case 'list-clients': await listClients(rest.includes('--json')); return;
+    case 'grant-read': await grantRead(rest[0], rest[1]); return;
     case 'test': {
       const tokenIdx = rest.indexOf('--token');
       const url = rest.find(a => !a.startsWith('--') && a !== rest[tokenIdx + 1]);
@@ -594,6 +741,8 @@ Usage:
      --bound-max-concurrent <n>                            Bound submit_agent concurrency (default: 1)
      --budget-usd-per-day <usd>                            Bound submit_agent daily spend cap
   gbrain auth revoke-client <client_id>                   Hard-delete an OAuth 2.1 client (cascades to tokens + codes)
+  gbrain auth list-clients [--json]                       List OAuth client IDs and source scopes
+  gbrain auth grant-read <name|client_id> <source-id>     Add a readable source without changing the write source
   gbrain auth test <url> --token <token>                  Smoke-test a remote MCP server
 `);
   }
