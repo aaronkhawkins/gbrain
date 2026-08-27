@@ -2,6 +2,23 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.64.3] - 2026-08-26
+
+### Added
+
+- `gbrain auth grant-read <client-name-or-id> <source-id>` adds an existing
+  source to an OAuth client's readable sources without changing its write
+  source. Grants are atomic and idempotent; duplicate client names require an
+  exact client ID.
+
+## To take advantage of v0.42.64.3
+
+Run `gbrain upgrade`, then use `gbrain auth list-clients` to find the target
+client and `gbrain auth grant-read <client-id> <source-id>` to add its readable
+source. No migration or client reauthorization is required.
+
+No new schema migrations.
+
 ## [0.42.64.2] - 2026-08-09
 
 **Operational alerts now reflect work a source can actually perform.**
