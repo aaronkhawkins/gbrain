@@ -76,6 +76,9 @@ An unlinked mention is a broken brain. The graph is the intelligence.
 ## Citation Requirements (MANDATORY)
 
 Every fact written to a brain page must carry an inline `[Source: ...]` citation.
+Every citation must also be human-navigable when the source exposes a
+deterministic route. See `skills/conventions/quality.md`; an opaque object ID or
+hash alone proves identity but does not satisfy navigation.
 
 Three formats:
 - **Direct attribution:** `[Source: User, {context}, YYYY-MM-DD]`

@@ -103,4 +103,30 @@ describe("skills conformance", () => {
       }
     }
   });
+
+  test("citation guidance requires navigable provenance when available", () => {
+    const filingRules = readFileSync(
+      join(SKILLS_DIR, "_brain-filing-rules.md"),
+      "utf-8",
+    );
+    const citationFixer = readFileSync(
+      join(SKILLS_DIR, "citation-fixer", "SKILL.md"),
+      "utf-8",
+    );
+    const quality = readFileSync(
+      join(SKILLS_DIR, "conventions", "quality.md"),
+      "utf-8",
+    );
+    const skillpackHarvest = readFileSync(
+      join(SKILLS_DIR, "skillpack-harvest", "SKILL.md"),
+      "utf-8",
+    );
+
+    expect(quality).toContain("A citation has two responsibilities: **identity** and **navigation**");
+    expect(quality).toContain("navigation unavailable");
+    expect(filingRules).toContain("hash alone proves identity but does not satisfy navigation");
+    expect(citationFixer).toContain("Repair navigation only from deterministic metadata");
+    expect(citationFixer).toContain("do not invent a target");
+    expect(skillpackHarvest).toContain("without removing OpenClaw-native plugin fields");
+  });
 });
