@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.64.4] - 2026-09-04
+
+### Changed
+
+- Citations now preserve source identity while also providing a verified,
+  human-navigable route whenever the source system exposes one.
+- Citation repair reports unavailable navigation instead of inventing links,
+  and preserves OpenClaw-native plugin fields during skillpack harvesting.
+
+No new schema migrations.
+
 ## [0.42.64.3] - 2026-08-26
 
 ### Added

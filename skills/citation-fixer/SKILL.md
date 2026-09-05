@@ -35,6 +35,10 @@ This skill guarantees:
 - Every brain page is scanned for citation compliance.
 - Missing citations are flagged with specific location.
 - Malformed citations are fixed to match the standard format.
+- Identity-only citations are flagged when a deterministic navigation target
+  exists but is absent.
+- Vault-root Markdown links that are accidentally directory-relative are
+  converted to resolvable wikilinks only after the target is verified.
 - **(v0.25.1)** Tweet / post references without URLs are resolved via
   X API and patched with deterministic `https://x.com/<handle>/status/<id>`
   links.
@@ -49,11 +53,17 @@ This skill guarantees:
    - Citations missing date
    - Citations missing source type
    - Citations with wrong format
+   - DocBank, MsgVault, media, repository, or other source-system citations
+     that name an object but provide no human navigation target
+   - Markdown links whose target exists only when resolved from the vault root
    - **(v0.25.1)** Tweet references without `x.com` URLs
 3. **Fix format issues.** Rewrite malformed citations to match
    `conventions/quality.md`.
-4. **(v0.25.1) Resolve tweet references** via the X API integration.
-5. **Report results.** Count: pages scanned, citations found, issues
+4. **Repair navigation only from deterministic metadata.** Prefer verified
+   vault wikilinks, canonical URLs, or integration-provided action URIs. If the
+   source cannot be resolved, report it; do not invent a target.
+5. **(v0.25.1) Resolve tweet references** via the X API integration.
+6. **Report results.** Count: pages scanned, citations found, issues
    fixed, tweets resolved, remaining gaps.
 
 ## Tweet resolution pipeline (v0.25.1 extension)
@@ -176,6 +186,8 @@ Remaining gaps:       N (pages with uncitable facts)
   (see `conventions/test-before-bulk.md`).
 - ❌ Composing tweet URLs by guessing the tweet id. Always go through
   the X API; deterministic links only.
+- ❌ Treating an opaque source ID or a shell command as adequate human
+  navigation when a safe action link can be generated.
 
 ## Integration
 
