@@ -18,7 +18,8 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { setupDB, teardownDB, hasDatabase } from './helpers.ts';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
-import { discoverExtractablePages } from '../../src/core/cycle/extract-atoms.ts';
+import { discoverExtractablePages, countExtractAtomsBacklog } from '../../src/core/cycle/extract-atoms.ts';
+import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
 
 const skip = !hasDatabase();
 const describeIfDB = skip ? describe.skip : describe;
@@ -39,7 +40,8 @@ beforeEach(async () => {
   if (skip) return;
   // Clean every page type seeded by this file. `note` is pack-extractable, so
   // leaving it behind contaminates every later discovery assertion.
-  await engine.executeRaw(`DELETE FROM pages WHERE source_id IN ('default', 'dept-x') AND (type = 'atom' OR type IN ('meeting', 'source', 'article', 'video', 'book', 'original', 'note', 'concept'))`);
+  await engine.executeRaw(`DELETE FROM pages WHERE source_id IN ('default', 'dept-x') AND (type = 'atom' OR type IN ('meeting', 'source', 'article', 'video', 'book', 'original', 'note', 'concept', 'media'))`);
+  await engine.unsetConfig('research.birdclaw.enabled');
   await engine.executeRaw(`DELETE FROM sources WHERE id = 'dept-x'`);
 });
 
@@ -72,6 +74,27 @@ async function seedPage(opts: {
 }
 
 describeIfDB('v0.41.2.1 D10 — discoverExtractablePages on real Postgres', () => {
+  test('BirdClaw opt-out preserves ordinary discovery and synthesis in the same source', async () => {
+    await seedPage({ slug: 'media/bookmark', type: 'media', frontmatter: {
+      intake_adapter: 'birdclaw-bookmarks-to-brain', content_kind: 'x-bookmark', concept_synthesis_candidate: true,
+    } });
+    await seedPage({ slug: 'article/ordinary', type: 'article' });
+    for (const n of [1, 2]) {
+      await seedPage({ slug: `atoms/bookmark-${n}`, type: 'atom', frontmatter: {
+        research_policy: 'birdclaw-research-v1', source_slug: `media/bookmark-${n}`, concepts: ['bookmark-theme'],
+      } });
+      await seedPage({ slug: `atoms/ordinary-${n}`, type: 'atom', frontmatter: { concepts: ['ordinary-theme'] } });
+    }
+    expect((await discoverExtractablePages(engine, 'default')).length).toBe(2);
+    await engine.setConfig('research.birdclaw.enabled', 'false');
+    expect((await discoverExtractablePages(engine, 'default')).map(row => row.slug)).toEqual(['article/ordinary']);
+    expect(await countExtractAtomsBacklog(engine, 'default')).toBe(1);
+    expect(await countExtractAtomsBacklog(engine)).toBe(1);
+    const synthesis = await runPhaseSynthesizeConcepts(engine, { dryRun: true });
+    expect(synthesis.details?.atoms_seen).toBe(2);
+    expect(synthesis.details?.groups_found).toBe(1);
+  });
+
   test('returns extractable rows when seeded', async () => {
     await seedPage({ slug: 'meeting/a', type: 'meeting', content_hash: 'hash-A-1234567890abc' });
     await seedPage({ slug: 'source/b', type: 'source', content_hash: 'hash-B-1234567890abc' });

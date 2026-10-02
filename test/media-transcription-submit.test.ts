@@ -15,6 +15,7 @@ import type { BrainEngine } from '../src/core/engine.ts';
 
 const SHA_A = 'a'.repeat(64);
 const activeEngine = {
+  getConfig: async () => null,
   executeRaw: async () => [{
     id: 'research',
     name: 'Research',

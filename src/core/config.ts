@@ -944,6 +944,8 @@ export async function loadConfigWithEngine(
  *      without `--force`.
  */
 export const KNOWN_CONFIG_KEYS: readonly string[] = [
+  // Brain-local opt-out for legacy BirdClaw extraction, synthesis and media jobs.
+  'research.birdclaw.enabled',
   // File-plane (GBrainConfig static fields)
   'engine',
   'database_url',

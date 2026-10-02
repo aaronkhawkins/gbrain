@@ -20,13 +20,20 @@ export interface ExtractionAdmission {
   repairClass?: 'birdclaw-non-bookmark';
 }
 
+export const BIRDCLAW_RESEARCH_ENABLED_KEY = 'research.birdclaw.enabled';
+
+/** Read the brain-local opt-out in the same query as candidate discovery. */
+export function birdclawResearchEnabledSql(): string {
+  return `lower(trim(COALESCE((SELECT value FROM config WHERE key = '${BIRDCLAW_RESEARCH_ENABLED_KEY}'), 'true'))) <> 'false'`;
+}
+
 /**
  * The one admission policy shared by discovery, backlog and status callers.
  * Ordinary upstream page types retain their existing eligibility. BirdClaw
  * owns only explicitly marked X-bookmark media; its digests/source pages are
  * a repair class, never extraction input.
  */
-export function classifyExtractionCandidate(candidate: ExtractionCandidate): ExtractionAdmission {
+export function classifyExtractionCandidate(candidate: ExtractionCandidate, birdclawEnabled = true): ExtractionAdmission {
   if (!EXTRACTABLE_PAGE_TYPES.includes(candidate.type as typeof EXTRACTABLE_PAGE_TYPES[number])) {
     return { eligible: false };
   }
@@ -39,6 +46,7 @@ export function classifyExtractionCandidate(candidate: ExtractionCandidate): Ext
   }
   const facts = normalizeResearchProvenance(candidate.frontmatter);
   const birdclawOwned = facts.intakeAdapter === BIRDCLAW_INTAKE_ADAPTER;
+  if (birdclawOwned && !birdclawEnabled) return { eligible: false };
   const researchBookmark = birdclawOwned &&
     candidate.type === 'media' &&
     facts.contentKind === BIRDCLAW_BOOKMARK_KIND &&
@@ -57,6 +65,7 @@ export function extractionAdmissionSql(alias = 'p'): string {
         AND COALESCE(${alias}.frontmatter->>'intake_adapter', '') <> '${BIRDCLAW_INTAKE_ADAPTER}')
       OR (
         ${alias}.type = 'media'
+        AND ${birdclawResearchEnabledSql()}
         AND ${alias}.frontmatter->>'intake_adapter' = '${BIRDCLAW_INTAKE_ADAPTER}'
         AND ${alias}.frontmatter->>'content_kind' = '${BIRDCLAW_BOOKMARK_KIND}'
         AND lower(COALESCE(${alias}.frontmatter->>'concept_synthesis_candidate', '')) = 'true'

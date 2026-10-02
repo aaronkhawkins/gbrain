@@ -3,6 +3,29 @@ import { access, realpath, stat } from 'node:fs/promises';
 import type { MediaTranscriptionConfig } from './config.ts';
 import type { BrainEngine } from './engine.ts';
 import { fetchSource } from './sources-load.ts';
+import { BIRDCLAW_RESEARCH_ENABLED_KEY } from './cycle/bookmark-extraction-policy.ts';
+import { UnrecoverableError, type MinionHandler } from './minions/types.ts';
+
+/** Retire only media whose source provenance identifies the bookmark adapter. */
+export async function assertMediaTranscriptionResearchEnabled(
+  engine: BrainEngine,
+  provenanceSourceId: unknown,
+): Promise<void> {
+  if (provenanceSourceId !== 'birdclaw') return;
+  const enabled = await engine.getConfig(BIRDCLAW_RESEARCH_ENABLED_KEY);
+  if (enabled?.trim().toLowerCase() === 'false') {
+    throw new UnrecoverableError('media_transcription:birdclaw_research_disabled');
+  }
+}
+
+/** Check queued work at execution time without preventing unrelated workers from starting. */
+export function gateMediaTranscriptionResearch(engine: BrainEngine, handler: MinionHandler): MinionHandler {
+  return async (job) => {
+    const media = job.data.media as { provenance?: { source_id?: unknown } } | undefined;
+    await assertMediaTranscriptionResearchEnabled(engine, media?.provenance?.source_id);
+    return handler(job);
+  };
+}
 
 /** Fail closed unless the configured transcription owner is an active source. */
 export async function assertActiveMediaTranscriptionSource(
