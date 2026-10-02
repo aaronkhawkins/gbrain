@@ -14,7 +14,7 @@ import {
   MEDIA_TRANSCRIPTION_JOB_NAME,
   type MediaTranscriptionTransport,
 } from '../core/media-transcription-transport.ts';
-import { assertActiveMediaTranscriptionSource } from '../core/media-transcription-operations.ts';
+import { assertActiveMediaTranscriptionSource, gateMediaTranscriptionResearch } from '../core/media-transcription-operations.ts';
 import {
   loadConfig,
   isThinClient,
@@ -1593,7 +1593,7 @@ export async function registerBuiltinHandlers(
     );
     worker.register(
       MEDIA_TRANSCRIPTION_JOB_NAME,
-      makeMediaTranscriptionHandler(mediaTranscriptionTransport),
+      gateMediaTranscriptionResearch(engine, makeMediaTranscriptionHandler(mediaTranscriptionTransport)),
     );
   }
   registerBuiltinJob(worker, engine, 'facts-absorb', async (job) => {

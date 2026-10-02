@@ -31,6 +31,8 @@ import { estimateChatCostUsd } from '../ai/chat-pricing.ts';
 // source-boost's 1.3× 'concepts/' weighting can actually reach them.
 import { serializeMarkdown } from '../markdown.ts';
 import { createHash } from 'node:crypto';
+import { birdclawResearchEnabledSql } from './bookmark-extraction-policy.ts';
+import { BIRDCLAW_RESEARCH_POLICY } from './research-provenance.ts';
 import {
   readGeneratedOutputDigest,
   resolveGeneratedOutputPath,
@@ -115,7 +117,9 @@ export async function runPhaseSynthesizeConcepts(
            FROM pages
           WHERE type = 'atom'
             AND deleted_at IS NULL
-            AND (frontmatter->>'imported_from') IS NULL`,
+            AND (frontmatter->>'imported_from') IS NULL
+            AND (${birdclawResearchEnabledSql()}
+              OR COALESCE(frontmatter->>'research_policy', '') <> '${BIRDCLAW_RESEARCH_POLICY}')`,
       );
       atoms = rows
         .filter((r) => Array.isArray(r.frontmatter?.concepts) && r.frontmatter.concepts.length > 0)
