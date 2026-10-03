@@ -196,6 +196,19 @@ The fork operator reviews upstream at least weekly and before every release.
 Unreviewed drift must never exceed either two upstream releases or 30 days.
 Crossing either bound pauses feature work and deployment until reconciliation.
 
+**Standing cadence (post Phase 0):** absorb upstream only at a phase boundary
+or on the fixed cadence when no feature slice is active. Mid-slice merges are
+blocking-exception only. Record every review in the
+[Upstream Sync Ledger](../operations/upstream-sync-ledger.md) with
+adopted / deferred / conflicting dispositions, and run memory-bounded
+verification (`typecheck`, `bun run verify`, focused tests). Full operator
+contract: [Upstream Sync Cadence](upstream-sync-cadence.md). Check drift with:
+
+```sh
+bun scripts/upstream-sync-cadence.ts assess \
+  --ledger docs/operations/upstream-sync-ledger.md
+```
+
 Every reconciliation and release requires:
 
 1. Default/unmarked extraction and synthesis characterization tests.
